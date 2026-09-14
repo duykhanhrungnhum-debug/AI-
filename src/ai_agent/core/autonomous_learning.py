@@ -99,7 +99,7 @@ class AutonomousLearningCoordinator:
                     evidence=[a.reason for a in failed], tags=["autonomous-learning", "failure"],
                 ))
 
-    def discover_and_research(self, goal: str) -> AutonomousLearningSession:
+    def discover_and_research(self, goal: str, evidence: list[str] | None = None) -> AutonomousLearningSession:
         """Search, fetch, compare, detect conflicts, and conservatively verify one learning gap."""
         assert_core_invariants()
         session = AutonomousLearningSession(goal=goal)
@@ -136,14 +136,22 @@ class AutonomousLearningCoordinator:
                 self._record_experience(goal, session)
                 return session
 
-            session.comparison = self.comparator.compare(goal, documents)
-            if session.comparison.corroborated and items:
-                self.learner.verify(items[0], session.comparison.evidence)
+            if evidence and items:
+                self.learner.verify(items[0], evidence)
                 for attempt in session.attempts:
                     if attempt.knowledge_id == items[0].id:
                         attempt.status = "verified"
-                        attempt.reason = session.comparison.reason
+                        attempt.reason = "Explicit evidence and source provenance accepted."
                         break
+            else:
+                session.comparison = self.comparator.compare(goal, documents)
+                if session.comparison.corroborated and items:
+                    self.learner.verify(items[0], session.comparison.evidence)
+                    for attempt in session.attempts:
+                        if attempt.knowledge_id == items[0].id:
+                            attempt.status = "verified"
+                            attempt.reason = session.comparison.reason
+                            break
         except Exception as exc:
             session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed", str(exc)))
         self._record_experience(goal, session)
@@ -153,7 +161,7 @@ class AutonomousLearningCoordinator:
                  evidence: list[str] | None = None) -> AutonomousLearningSession:
         assert_core_invariants()
         if uri is None:
-            return self.discover_and_research(goal)
+            return self.discover_and_research(goal, evidence=evidence)
         session = AutonomousLearningSession(goal=goal)
         tasks = self.plan(goal)
         if not tasks:
