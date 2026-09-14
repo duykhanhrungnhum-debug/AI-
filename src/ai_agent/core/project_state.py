@@ -23,6 +23,14 @@ class StepStatus(str, Enum):
 
 
 @dataclass
+class AttemptRecord:
+    step_id: str
+    action: str
+    outcome: str
+    success: bool
+
+
+@dataclass
 class Step:
     id: str
     title: str
@@ -30,6 +38,7 @@ class Step:
     attempts: int = 0
     result: str | None = None
     evidence: list[str] = field(default_factory=list)
+    history: list[AttemptRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -102,6 +111,15 @@ class StateStore:
                             "attempts": step.attempts,
                             "result": step.result,
                             "evidence": list(step.evidence),
+                            "history": [
+                                {
+                                    "step_id": attempt.step_id,
+                                    "action": attempt.action,
+                                    "outcome": attempt.outcome,
+                                    "success": attempt.success,
+                                }
+                                for attempt in step.history
+                            ],
                         }
                         for step in task.steps
                     ],
@@ -130,6 +148,7 @@ class StateStore:
                     attempts=step.get("attempts", 0),
                     result=step.get("result"),
                     evidence=list(step.get("evidence", [])),
+                    history=[AttemptRecord(**attempt) for attempt in step.get("history", [])],
                 )
                 for step in task_data["steps"]
             ]
