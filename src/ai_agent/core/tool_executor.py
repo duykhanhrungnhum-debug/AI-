@@ -1,12 +1,14 @@
 """Safe first-party tool execution adapters for the model runtime.
 
-The model proposes what to do; this layer decides what is actually executable.
-It never turns model text into an arbitrary shell command.
+The model may select among explicitly registered tools through a strict JSON
+contract. Tool names and execution remain application-owned; arbitrary model
+text is never treated as executable code.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Callable
 
 from .invariants import assert_core_invariants
@@ -41,9 +43,25 @@ class ToolExecutor:
         assert_core_invariants()
         if not self._tools:
             return ActionExecution(False, "No tools are registered.")
-        # A model decision is data, not executable code. The host must select
-        # a registered tool explicitly before calling this adapter.
         return ActionExecution(False, "No explicit tool selection was supplied.")
+
+    def execute_selected(self, decision: ModelDecision) -> ActionExecution:
+        """Route a strict JSON model selection to a registered tool.
+
+        The model can choose only a name already registered by the application.
+        Malformed requests and unknown names become observable failures.
+        """
+        assert_core_invariants()
+        try:
+            payload = json.loads(decision.response.text)
+        except json.JSONDecodeError:
+            return ActionExecution(False, "Model tool selection must be valid JSON.")
+        if not isinstance(payload, dict) or set(payload) != {"tool"}:
+            return ActionExecution(False, "Model tool selection must contain only the 'tool' field.")
+        name = payload.get("tool")
+        if not isinstance(name, str) or not name.strip():
+            return ActionExecution(False, "Model tool selection requires a non-empty tool name.")
+        return self.execute_named(name, decision)
 
     def execute_named(self, name: str, decision: ModelDecision) -> ActionExecution:
         assert_core_invariants()
