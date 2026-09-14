@@ -27,11 +27,18 @@ class ResearchPlanner:
         objective = objective.strip()
         if not objective:
             raise ValueError("research objective must not be empty")
-        results = self.provider.search(objective, limit=self.max_sources)
+
+        # Request a larger candidate pool so duplicate URLs do not consume the
+        # entire bounded source budget. The final plan is still capped at
+        # max_sources.
+        candidate_limit = self.max_sources * 2
+        results = self.provider.search(objective, limit=candidate_limit)
         unique: list[SearchResult] = []
         seen: set[str] = set()
         for result in results:
             if result.url not in seen:
                 seen.add(result.url)
                 unique.append(result)
-        return ResearchPlan(query=objective, sources=unique[: self.max_sources])
+            if len(unique) >= self.max_sources:
+                break
+        return ResearchPlan(query=objective, sources=unique)
