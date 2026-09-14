@@ -18,6 +18,7 @@ class ExecutionEngine:
         task = state.current_task()
         if task is None:
             return "No current task is selected."
+        self.recovery.restore_from_state(state)
         return resume_task(task, self.recovery)
 
     def begin_current_step(self, state: ProjectState) -> str:
@@ -25,6 +26,7 @@ class ExecutionEngine:
         task = state.current_task()
         if task is None:
             raise ValueError("Cannot begin work without a current task.")
+        self.recovery.restore_from_state(state)
         step = task.current_step() or task.advance_to_next_pending()
         if step is None:
             task.status = StepStatus.VERIFIED
@@ -41,7 +43,7 @@ class ExecutionEngine:
         success: bool,
         evidence: str | None = None,
     ) -> None:
-        """Record an attempt and checkpoint before the engine proceeds."""
+        """Persist the attempt itself so recovery survives process restart."""
         task = state.current_task()
         if task is None or task.current_step() is None:
             raise ValueError("Cannot record a result without a current step.")
@@ -51,6 +53,7 @@ class ExecutionEngine:
         if evidence:
             step.evidence.append(evidence)
         self.recovery.record(step.id, action, outcome, success)
+        self.recovery.persist_to_step(step)
         step.status = StepStatus.VERIFIED if success else StepStatus.FAILED
         if not success and not self.recovery.may_retry(step.id, action):
             step.status = StepStatus.BLOCKED
