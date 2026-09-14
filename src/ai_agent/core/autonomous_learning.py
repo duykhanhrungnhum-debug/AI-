@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .conflict_resolution import ConflictAnalysis, ConflictResolver
 from .invariants import assert_core_invariants
 from .knowledge import KnowledgeItem
 from .learning import LearningEngine
@@ -27,6 +28,7 @@ class AutonomousLearningSession:
     goal: str
     attempts: list[LearningAttempt] = field(default_factory=list)
     comparison: SourceComparison | None = None
+    conflict_analysis: ConflictAnalysis | None = None
 
     @property
     def completed(self) -> bool:
@@ -34,13 +36,14 @@ class AutonomousLearningSession:
 
 
 class AutonomousLearningCoordinator:
-    """Connect planning to discovery, research, comparison, and verification."""
+    """Connect planning to discovery, research, comparison, conflict detection, and verification."""
 
     def __init__(self, *, planner: LearningPlanner | None = None,
                  research_planner: ResearchPlanner | None = None,
                  researcher: InternetResearcher | None = None,
                  learner: LearningEngine | None = None,
                  comparator: SourceComparator | None = None,
+                 conflict_resolver: ConflictResolver | None = None,
                  max_attempts_per_task: int = 3) -> None:
         if max_attempts_per_task <= 0:
             raise ValueError("max_attempts_per_task must be positive")
@@ -49,6 +52,7 @@ class AutonomousLearningCoordinator:
         self.researcher = researcher or InternetResearcher()
         self.learner = learner or LearningEngine()
         self.comparator = comparator or SourceComparator()
+        self.conflict_resolver = conflict_resolver or ConflictResolver()
         self.max_attempts_per_task = max_attempts_per_task
 
     def plan(self, goal: str) -> list[LearningTask]:
@@ -76,7 +80,7 @@ class AutonomousLearningCoordinator:
                                item.sources[0].uri if item.sources else None)
 
     def discover_and_research(self, goal: str) -> AutonomousLearningSession:
-        """Search, fetch, compare, and conservatively verify one learning gap."""
+        """Search, fetch, compare, detect conflicts, and conservatively verify one learning gap."""
         assert_core_invariants()
         session = AutonomousLearningSession(goal=goal)
         tasks = self.plan(goal)
@@ -94,11 +98,21 @@ class AutonomousLearningCoordinator:
                     documents.append(document)
                     items.append(item)
                     session.attempts.append(LearningAttempt(task.gap_id, task.objective, "proposed",
-                                                            "Source retrieved; comparison and verification pending.",
+                                                            "Source retrieved; comparison, conflict detection, and verification pending.",
                                                             item.id, source.url))
                 except Exception as exc:
                     session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed",
                                                             str(exc), source_uri=source.url))
+
+            session.conflict_analysis = self.conflict_resolver.analyze(task.objective, documents)
+            if session.conflict_analysis.conflicted:
+                for item in items:
+                    self.learner.conflict(item, session.conflict_analysis.reason)
+                for attempt in session.attempts:
+                    if attempt.knowledge_id in {item.id for item in items} and attempt.status == "proposed":
+                        attempt.status = "conflicted"
+                        attempt.reason = session.conflict_analysis.reason
+                return session
 
             session.comparison = self.comparator.compare(task.objective, documents)
             if session.comparison.corroborated and items:
