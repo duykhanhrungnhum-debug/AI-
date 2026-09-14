@@ -26,6 +26,18 @@ def test_engine_records_verified_step(tmp_path):
     assert store.load().version > 1
 
 
+def test_engine_does_not_verify_success_without_evidence(tmp_path):
+    store = StateStore(tmp_path / "state.json")
+    engine = ExecutionEngine(store, RecoveryGuard())
+    state = make_state()
+
+    engine.begin_current_step(state)
+    engine.record_step_result(state, "run", "done", True)
+
+    assert state.current_task().current_step().status is StepStatus.RUNNING
+    assert state.current_task().current_step().status is not StepStatus.VERIFIED
+
+
 def test_engine_blocks_repeated_identical_failures(tmp_path):
     store = StateStore(tmp_path / "state.json")
     engine = ExecutionEngine(store, RecoveryGuard(max_identical_failures=2))
