@@ -1,6 +1,6 @@
 import json
 
-from ai_agent.core.search import JsonSearchProvider, SearchResult, StaticSearchProvider
+from ai_agent.core.search import DuckDuckGoSearchProvider, JsonSearchProvider, SearchResult, StaticSearchProvider
 
 
 def test_static_search_provider_is_bounded():
@@ -29,3 +29,19 @@ def test_json_search_provider_parses_results(monkeypatch):
     provider = JsonSearchProvider("https://search.example.test/api")
     results = provider.search("agent learning", limit=2)
     assert results == [SearchResult("https://example.test/a", "A", "B")]
+
+
+def test_duckduckgo_provider_parses_public_html(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            return b'<a class="result__a" href="https://example.test/a">Example A</a>'
+
+    monkeypatch.setattr("ai_agent.core.search.urlopen", lambda request, timeout: FakeResponse())
+    results = DuckDuckGoSearchProvider().search("agent", limit=1)
+    assert results == [SearchResult("https://example.test/a", "Example A")]
