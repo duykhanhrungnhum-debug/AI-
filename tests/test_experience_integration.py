@@ -1,14 +1,22 @@
+from hashlib import sha256
+
 from ai_agent.core.autonomous_learning import AutonomousLearningCoordinator
 from ai_agent.core.experience import ExperienceStore
 from ai_agent.core.learning import LearningEngine
-from ai_agent.core.research_plan import ResearchPlan, ResearchPlanner
+from ai_agent.core.research_plan import ResearchPlanner
 from ai_agent.core.search import SearchResult, StaticSearchProvider
 from ai_agent.core.researcher import ResearchDocument
 
 
 class FakeResearcher:
     def fetch(self, uri: str) -> ResearchDocument:
-        return ResearchDocument(uri=uri, content="learning systems require evidence")
+        content = "learning systems require evidence"
+        return ResearchDocument(
+            uri=uri,
+            content=content,
+            content_hash=sha256(content.encode()).hexdigest(),
+            retrieved_at="2026-09-14T00:00:00+00:00",
+        )
 
 
 def test_successful_autonomous_learning_records_experience():
