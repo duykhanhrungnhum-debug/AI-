@@ -32,21 +32,40 @@ class ModelAgent:
     def __init__(self, provider: ModelProvider):
         self.provider = provider
 
-    def decide(self, task_title: str, step_id: str, step_title: str) -> ModelDecision:
+    def decide(
+        self,
+        task_title: str,
+        step_id: str,
+        step_title: str,
+        *,
+        available_tools: tuple[str, ...] = (),
+    ) -> ModelDecision:
         assert_core_invariants()
         if not task_title.strip():
             raise ValueError("task_title must not be empty")
         if not step_id.strip() or not step_title.strip():
             raise ValueError("step_id and step_title must not be empty")
 
+        tool_instruction = ""
+        if available_tools:
+            names = ", ".join(available_tools)
+            tool_instruction = (
+                f"\nAvailable tools: {names}\n"
+                "If a tool is needed, return ONLY a JSON object containing "
+                "the selected tool name plus its request fields. For web "
+                "research use one of: web_search with query/max_sources, "
+                "web_fetch with url, or web_research with query/max_sources. "
+                "Do not invent tool names."
+            )
         prompt = (
             "You are the reasoning component of an AI agent.\n"
             f"Task: {task_title.strip()}\n"
             f"Step ID: {step_id.strip()}\n"
-            f"Step: {step_title.strip()}\n\n"
-            "Return a concise proposed action, assumptions, and checks needed "
-            "to independently verify the result. Do not claim the step is "
-            "verified merely because you generated this response."
+            f"Step: {step_title.strip()}\n"
+            f"{tool_instruction}\n\n"
+            "Return a concise proposed action and checks needed to independently "
+            "verify the result. Do not claim the step is verified merely because "
+            "you generated this response."
         )
         response = self.provider.generate(prompt)
         if not response.text.strip():
