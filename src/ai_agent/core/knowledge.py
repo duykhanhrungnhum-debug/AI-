@@ -50,6 +50,14 @@ class KnowledgeItem:
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
+    def __post_init__(self) -> None:
+        # Keep the public dataclass tolerant of serialized/string enum values
+        # while maintaining enum-backed state internally.
+        if isinstance(self.kind, str):
+            self.kind = KnowledgeKind(self.kind)
+        if isinstance(self.status, str):
+            self.status = KnowledgeStatus(self.status)
+
     def verify(self, evidence: list[str] | None = None) -> None:
         supplied = evidence if evidence is not None else self.evidence
         if not supplied:
