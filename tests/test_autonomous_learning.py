@@ -1,4 +1,5 @@
 from ai_agent.core.autonomous_learning import AutonomousLearningCoordinator
+from ai_agent.core.knowledge import KnowledgeStatus
 from ai_agent.core.research_plan import ResearchPlanner
 from ai_agent.core.researcher import ResearchDocument
 from ai_agent.core.search import SearchResult, StaticSearchProvider
@@ -10,6 +11,22 @@ class FakeResearcher:
             uri=uri,
             content="evidence-backed learning material",
             content_hash="hash-1",
+            retrieved_at="2026-01-01T00:00:00+00:00",
+            content_type="text/plain",
+        )
+
+
+class ConflictResearcher:
+    def fetch(self, uri):
+        content = (
+            "autonomous planning is a useful capability"
+            if uri.endswith("/support")
+            else "autonomous planning is not a useful capability"
+        )
+        return ResearchDocument(
+            uri=uri,
+            content=content,
+            content_hash=uri.rsplit("/", 1)[-1],
             retrieved_at="2026-01-01T00:00:00+00:00",
             content_type="text/plain",
         )
@@ -69,3 +86,25 @@ def test_coordinator_discovers_and_researches_multiple_sources_without_auto_veri
     ]
     assert coordinator.learner.verified() == []
     assert len(coordinator.learner.knowledge) == 2
+
+
+def test_conflicting_sources_are_not_auto_verified():
+    provider = StaticSearchProvider(
+        [
+            SearchResult("https://example.test/support", title="support"),
+            SearchResult("https://example.test/opposition", title="opposition"),
+        ]
+    )
+    coordinator = AutonomousLearningCoordinator(
+        research_planner=ResearchPlanner(provider, max_sources=2),
+        researcher=ConflictResearcher(),
+    )
+
+    session = coordinator.run_once("autonomous planning is a useful capability")
+
+    assert session.conflict_analysis is not None
+    assert session.conflict_analysis.conflicted is True
+    assert [attempt.status for attempt in session.attempts] == ["conflicted", "conflicted"]
+    assert session.completed is False
+    assert coordinator.learner.verified() == []
+    assert all(item.status is KnowledgeStatus.CONFLICTED for item in coordinator.learner.knowledge)
