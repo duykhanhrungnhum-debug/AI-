@@ -8,6 +8,7 @@ from typing import Protocol
 from .engine import ExecutionEngine
 from .experience_runtime import RuntimeExperienceRecorder
 from .invariants import assert_core_invariants
+from .knowledge_retrieval import KnowledgeRetriever
 from .model_agent import ModelAgent, ModelDecision
 from .project_state import ProjectState
 
@@ -29,7 +30,7 @@ class ActionExecutor(Protocol):
 
 
 class ModelRuntime:
-    """Connect model reasoning to execution, verification, and experience."""
+    """Connect model reasoning to retrieval, execution, verification, and experience."""
 
     def __init__(
         self,
@@ -37,14 +38,16 @@ class ModelRuntime:
         executor: ActionExecutor,
         engine: ExecutionEngine,
         experience_recorder: RuntimeExperienceRecorder | None = None,
+        knowledge_retriever: KnowledgeRetriever | None = None,
     ):
         self.model_agent = model_agent
         self.executor = executor
         self.engine = engine
         self.experience_recorder = experience_recorder
+        self.knowledge_retriever = knowledge_retriever
 
     def run_current_step(self, state: ProjectState) -> ModelDecision:
-        """Reason, select/execute a registered tool, checkpoint, verify, and learn."""
+        """Retrieve relevant memory, reason, execute, checkpoint, verify, and learn."""
         assert_core_invariants()
         task = state.current_task()
         if task is None:
@@ -56,6 +59,11 @@ class ModelRuntime:
         if step is None:
             raise ValueError("No unfinished step remains.")
 
+        retrieved_context = None
+        if self.knowledge_retriever is not None:
+            context = self.knowledge_retriever.retrieve(f"{task.title} {step.title}")
+            retrieved_context = context.format_for_prompt()
+
         available_tools = tuple(getattr(self.executor, "names", ()))
         if available_tools:
             decision = self.model_agent.decide(
@@ -63,9 +71,15 @@ class ModelRuntime:
                 step.id,
                 step.title,
                 available_tools=available_tools,
+                retrieved_context=retrieved_context,
             )
         else:
-            decision = self.model_agent.decide(task.title, step.id, step.title)
+            decision = self.model_agent.decide(
+                task.title,
+                step.id,
+                step.title,
+                retrieved_context=retrieved_context,
+            )
 
         selected = getattr(self.executor, "execute_selected", None)
         result = selected(decision) if available_tools and callable(selected) else self.executor.execute(decision)
