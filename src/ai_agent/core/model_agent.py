@@ -39,6 +39,7 @@ class ModelAgent:
         step_title: str,
         *,
         available_tools: tuple[str, ...] = (),
+        retrieved_context: str | None = None,
     ) -> ModelDecision:
         assert_core_invariants()
         if not task_title.strip():
@@ -57,12 +58,20 @@ class ModelAgent:
                 "web_fetch with url, or web_research with query/max_sources. "
                 "Do not invent tool names."
             )
+        context_instruction = ""
+        if retrieved_context:
+            context_instruction = (
+                "\nPrior retrieved context follows. Treat verification status as authoritative; "
+                "proposed/conflicted/rejected knowledge is not established fact. Prior "
+                "experiences are lessons, not guarantees.\n" + retrieved_context + "\n"
+            )
         prompt = (
             "You are the reasoning component of an AI agent.\n"
             f"Task: {task_title.strip()}\n"
             f"Step ID: {step_id.strip()}\n"
             f"Step: {step_title.strip()}\n"
-            f"{tool_instruction}\n\n"
+            f"{tool_instruction}"
+            f"{context_instruction}\n"
             "Return a concise proposed action and checks needed to independently "
             "verify the result. Do not claim the step is verified merely because "
             "you generated this response."
