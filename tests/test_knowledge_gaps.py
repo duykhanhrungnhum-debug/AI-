@@ -1,4 +1,4 @@
-from ai_agent.core.knowledge import KnowledgeItem
+from ai_agent.core.knowledge import KnowledgeItem, KnowledgeSource
 from ai_agent.core.knowledge_gaps import GapStatus, KnowledgeGapDetector
 from ai_agent.core.learning_planner import LearningPlanner
 
@@ -18,7 +18,10 @@ def test_unverified_related_knowledge_creates_gap():
 
 
 def test_verified_related_knowledge_does_not_create_gap():
-    item = KnowledgeItem(statement="Quantum routing uses a test procedure")
+    item = KnowledgeItem(
+        statement="Quantum routing uses a test procedure",
+        sources=[KnowledgeSource(uri="https://example.com/source")],
+    )
     item.verify(["direct evidence"])
     assert KnowledgeGapDetector().detect("quantum routing", [item]) == []
 
