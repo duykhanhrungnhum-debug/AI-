@@ -1,5 +1,7 @@
 from ai_agent.core.autonomous_learning import AutonomousLearningCoordinator
+from ai_agent.core.research_plan import ResearchPlanner
 from ai_agent.core.researcher import ResearchDocument
+from ai_agent.core.search import SearchResult, StaticSearchProvider
 
 
 class FakeResearcher:
@@ -43,3 +45,27 @@ def test_coordinator_does_not_loop_when_no_gap_exists():
 
     assert session.attempts[0].status == "no_gap"
     assert len(coordinator.learner.knowledge) == 1
+
+
+def test_coordinator_discovers_and_researches_multiple_sources_without_auto_verifying():
+    provider = StaticSearchProvider(
+        [
+            SearchResult("https://example.test/a", title="A"),
+            SearchResult("https://example.test/a", title="A duplicate"),
+            SearchResult("https://example.test/b", title="B"),
+        ]
+    )
+    coordinator = AutonomousLearningCoordinator(
+        research_planner=ResearchPlanner(provider, max_sources=2),
+        researcher=FakeResearcher(),
+    )
+
+    session = coordinator.run_once("learn autonomous planning")
+
+    assert [attempt.status for attempt in session.attempts] == ["proposed", "proposed"]
+    assert [attempt.source_uri for attempt in session.attempts] == [
+        "https://example.test/a",
+        "https://example.test/b",
+    ]
+    assert coordinator.learner.verified() == []
+    assert len(coordinator.learner.knowledge) == 2
