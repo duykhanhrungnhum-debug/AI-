@@ -19,3 +19,14 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
       - name: Run test suite
         run: python -m pytest -q
+      - name: Smoke test public Internet retrieval and verification
+        run: >-
+          python -c "from ai_agent.core.researcher import InternetResearcher;
+          from ai_agent.core.learning import LearningEngine;
+          d=InternetResearcher(timeout=15.0, max_bytes=1000000).fetch('https://example.com/');
+          assert d.uri == 'https://example.com/';
+          assert d.content_hash and len(d.content) > 0;
+          e=LearningEngine();
+          item=e.observe('example.com is reachable', d);
+          e.verify(item, ['Live public HTTP retrieval succeeded and produced a content hash.']);
+          assert item.status.value == 'verified'"
