@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from .conflict_resolution import ConflictResolver
 from .invariants import assert_core_invariants
 from .learning import LearningEngine
-from .model_runtime import ActionExecution
+from .runtime_types import ActionExecution
 from .research_plan import ResearchPlanner
 from .researcher import InternetResearcher
 from .search import SearchProvider
