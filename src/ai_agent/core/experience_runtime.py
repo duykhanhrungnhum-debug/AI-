@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .experience import Experience, ExperienceStore
 from .invariants import assert_core_invariants
-from .model_runtime import ActionExecution
+from .runtime_types import ActionExecution
 
 
 class RuntimeExperienceRecorder:
