@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
+from typing import Callable
 
 from .conflict_resolution import ConflictAnalysis, ConflictResolver
 from .experience import Experience, ExperienceStore
@@ -100,7 +102,6 @@ class AutonomousLearningCoordinator:
                 ))
 
     def discover_and_research(self, goal: str, evidence: list[str] | None = None) -> AutonomousLearningSession:
-        """Search, fetch, compare, detect conflicts, and conservatively verify one learning gap."""
         assert_core_invariants()
         session = AutonomousLearningSession(goal=goal)
         tasks = self.plan(goal)
@@ -180,3 +181,42 @@ class AutonomousLearningCoordinator:
             session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed", str(exc)))
         self._record_experience(goal, session)
         return session
+
+    def run_forever(self, goal_provider: Callable[[], str], *, interval_seconds: float = 60.0,
+                    max_cycles: int | None = None, stop: Callable[[], bool] | None = None,
+                    on_session: Callable[[AutonomousLearningSession], None] | None = None) -> int:
+        """Run repeated learning cycles with explicit stop/bounds and failure isolation.
+
+        This is an endurance-capable runtime primitive, not evidence that a real
+        deployment has survived for hours or days; deployment endurance must be
+        measured separately.
+        """
+        assert_core_invariants()
+        if interval_seconds < 0:
+            raise ValueError("interval_seconds must be non-negative")
+        if max_cycles is not None and max_cycles <= 0:
+            raise ValueError("max_cycles must be positive when provided")
+        cycles = 0
+        while max_cycles is None or cycles < max_cycles:
+            if stop is not None and stop():
+                break
+            goal = goal_provider().strip()
+            if not goal:
+                raise ValueError("goal_provider returned an empty goal")
+            try:
+                session = self.run_once(goal)
+            except Exception as exc:
+                session = AutonomousLearningSession(goal=goal)
+                session.attempts.append(LearningAttempt("", goal, "failed", str(exc)))
+                self.experience_store.record(Experience(
+                    goal=goal, outcome="runtime_failure", lesson=str(exc), success=False,
+                    tags=["autonomous-learning", "runtime"],
+                ))
+            cycles += 1
+            if on_session is not None:
+                on_session(session)
+            if max_cycles is None or cycles < max_cycles:
+                if stop is not None and stop():
+                    break
+                time.sleep(interval_seconds)
+        return cycles
