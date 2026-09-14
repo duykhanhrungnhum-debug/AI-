@@ -1,6 +1,6 @@
 """Durable project/task state for long-running agent work."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import json
@@ -86,13 +86,69 @@ class StateStore:
 
     def save(self, state: ProjectState) -> None:
         state.checkpoint()
+        payload = {
+            "id": state.id,
+            "name": state.name,
+            "phase": state.phase.value,
+            "tasks": [
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "steps": [
+                        {
+                            "id": step.id,
+                            "title": step.title,
+                            "status": step.status.value,
+                            "attempts": step.attempts,
+                            "result": step.result,
+                            "evidence": list(step.evidence),
+                        }
+                        for step in task.steps
+                    ],
+                    "current_step_id": task.current_step_id,
+                    "status": task.status.value,
+                    "blocked_reason": task.blocked_reason,
+                }
+                for task in state.tasks
+            ],
+            "current_task_id": state.current_task_id,
+            "version": state.version,
+            "updated_at": state.updated_at,
+        }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(asdict(state), indent=2, default=str), encoding="utf-8")
+        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def load(self) -> ProjectState:
         data = json.loads(self.path.read_text(encoding="utf-8"))
         tasks = []
         for task_data in data["tasks"]:
-            steps = [Step(**step) for step in task_data["steps"]]
-            tasks.append(TaskState(**{**task_data, "steps": steps}))
-        return ProjectState(**{**data, "tasks": tasks})
+            steps = [
+                Step(
+                    id=step["id"],
+                    title=step["title"],
+                    status=StepStatus(step["status"]),
+                    attempts=step.get("attempts", 0),
+                    result=step.get("result"),
+                    evidence=list(step.get("evidence", [])),
+                )
+                for step in task_data["steps"]
+            ]
+            tasks.append(
+                TaskState(
+                    id=task_data["id"],
+                    title=task_data["title"],
+                    steps=steps,
+                    current_step_id=task_data.get("current_step_id"),
+                    status=StepStatus(task_data["status"]),
+                    blocked_reason=task_data.get("blocked_reason"),
+                )
+            )
+        return ProjectState(
+            id=data["id"],
+            name=data["name"],
+            phase=ProjectPhase(data["phase"]),
+            tasks=tasks,
+            current_task_id=data.get("current_task_id"),
+            version=data.get("version", 1),
+            updated_at=data.get("updated_at", datetime.now(timezone.utc).isoformat()),
+        )
