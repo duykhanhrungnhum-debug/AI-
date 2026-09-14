@@ -44,7 +44,7 @@ class ModelRuntime:
         self.experience_recorder = experience_recorder
 
     def run_current_step(self, state: ProjectState) -> ModelDecision:
-        """Reason, execute, checkpoint, verify, and optionally record experience."""
+        """Reason, select/execute a registered tool, checkpoint, verify, and learn."""
         assert_core_invariants()
         task = state.current_task()
         if task is None:
@@ -56,8 +56,15 @@ class ModelRuntime:
         if step is None:
             raise ValueError("No unfinished step remains.")
 
-        decision = self.model_agent.decide(task.title, step.id, step.title)
-        result = self.executor.execute(decision)
+        available_tools = tuple(getattr(self.executor, "names", ()))
+        decision = self.model_agent.decide(
+            task.title,
+            step.id,
+            step.title,
+            available_tools=available_tools,
+        )
+        selected = getattr(self.executor, "execute_selected", None)
+        result = selected(decision) if available_tools and callable(selected) else self.executor.execute(decision)
         self.engine.record_step_result(
             state,
             action=decision.response.text,
