@@ -1,4 +1,4 @@
-"""Model-backed runtime that separates reasoning, execution, and verification."""
+"""Model-backed runtime that separates reasoning, execution, verification, and learning."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .engine import ExecutionEngine
+from .experience_runtime import RuntimeExperienceRecorder
 from .invariants import assert_core_invariants
 from .model_agent import ModelAgent, ModelDecision
 from .project_state import ProjectState
@@ -28,15 +29,22 @@ class ActionExecutor(Protocol):
 
 
 class ModelRuntime:
-    """Connect model reasoning to execution while keeping verification external."""
+    """Connect model reasoning to execution, verification, and experience."""
 
-    def __init__(self, model_agent: ModelAgent, executor: ActionExecutor, engine: ExecutionEngine):
+    def __init__(
+        self,
+        model_agent: ModelAgent,
+        executor: ActionExecutor,
+        engine: ExecutionEngine,
+        experience_recorder: RuntimeExperienceRecorder | None = None,
+    ):
         self.model_agent = model_agent
         self.executor = executor
         self.engine = engine
+        self.experience_recorder = experience_recorder
 
     def run_current_step(self, state: ProjectState) -> ModelDecision:
-        """Reason, execute, checkpoint, and leave verification to the engine."""
+        """Reason, execute, checkpoint, verify, and optionally record experience."""
         assert_core_invariants()
         task = state.current_task()
         if task is None:
@@ -57,4 +65,6 @@ class ModelRuntime:
             success=result.success,
             evidence="\n".join(result.evidence) if result.evidence else None,
         )
+        if self.experience_recorder is not None:
+            self.experience_recorder.record(task.title, decision.response.text, result)
         return decision
