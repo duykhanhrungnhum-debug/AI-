@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 from .engine import ExecutionEngine
@@ -11,15 +10,7 @@ from .invariants import assert_core_invariants
 from .knowledge_retrieval import KnowledgeRetriever
 from .model_agent import ModelAgent, ModelDecision
 from .project_state import ProjectState
-
-
-@dataclass(frozen=True)
-class ActionExecution:
-    """Result returned by an executor; evidence is independently checkable."""
-
-    success: bool
-    outcome: str
-    evidence: tuple[str, ...] = ()
+from .runtime_types import ActionExecution
 
 
 class ActionExecutor(Protocol):
@@ -66,20 +57,9 @@ class ModelRuntime:
 
         available_tools = tuple(getattr(self.executor, "names", ()))
         if available_tools:
-            decision = self.model_agent.decide(
-                task.title,
-                step.id,
-                step.title,
-                available_tools=available_tools,
-                retrieved_context=retrieved_context,
-            )
+            decision = self.model_agent.decide(task.title, step.id, step.title, available_tools=available_tools, retrieved_context=retrieved_context)
         else:
-            decision = self.model_agent.decide(
-                task.title,
-                step.id,
-                step.title,
-                retrieved_context=retrieved_context,
-            )
+            decision = self.model_agent.decide(task.title, step.id, step.title, retrieved_context=retrieved_context)
 
         selected = getattr(self.executor, "execute_selected", None)
         result = selected(decision) if available_tools and callable(selected) else self.executor.execute(decision)
@@ -93,3 +73,8 @@ class ModelRuntime:
         if self.experience_recorder is not None:
             self.experience_recorder.record(task.title, decision.response.text, result)
         return decision
+
+
+# Backward-compatible public import: existing callers can still import
+# ActionExecution from model_runtime while the definition lives in a leaf module.
+__all__ = ["ActionExecution", "ActionExecutor", "ModelRuntime"]
