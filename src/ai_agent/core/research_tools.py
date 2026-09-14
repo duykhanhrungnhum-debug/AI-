@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from typing import TYPE_CHECKING
 
 from .conflict_resolution import ConflictResolver
 from .invariants import assert_core_invariants
@@ -17,6 +18,9 @@ from .research_plan import ResearchPlanner
 from .researcher import InternetResearcher
 from .search import SearchProvider
 from .source_comparison import SourceComparator
+
+if TYPE_CHECKING:
+    from .tool_executor import ToolExecutor
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,8 @@ class ResearchRequest:
 
 class InternetResearchTools:
     """Build registered tools backed by the real public-web research stack."""
+
+    TOOL_NAMES = ("web_search", "web_fetch", "web_research")
 
     def __init__(
         self,
@@ -59,7 +65,7 @@ class InternetResearchTools:
         if not isinstance(payload, dict):
             raise ValueError("tool request must be a JSON object")
         tool = payload.get("tool")
-        if not isinstance(tool, str) or tool not in {"web_search", "web_fetch", "web_research"}:
+        if not isinstance(tool, str) or tool not in InternetResearchTools.TOOL_NAMES:
             raise ValueError("unsupported research tool")
         query = payload.get("query", "")
         url = payload.get("url", "")
@@ -126,10 +132,26 @@ class InternetResearchTools:
         )
         return ActionExecution(True, outcome, evidence)
 
-    def execute_json(self, text: str) -> ActionExecution:
+    def execute_json(self, text: str, *, expected_tool: str | None = None) -> ActionExecution:
         """Parse and execute a strictly bounded research request."""
         try:
             request = self.parse_request(text)
+            if expected_tool is not None and request.tool != expected_tool:
+                return ActionExecution(False, f"Selected tool mismatch: expected {expected_tool}.")
             return self.execute(request)
         except Exception as exc:
             return ActionExecution(False, f"Research request failed: {exc}")
+
+    def register(self, executor: ToolExecutor) -> None:
+        """Register all research operations with the shared ToolExecutor."""
+        from .tool_executor import Tool
+
+        for name in self.TOOL_NAMES:
+            executor.register(
+                Tool(
+                    name,
+                    lambda decision, selected=name: self.execute_json(
+                        decision.response.text, expected_tool=selected
+                    ),
+                )
+            )
