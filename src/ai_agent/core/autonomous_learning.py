@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .conflict_resolution import ConflictAnalysis, ConflictResolver
+from .experience import Experience, ExperienceStore
 from .invariants import assert_core_invariants
 from .knowledge import KnowledgeItem
 from .learning import LearningEngine
@@ -36,7 +37,7 @@ class AutonomousLearningSession:
 
 
 class AutonomousLearningCoordinator:
-    """Connect planning to discovery, research, comparison, conflict detection, and verification."""
+    """Connect planning to discovery, research, comparison, conflict detection, verification, and experience."""
 
     def __init__(self, *, planner: LearningPlanner | None = None,
                  research_planner: ResearchPlanner | None = None,
@@ -44,6 +45,7 @@ class AutonomousLearningCoordinator:
                  learner: LearningEngine | None = None,
                  comparator: SourceComparator | None = None,
                  conflict_resolver: ConflictResolver | None = None,
+                 experience_store: ExperienceStore | None = None,
                  max_attempts_per_task: int = 3) -> None:
         if max_attempts_per_task <= 0:
             raise ValueError("max_attempts_per_task must be positive")
@@ -53,6 +55,7 @@ class AutonomousLearningCoordinator:
         self.learner = learner or LearningEngine()
         self.comparator = comparator or SourceComparator()
         self.conflict_resolver = conflict_resolver or ConflictResolver()
+        self.experience_store = experience_store or ExperienceStore()
         self.max_attempts_per_task = max_attempts_per_task
 
     def plan(self, goal: str) -> list[LearningTask]:
@@ -79,6 +82,23 @@ class AutonomousLearningCoordinator:
                                "Evidence and provenance accepted.", item.id,
                                item.sources[0].uri if item.sources else None)
 
+    def _record_experience(self, goal: str, session: AutonomousLearningSession) -> None:
+        assert_core_invariants()
+        if session.completed:
+            self.experience_store.record(Experience(
+                goal=goal, outcome="verified",
+                lesson="Verified learning outcome with provenance and evidence.", success=True,
+                evidence=[a.reason for a in session.attempts if a.status == "verified"],
+                tags=["autonomous-learning", "success"],
+            ))
+        else:
+            failed = [a for a in session.attempts if a.status in {"failed", "conflicted"}]
+            if failed:
+                self.experience_store.record(Experience(
+                    goal=goal, outcome=failed[-1].status, lesson=failed[-1].reason, success=False,
+                    evidence=[a.reason for a in failed], tags=["autonomous-learning", "failure"],
+                ))
+
     def discover_and_research(self, goal: str) -> AutonomousLearningSession:
         """Search, fetch, compare, detect conflicts, and conservatively verify one learning gap."""
         assert_core_invariants()
@@ -86,6 +106,7 @@ class AutonomousLearningCoordinator:
         tasks = self.plan(goal)
         if not tasks:
             session.attempts.append(LearningAttempt("", goal, "no_gap", "No learning gap was detected."))
+            self._record_experience(goal, session)
             return session
         task = tasks[0]
         try:
@@ -101,11 +122,8 @@ class AutonomousLearningCoordinator:
                                                             "Source retrieved; comparison, conflict detection, and verification pending.",
                                                             item.id, source.url))
                 except Exception as exc:
-                    session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed",
-                                                            str(exc), source_uri=source.url))
+                    session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed", str(exc), source_uri=source.url))
 
-            # The learning task contains a research instruction. Conflict and
-            # corroboration must instead evaluate the original claim/goal.
             session.conflict_analysis = self.conflict_resolver.analyze(goal, documents)
             if session.conflict_analysis.conflicted:
                 item_ids = {item.id for item in items}
@@ -115,6 +133,7 @@ class AutonomousLearningCoordinator:
                     if attempt.knowledge_id in item_ids and attempt.status == "proposed":
                         attempt.status = "conflicted"
                         attempt.reason = session.conflict_analysis.reason
+                self._record_experience(goal, session)
                 return session
 
             session.comparison = self.comparator.compare(goal, documents)
@@ -127,6 +146,7 @@ class AutonomousLearningCoordinator:
                         break
         except Exception as exc:
             session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed", str(exc)))
+        self._record_experience(goal, session)
         return session
 
     def run_once(self, goal: str, uri: str | None = None,
@@ -138,6 +158,7 @@ class AutonomousLearningCoordinator:
         tasks = self.plan(goal)
         if not tasks:
             session.attempts.append(LearningAttempt("", goal, "no_gap", "No learning gap was detected."))
+            self._record_experience(goal, session)
             return session
         task = tasks[0]
         try:
@@ -149,4 +170,5 @@ class AutonomousLearningCoordinator:
                 session.attempts.append(self.verify(task, item, evidence))
         except Exception as exc:
             session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed", str(exc)))
+        self._record_experience(goal, session)
         return session
