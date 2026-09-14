@@ -49,13 +49,13 @@ class AutonomousLearningCoordinator:
                  max_attempts_per_task: int = 3) -> None:
         if max_attempts_per_task <= 0:
             raise ValueError("max_attempts_per_task must be positive")
-        self.planner = planner or LearningPlanner()
+        self.experience_store = experience_store or ExperienceStore()
+        self.planner = planner or LearningPlanner(experience_store=self.experience_store)
         self.research_planner = research_planner
         self.researcher = researcher or InternetResearcher()
         self.learner = learner or LearningEngine()
         self.comparator = comparator or SourceComparator()
         self.conflict_resolver = conflict_resolver or ConflictResolver()
-        self.experience_store = experience_store or ExperienceStore()
         self.max_attempts_per_task = max_attempts_per_task
 
     def plan(self, goal: str) -> list[LearningTask]:
