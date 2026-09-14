@@ -104,17 +104,20 @@ class AutonomousLearningCoordinator:
                     session.attempts.append(LearningAttempt(task.gap_id, task.objective, "failed",
                                                             str(exc), source_uri=source.url))
 
-            session.conflict_analysis = self.conflict_resolver.analyze(task.objective, documents)
+            # The learning task contains a research instruction. Conflict and
+            # corroboration must instead evaluate the original claim/goal.
+            session.conflict_analysis = self.conflict_resolver.analyze(goal, documents)
             if session.conflict_analysis.conflicted:
+                item_ids = {item.id for item in items}
                 for item in items:
                     self.learner.conflict(item, session.conflict_analysis.reason)
                 for attempt in session.attempts:
-                    if attempt.knowledge_id in {item.id for item in items} and attempt.status == "proposed":
+                    if attempt.knowledge_id in item_ids and attempt.status == "proposed":
                         attempt.status = "conflicted"
                         attempt.reason = session.conflict_analysis.reason
                 return session
 
-            session.comparison = self.comparator.compare(task.objective, documents)
+            session.comparison = self.comparator.compare(goal, documents)
             if session.comparison.corroborated and items:
                 self.learner.verify(items[0], session.comparison.evidence)
                 for attempt in session.attempts:
