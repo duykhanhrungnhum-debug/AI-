@@ -57,12 +57,16 @@ class ModelRuntime:
             raise ValueError("No unfinished step remains.")
 
         available_tools = tuple(getattr(self.executor, "names", ()))
-        decision = self.model_agent.decide(
-            task.title,
-            step.id,
-            step.title,
-            available_tools=available_tools,
-        )
+        if available_tools:
+            decision = self.model_agent.decide(
+                task.title,
+                step.id,
+                step.title,
+                available_tools=available_tools,
+            )
+        else:
+            decision = self.model_agent.decide(task.title, step.id, step.title)
+
         selected = getattr(self.executor, "execute_selected", None)
         result = selected(decision) if available_tools and callable(selected) else self.executor.execute(decision)
         self.engine.record_step_result(
