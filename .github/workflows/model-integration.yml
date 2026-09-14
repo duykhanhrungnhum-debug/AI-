@@ -1,0 +1,45 @@
+name: Live Model Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: "OpenAI-compatible chat-completions endpoint"
+        required: true
+        type: string
+      model:
+        description: "Model identifier"
+        required: true
+        type: string
+      timeout:
+        description: "Request timeout in seconds"
+        required: false
+        default: "60"
+        type: string
+
+jobs:
+  live-model:
+    runs-on: ubuntu-latest
+    env:
+      AI_MODEL_ENDPOINT: ${{ inputs.endpoint }}
+      AI_MODEL_NAME: ${{ inputs.model }}
+      AI_MODEL_TIMEOUT: ${{ inputs.timeout }}
+      AI_MODEL_API_KEY: ${{ secrets.AI_MODEL_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Require model API key secret
+        shell: bash
+        run: |
+          if [ -z "$AI_MODEL_API_KEY" ]; then
+            echo "AI_MODEL_API_KEY repository secret is not configured."
+            exit 1
+          fi
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Call real model endpoint
+        run: python -m pytest -q tests/test_model_integration.py -m integration
