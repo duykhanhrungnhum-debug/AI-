@@ -1,7 +1,10 @@
+import json
+
 import pytest
 
 from ai_agent.core.curriculum import TrainingExercise
 from ai_agent.core.experience import ExperienceStore
+from ai_agent.core.model import OpenAICompatibleModel
 from ai_agent.core.training import CurriculumRunner, EvaluationResult
 
 
@@ -35,3 +38,22 @@ def test_prerequisites_and_attempt_limit_are_enforced():
     runner = CurriculumRunner(curriculum=(exercise,), evaluator=lambda e, r: EvaluationResult(0.1, False, "fail"), max_attempts=1)
     with pytest.raises(ValueError):
         runner.run(exercise, "answer")
+
+
+def test_openai_compatible_model_adapter_preserves_model_provenance(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    monkeypatch.setattr("ai_agent.core.model.urlopen", lambda request, timeout: FakeResponse())
+    model = OpenAICompatibleModel("https://model.example.test/v1/chat/completions", "secret", "demo-model")
+    response = model.generate("hello")
+    assert response.text == "hello"
+    assert response.model == "demo-model"
+    assert response.provider == "openai-compatible"
