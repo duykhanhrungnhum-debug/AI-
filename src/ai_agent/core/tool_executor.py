@@ -30,6 +30,11 @@ class ToolExecutor:
     def __init__(self, tools: list[Tool] | None = None) -> None:
         self._tools = {tool.name.strip(): tool for tool in (tools or []) if tool.name.strip()}
 
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Return the registered tool names exposed to the model."""
+        return tuple(sorted(self._tools))
+
     def register(self, tool: Tool) -> None:
         assert_core_invariants()
         if not tool.name.strip():
@@ -48,16 +53,16 @@ class ToolExecutor:
     def execute_selected(self, decision: ModelDecision) -> ActionExecution:
         """Route a strict JSON model selection to a registered tool.
 
-        The model can choose only a name already registered by the application.
-        Malformed requests and unknown names become observable failures.
+        Only the registered tool name is interpreted by this generic router;
+        each tool owns validation of its request-specific arguments.
         """
         assert_core_invariants()
         try:
             payload = json.loads(decision.response.text)
         except json.JSONDecodeError:
             return ActionExecution(False, "Model tool selection must be valid JSON.")
-        if not isinstance(payload, dict) or set(payload) != {"tool"}:
-            return ActionExecution(False, "Model tool selection must contain only the 'tool' field.")
+        if not isinstance(payload, dict):
+            return ActionExecution(False, "Model tool selection must be a JSON object.")
         name = payload.get("tool")
         if not isinstance(name, str) or not name.strip():
             return ActionExecution(False, "Model tool selection requires a non-empty tool name.")
