@@ -138,8 +138,15 @@ class KaggleNarrativeProcessor:
             status = self.worker.status(self.kernel_slug)
             if status.terminal:
                 if not status.successful:
+                    try:
+                        logs = self.worker.logs(self.kernel_slug).strip()
+                    except Exception as exc:
+                        logs = f"<failed to retrieve Kaggle logs: {exc}>"
+                    if len(logs) > 5000:
+                        logs = logs[-5000:]
                     raise RuntimeError(
-                        f"Kaggle narrative worker failed: {status.status} {status.failure_message}"
+                        f"Kaggle narrative worker failed: {status.status} "
+                        f"{status.failure_message}\nKaggle logs:\n{logs}"
                     )
                 return
             if self.poll_interval:

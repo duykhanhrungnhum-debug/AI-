@@ -129,6 +129,44 @@ class KaggleGpuWorker:
             failure_message=str(failure or "").strip(),
         )
 
+    def logs(self, slug: str) -> str:
+        """Return persisted/latest execution logs for a Kaggle kernel."""
+        assert_core_invariants()
+        slug = slug.strip()
+        if not slug or "/" in slug:
+            raise ValueError("slug must be a non-empty kernel slug without an owner prefix")
+        url = (
+            self.base_url.rstrip("/")
+            + f"/kernels/logs/stream/{self.username.strip()}/{slug}"
+        )
+        request = Request(
+            url,
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.api_token.strip()}",
+                "Accept": "*/*",
+                "User-Agent": self.user_agent,
+            },
+        )
+        with urlopen(request, timeout=self.timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+
+        events = parsed if isinstance(parsed, list) else [parsed]
+        parts: list[str] = []
+        for event in events:
+            if isinstance(event, dict):
+                value = event.get("data")
+                if value is not None:
+                    parts.append(str(value))
+            elif event is not None:
+                parts.append(str(event))
+        return "\n".join(parts)
+
     def output_metadata(self, slug: str) -> dict:
         """Return metadata for the latest kernel output."""
         assert_core_invariants()

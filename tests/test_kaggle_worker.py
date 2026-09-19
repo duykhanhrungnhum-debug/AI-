@@ -140,3 +140,30 @@ def test_kaggle_worker_downloads_named_output_file(monkeypatch):
     assert data == b'{"gpu_available": true}'
     assert any("/kernels/output?" in url for url in calls)
     assert calls[-1] == "https://signed.example/report"
+
+
+def test_kaggle_worker_reads_kernel_logs(monkeypatch):
+    class RawResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps([
+                {"data": "line one"},
+                {"data": "line two"},
+            ]).encode()
+
+    def fake_urlopen(request, timeout):
+        assert request.full_url.endswith(
+            "/api/v1/kernels/logs/stream/testuser/gpu-smoke"
+        )
+        assert request.get_header("Authorization") == "Bearer KGAT_secret"
+        return RawResponse()
+
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.urlopen", fake_urlopen)
+    worker = KaggleGpuWorker(api_token=" KGAT_secret\n", username="testuser")
+
+    assert worker.logs("gpu-smoke") == "line one\nline two"
