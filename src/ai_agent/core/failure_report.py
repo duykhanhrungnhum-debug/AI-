@@ -12,15 +12,24 @@ import re
 
 
 def _safe_message(error: BaseException, *, limit: int = 1200) -> str:
-    message = str(error).strip() or error.__class__.__name__
-    message = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", message)
-    message = re.sub(
+    raw = str(error).strip() or error.__class__.__name__
+    raw = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", raw)
+    raw = re.sub(
         r"(?i)((?:api[_-]?key|token|authorization)\s*[:=]\s*)\S+",
         r"\1<redacted>",
-        message,
+        raw,
     )
-    message = re.sub(r"\s+", " ", message).strip()
-    return message[:limit]
+    root_matches = re.findall(
+        r"(?:RuntimeError|ValueError|TypeError|SyntaxError|IndentationError|TimeoutError|SystemExit):[^\n]+",
+        raw,
+    )
+    root_cause = root_matches[-1].strip() if root_matches else ""
+    message = re.sub(r"\s+", " ", raw).strip()
+    if len(message) <= limit:
+        return message
+    suffix = f" | root_cause={root_cause}" if root_cause else ""
+    head_limit = max(1, limit - len(suffix))
+    return message[:head_limit].rstrip() + suffix
 
 
 @dataclass(frozen=True)

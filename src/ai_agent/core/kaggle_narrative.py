@@ -348,14 +348,25 @@ class KaggleNarrativeProcessor:
                     "script_evidence.\n"
                     f"FACT_ID: {{fact_id}}\nFACT: {{fact['fact']}}\nSCRIPT:\n{{current}}"
                 )
-                data = parse_json(
-                    generate(adjudication_prompt, 350),
-                    "narrative fact adjudication",
-                )
+                try:
+                    data = parse_json(
+                        generate(adjudication_prompt, 350),
+                        "narrative fact adjudication",
+                    )
+                except RuntimeError:
+                    return False, ""
                 preserved = data.get("preserved")
-                evidence = data.get("script_evidence")
-                if not isinstance(preserved, bool) or not isinstance(evidence, str):
-                    raise RuntimeError("fact adjudication fields are invalid")
+                if isinstance(preserved, str):
+                    normalized = preserved.strip().casefold()
+                    if normalized in {"true", "yes", "preserved", "1"}:
+                        preserved = True
+                    elif normalized in {"false", "no", "missing", "0"}:
+                        preserved = False
+                evidence = data.get("script_evidence", data.get("evidence", ""))
+                if not isinstance(preserved, bool):
+                    return False, ""
+                if not isinstance(evidence, str):
+                    evidence = ""
                 evidence = evidence.strip()
                 if preserved and (
                     not evidence

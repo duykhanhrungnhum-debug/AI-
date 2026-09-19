@@ -26,3 +26,14 @@ def test_failure_report_marks_kaggle_capacity_as_retryable():
 
     assert report.retryable is True
     assert "GPU slot" in report.next_action
+
+
+def test_failure_report_preserves_nested_root_cause_when_logs_are_long():
+    noisy = "Kaggle narrative worker failed: error\nKaggle logs:\n" + ("loading weights " * 200)
+    noisy += "\nRuntimeError: fact adjudication fields are invalid\ncleanup"
+    report = FailureReport.from_exception(
+        stage="narrative-quality",
+        error=RuntimeError(noisy),
+    )
+
+    assert "root_cause=RuntimeError: fact adjudication fields are invalid" in report.error_message
