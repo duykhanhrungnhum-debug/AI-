@@ -52,6 +52,7 @@ class KaggleNarrativeProcessor:
             raise ValueError("target_language must not be empty")
 
         source = self._build_worker_source(source_text, target_language)
+        compile(source, "<kaggle-narrative-worker>", "exec")
         title = self.kernel_slug.replace("-", " ").title()
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
@@ -189,7 +190,7 @@ class KaggleNarrativeProcessor:
         }
         config_json = json.dumps(config, ensure_ascii=False)
         return textwrap.dedent(
-            f"""
+            rf"""
             from __future__ import annotations
 
             from hashlib import sha256

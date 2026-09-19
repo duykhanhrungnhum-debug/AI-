@@ -72,3 +72,17 @@ def test_kaggle_narrative_host_rejects_duplicate_paragraph_even_if_model_passes(
 
     assert result.review.passed is False
     assert "exact duplicate paragraph detected" in result.review.issues
+
+
+def test_kaggle_narrative_generated_worker_source_compiles():
+    processor = KaggleNarrativeProcessor(
+        worker=FakeWorker({}),
+        poll_interval=0,
+    )
+    source = processor._build_worker_source(
+        "Lan found a letter. Do not open the door.",
+        "Vietnamese",
+    )
+
+    compile(source, "<generated-kaggle-worker>", "exec")
+    assert source.startswith("from __future__ import annotations")
