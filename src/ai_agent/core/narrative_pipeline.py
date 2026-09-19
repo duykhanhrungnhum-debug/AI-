@@ -167,14 +167,14 @@ class NarrativeProcessor:
             issues.append("script is empty")
 
         paragraphs = [
-            re.sub(r"\\s+", " ", p).strip().casefold()
-            for p in re.split(r"\\n\\s*\\n", script)
+            re.sub(r"\s+", " ", p).strip().casefold()
+            for p in re.split(r"\n\s*\n", script)
             if len(p.strip()) >= 20
         ]
         seen: set[str] = set()
         if any(p in seen or seen.add(p) for p in paragraphs):
             issues.append("exact duplicate paragraph detected")
 
-        if re.search(r"\\b(?:TODO|TBD)\\b|\\[(?:insert|placeholder)[^]]*\\]", script, re.IGNORECASE):
+        if re.search(r"\b(?:TODO|TBD)\b|\[(?:insert|placeholder)[^]]*\]", script, re.IGNORECASE):
             issues.append("placeholder marker detected")
         return tuple(issues)
