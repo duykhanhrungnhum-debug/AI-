@@ -35,6 +35,7 @@ class NarrativeResult:
     script: str
     review: ScriptQualityReport
     revision_count: int
+    evidence: tuple[str, ...] = ()
 
 
 class NarrativeProcessor:
@@ -84,7 +85,17 @@ class NarrativeProcessor:
             script = repaired
             review = self._review(source_text, brief, script)
 
-        return NarrativeResult(brief=brief, script=script, review=review, revision_count=revisions)
+        return NarrativeResult(
+            brief=brief,
+            script=script,
+            review=review,
+            revision_count=revisions,
+            evidence=(
+                f"script_sha256:{self._fingerprint(script)}",
+                f"script_revisions:{revisions}",
+                f"script_reviewer:{review.reviewer}",
+            ),
+        )
 
     def _analyze(self, source_text: str) -> NarrativeBrief:
         prompt = (
@@ -170,8 +181,16 @@ class NarrativeProcessor:
 
     @staticmethod
     def _parse_json(raw: str, label: str) -> dict:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
         try:
-            data = json.loads(raw.strip())
+            data = json.loads(cleaned)
         except json.JSONDecodeError as exc:
             raise ValueError(f"{label} must be valid JSON") from exc
         if not isinstance(data, dict):

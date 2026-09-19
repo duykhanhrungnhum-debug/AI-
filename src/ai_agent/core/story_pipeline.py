@@ -55,6 +55,7 @@ class StoryProductionPipeline:
             target_language=target_language,
         )
         narrative_evidence = (
+            *narrative.evidence,
             f"script_review_passed:{str(narrative.review.passed).lower()}",
             f"script_reviewer:{narrative.review.reviewer}",
             f"script_revision_count:{narrative.revision_count}",

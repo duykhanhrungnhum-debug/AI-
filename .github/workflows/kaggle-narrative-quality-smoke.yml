@@ -1,0 +1,119 @@
+name: Kaggle Narrative Quality Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggle-narrative-quality-smoke.yml"
+      - "src/ai_agent/core/kaggle_narrative.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-narrative-quality-smoke
+  cancel-in-progress: false
+
+jobs:
+  narrative-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: |
+          test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install AI package
+        run: python -m pip install -e .
+
+      - name: Run source-to-Vietnamese review/repair in one T4 session
+        run: |
+          mkdir -p narrative-quality-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from ai_agent.core.kaggle_narrative import KaggleNarrativeProcessor
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          source = (
+              "On a stormy night, Lan found an old letter pushed beneath her apartment door. "
+              "There was no sender's name. The letter contained only one warning: "
+              "'Do not open the last door at the end of the corridor.' "
+              "As Lan finished reading, three knocks sounded from that very door."
+          )
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+          )
+          processor = KaggleNarrativeProcessor(
+              worker=worker,
+              model="Qwen/Qwen2.5-3B-Instruct",
+              kernel_slug="ai-agent-narrative-quality-smoke",
+              poll_interval=15,
+              max_poll_attempts=120,
+              max_revisions=2,
+              temperature=0.0,
+          )
+          result = processor.process(source, target_language="Vietnamese")
+
+          if not result.review.passed:
+              raise SystemExit(f"Narrative verification failed: {result.review.issues}")
+          if "Lan" not in result.script:
+              raise SystemExit("Character identity was not preserved")
+          normalized = result.script.casefold()
+          if "thư" not in normalized:
+              raise SystemExit("The letter event is missing from Vietnamese script")
+
+          output = {
+              "script": result.script,
+              "brief": {
+                  "characters": result.brief.characters,
+                  "events": result.brief.events,
+                  "must_preserve": result.brief.must_preserve,
+              },
+              "review": {
+                  "passed": result.review.passed,
+                  "issues": result.review.issues,
+                  "checks": result.review.checks,
+                  "reviewer": result.review.reviewer,
+              },
+              "revision_count": result.revision_count,
+              "evidence": result.evidence,
+          }
+          Path("narrative-quality-output/result.json").write_text(
+              json.dumps(output, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("KAGGLE_NARRATIVE_QUALITY_OK")
+          print(f"Review passed: {result.review.passed}")
+          print(f"Revisions: {result.revision_count}")
+          print("Vietnamese script:", result.script)
+          for item in result.evidence:
+              print(item)
+          PY
+
+      - name: Upload narrative evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-narrative-quality-output
+          path: narrative-quality-output/
+          if-no-files-found: warn
+          retention-days: 7
