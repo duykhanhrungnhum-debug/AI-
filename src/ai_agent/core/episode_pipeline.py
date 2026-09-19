@@ -1,11 +1,12 @@
 """Compose verified script, scene planning, image batch, TTS, and video assembly."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
+from .audio_quality import AudioQualityReport, AudioSignalVerifier
 from .image_model import ImageArtifact
 from .kaggle_image_batch import (
     BatchImageResult,
@@ -33,13 +34,19 @@ class MediaProductionResult:
     scene_plan: VisualScenePlan
     images: BatchImageResult
     audio: AudioArtifact
+    audio_quality: AudioQualityReport
     video: VideoArtifact
     output_dir: str
     evidence: tuple[str, ...]
 
     @property
     def media_ready(self) -> bool:
-        return self.images.verified and self.video.has_video and self.video.has_audio
+        return (
+            self.images.verified
+            and self.audio_quality.passed
+            and self.video.has_video
+            and self.video.has_audio
+        )
 
 
 @dataclass
@@ -51,6 +58,7 @@ class MediaProductionPipeline:
     image_width: int = 768
     image_height: int = 432
     max_image_rounds: int = 2
+    audio_verifier: AudioSignalVerifier = field(default_factory=AudioSignalVerifier)
 
     def __post_init__(self) -> None:
         if self.image_width <= 0 or self.image_height <= 0:
@@ -109,6 +117,11 @@ class MediaProductionPipeline:
         audio = self.speech_provider.synthesize(verified_script)
         audio_path = target / "narration.wav"
         audio_path.write_bytes(audio.data)
+        audio_quality = self.audio_verifier.verify(audio)
+        if not audio_quality.passed:
+            raise RuntimeError(
+                "audio verification failed: " + "; ".join(audio_quality.issues)
+            )
 
         video_path = target / "video.mp4"
         video = self.video_builder.build(image_paths, str(audio_path), str(video_path))
@@ -119,12 +132,14 @@ class MediaProductionPipeline:
             f"image_rounds:{image_result.rounds}",
             *image_evidence,
             *audio.evidence,
+            *audio_quality.evidence,
             *video.evidence,
         )
         return MediaProductionResult(
             scene_plan=scene_plan,
             images=image_result,
             audio=audio,
+            audio_quality=audio_quality,
             video=video,
             output_dir=str(target),
             evidence=evidence,

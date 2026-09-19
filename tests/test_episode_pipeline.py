@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from ai_agent.core.audio_quality import AudioQualityReport
 from ai_agent.core.episode_pipeline import MediaProductionPipeline
 from ai_agent.core.image_model import ImageArtifact
 from ai_agent.core.kaggle_image_batch import BatchImageResult, SceneImageResult
@@ -55,6 +56,18 @@ class FakeSpeech:
         )
 
 
+class FakeAudioVerifier:
+    def verify(self, artifact):
+        return AudioQualityReport(
+            passed=True,
+            issues=(),
+            rms_ratio=0.1,
+            peak_ratio=0.5,
+            silence_ratio=0.1,
+            evidence=("audio_signal:verified",),
+        )
+
+
 class FakeVideo:
     def build(self, image_paths, audio_path, output_path):
         assert len(image_paths) == 2
@@ -78,6 +91,7 @@ def test_media_pipeline_connects_script_to_verified_media(tmp_path):
         image_provider=images,
         speech_provider=FakeSpeech(),
         video_builder=FakeVideo(),
+        audio_verifier=FakeAudioVerifier(),
     )
 
     result = pipeline.produce("Đây là kịch bản đã được kiểm tra.", tmp_path)
@@ -92,5 +106,7 @@ def test_media_pipeline_connects_script_to_verified_media(tmp_path):
     assert (tmp_path / "video.mp4").exists()
     assert any(item.startswith("script_sha256:") for item in result.evidence)
     assert "scene_count:2" in result.evidence
+    assert result.audio_quality.passed is True
     assert "audio:verified" in result.evidence
+    assert "audio_signal:verified" in result.evidence
     assert "video:verified" in result.evidence

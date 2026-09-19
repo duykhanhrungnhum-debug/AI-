@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/hidden-beyond-media-e2e.yml"
+      - "src/ai_agent/core/audio_quality.py"
+      - "src/ai_agent/core/episode_pipeline.py"
 
 permissions:
   contents: read
@@ -137,6 +139,8 @@ jobs:
               raise SystemExit("End-to-end media result is not media_ready")
           if result.audio.duration_seconds <= 1.0:
               raise SystemExit("Piper narration is unexpectedly short")
+          if not result.audio_quality.passed:
+              raise SystemExit(f"Audio signal verification failed: {result.audio_quality.issues}")
           if result.video.duration_seconds <= 1.0:
               raise SystemExit("FFmpeg video is unexpectedly short")
           if result.video.width != 1280 or result.video.height != 720:
@@ -152,6 +156,14 @@ jobs:
                   "sample_rate": result.audio.sample_rate,
                   "channels": result.audio.channels,
                   "evidence": result.audio.evidence,
+                  "signal_quality": {
+                      "passed": result.audio_quality.passed,
+                      "issues": result.audio_quality.issues,
+                      "rms_ratio": result.audio_quality.rms_ratio,
+                      "peak_ratio": result.audio_quality.peak_ratio,
+                      "silence_ratio": result.audio_quality.silence_ratio,
+                      "evidence": result.audio_quality.evidence,
+                  },
               },
               "video": {
                   "path": result.video.path,
@@ -180,6 +192,8 @@ jobs:
           print("HIDDEN_BEYOND_MEDIA_E2E_OK")
           print(f"Scenes: {len(result.scene_plan.scenes)}")
           print(f"Piper seconds: {result.audio.duration_seconds:.3f}")
+          print(f"Audio RMS ratio: {result.audio_quality.rms_ratio:.6f}")
+          print(f"Audio silence ratio: {result.audio_quality.silence_ratio:.6f}")
           print(f"Video seconds: {result.video.duration_seconds:.3f}")
           print(f"Video resolution: {result.video.width}x{result.video.height}")
           for evidence in result.video.evidence:
