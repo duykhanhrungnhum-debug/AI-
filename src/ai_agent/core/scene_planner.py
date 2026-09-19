@@ -50,8 +50,16 @@ class ScenePlanner:
             f"SCRIPT:\n{script}"
         )
         response = self.provider.generate(prompt)
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
         try:
-            data = json.loads(response.text.strip())
+            data = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError("scene plan must be valid JSON") from exc
         if not isinstance(data, dict) or not isinstance(data.get("scenes"), list):

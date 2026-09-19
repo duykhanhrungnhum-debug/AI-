@@ -65,3 +65,28 @@ def test_scene_planner_enforces_scene_limit():
 
     with pytest.raises(ValueError, match="max_scenes"):
         ScenePlanner(model, max_scenes=2).plan("story")
+
+
+def test_scene_planner_accepts_json_code_fence():
+    payload = {
+        "scenes": [
+            {
+                "scene_id": "s1",
+                "narration": "Một cảnh.",
+                "image_prompt": "a dark hallway",
+                "negative_prompt": "",
+            }
+        ]
+    }
+
+    class FencedModel:
+        def generate(self, prompt):
+            return ModelResponse(
+                "```json\n" + json.dumps(payload) + "\n```",
+                "fake",
+                "model",
+            )
+
+    plan = ScenePlanner(FencedModel()).plan("Một câu chuyện.")
+    assert len(plan.scenes) == 1
+    assert "16:9 widescreen composition" in plan.scenes[0].image_prompt
