@@ -67,3 +67,29 @@ def test_runtime_factory_wires_local_provider(tmp_path):
     )
 
     assert isinstance(runtime.model_agent.provider, OllamaModel)
+
+
+def test_model_factory_builds_kaggle_open_model_provider():
+    from ai_agent.core.kaggle_model import KaggleModelProvider
+
+    settings = ModelSettings.from_env({
+        "AI_MODEL_PROVIDER": "kaggle",
+        "KAGGLE_API_TOKEN": "KGAT_test_secret",
+        "KAGGLE_USERNAME": "duykhanhta",
+        "KAGGLE_LLM_KERNEL_SLUG": "ai-agent-test-llm",
+    })
+    provider = build_model_provider(settings)
+
+    assert isinstance(provider, KaggleModelProvider)
+    assert provider.model == "Qwen/Qwen2.5-3B-Instruct"
+    assert provider.kernel_slug == "ai-agent-test-llm"
+    assert provider.worker.username == "duykhanhta"
+
+
+def test_model_factory_requires_kaggle_username():
+    with pytest.raises(ValueError, match="KAGGLE_USERNAME"):
+        build_model_provider(ModelSettings(
+            provider="kaggle",
+            model="Qwen/Qwen2.5-3B-Instruct",
+            api_key="KGAT_test_secret",
+        ))
