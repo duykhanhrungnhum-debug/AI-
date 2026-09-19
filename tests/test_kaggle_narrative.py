@@ -88,6 +88,7 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     assert "unknown fact ID" in source
     assert "for fact_id in sorted(omitted)" in source
     assert '"preserved": False' in source
+    assert 'normalized_checks.append({' in source
 
 
 def test_default_editorial_lessons_capture_known_failure_modes():

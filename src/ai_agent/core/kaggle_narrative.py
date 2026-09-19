@@ -384,11 +384,11 @@ class KaggleNarrativeProcessor:
                 omitted = expected_ids - seen_ids
                 for fact_id in sorted(omitted):
                     failed_ids.append(fact_id)
-                    normalized_checks.append({
+                    normalized_checks.append({{
                         "fact_id": fact_id,
                         "preserved": False,
                         "script_evidence": "",
-                    })
+                    }})
 
                 normalized_contradictions = []
                 contradiction_ids = []
