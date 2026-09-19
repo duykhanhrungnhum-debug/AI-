@@ -1,0 +1,99 @@
+name: Kaggle Local LLM Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggle-local-llm-smoke.yml"
+      - "src/ai_agent/core/kaggle_model.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-local-llm-smoke
+  cancel-in-progress: false
+
+jobs:
+  local-llm-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "KAGGLE_API_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Install AI package
+        run: python -m pip install -e .
+
+      - name: Run AI-'s open LLM on Kaggle T4
+        run: |
+          mkdir -p kaggle-llm-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from ai_agent.core.kaggle_model import KaggleModelProvider
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+          )
+          provider = KaggleModelProvider(
+              worker=worker,
+              model="Qwen/Qwen2.5-3B-Instruct",
+              kernel_slug="ai-agent-local-llm-smoke",
+              poll_interval=15,
+              max_poll_attempts=120,
+              max_new_tokens=64,
+              temperature=0.0,
+          )
+          result = provider.generate_many([
+              "Reply with the exact marker LOCAL_LLM_OK and no explanation.",
+              "Translate into natural Vietnamese and return only the translation: The old house was silent.",
+          ])
+          texts = [response.text for response in result.responses]
+          if "LOCAL_LLM_OK" not in texts[0]:
+              raise SystemExit(f"Local LLM marker missing: {texts[0]!r}")
+          if not texts[1].strip():
+              raise SystemExit("Vietnamese translation response is empty")
+
+          Path("kaggle-llm-output/result.json").write_text(
+              json.dumps({
+                  "responses": texts,
+                  "evidence": result.evidence,
+              }, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("KAGGLE_LOCAL_LLM_SMOKE_OK")
+          print("Marker:", texts[0])
+          print("Vietnamese:", texts[1])
+          for item in result.evidence:
+              print(item)
+          PY
+
+      - name: Upload LLM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-local-llm-smoke-output
+          path: kaggle-llm-output/
+          if-no-files-found: warn
