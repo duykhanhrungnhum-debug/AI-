@@ -41,9 +41,10 @@ class KaggleImageProvider:
             raise ValueError("image dimensions must be divisible by 8")
 
         source = self._build_worker_source(request)
+        kernel_title = self.kernel_slug.replace("-", " ").title()
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
-            title="AI Agent Image Worker",
+            title=kernel_title,
             source=source,
             enable_internet=True,
             is_private=True,

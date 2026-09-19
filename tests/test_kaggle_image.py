@@ -63,6 +63,7 @@ def test_kaggle_image_provider_runs_open_model_and_verifies_evidence(monkeypatch
 
     assert worker.submitted["enable_internet"] is True
     assert worker.submitted["is_private"] is True
+    assert worker.submitted["title"] == "Ai Agent Image Worker"
     assert "StableDiffusionPipeline.from_pretrained" in worker.submitted["source"]
     assert artifact.data == b"PNG-BYTES"
     assert artifact.provider == "kaggle-gpu-local-model"
