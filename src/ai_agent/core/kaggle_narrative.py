@@ -489,7 +489,7 @@ class KaggleNarrativeProcessor:
                     }})
 
                 adjudicated_fact_ids = []
-                semantic_scores = {}
+                semantic_scores = {{}}
                 if failed_ids:
                     confirmed_failed_ids = []
                     for fact_id in failed_ids:
