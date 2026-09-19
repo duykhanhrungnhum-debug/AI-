@@ -6,6 +6,7 @@ articles, or other narrative material without coupling that project to AI-.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 import re
 
@@ -25,6 +26,7 @@ class ScriptQualityReport:
     passed: bool
     issues: tuple[str, ...]
     checks: tuple[str, ...]
+    reviewer: str
 
 
 @dataclass(frozen=True)
@@ -38,10 +40,17 @@ class NarrativeResult:
 class NarrativeProcessor:
     """Analyze, rewrite, review, and bounded-repair narrative text."""
 
-    def __init__(self, provider: ModelProvider, *, max_revisions: int = 2):
+    def __init__(
+        self,
+        provider: ModelProvider,
+        *,
+        review_provider: ModelProvider | None = None,
+        max_revisions: int = 2,
+    ):
         if max_revisions < 0:
             raise ValueError("max_revisions must be non-negative")
         self.provider = provider
+        self.review_provider = review_provider or provider
         self.max_revisions = max_revisions
 
     def process(self, source_text: str, *, target_language: str = "Vietnamese") -> NarrativeResult:
@@ -57,9 +66,22 @@ class NarrativeProcessor:
         review = self._review(source_text, brief, script)
 
         revisions = 0
+        seen_scripts = {self._fingerprint(script)}
         while not review.passed and revisions < self.max_revisions:
-            script = self._revise(source_text, brief, script, review, target_language)
+            repaired = self._revise(source_text, brief, script, review, target_language)
             revisions += 1
+            fingerprint = self._fingerprint(repaired)
+            if fingerprint in seen_scripts:
+                review = ScriptQualityReport(
+                    passed=False,
+                    issues=tuple(dict.fromkeys((*review.issues, "repair loop detected: repeated script"))),
+                    checks=review.checks,
+                    reviewer=review.reviewer,
+                )
+                script = repaired
+                break
+            seen_scripts.add(fingerprint)
+            script = repaired
             review = self._review(source_text, brief, script)
 
         return NarrativeResult(brief=brief, script=script, review=review, revision_count=revisions)
@@ -71,7 +93,7 @@ class NarrativeProcessor:
             "Return ONLY JSON with keys characters, events, must_preserve; each value must be an array of strings. "
             "Do not translate or rewrite yet.\nSOURCE:\n" + source_text
         )
-        data = self._json_response(prompt, "narrative analysis")
+        data = self._json_response(self.provider, prompt, "narrative analysis")
         return NarrativeBrief(
             characters=self._string_tuple(data.get("characters"), "characters"),
             events=self._string_tuple(data.get("events"), "events"),
@@ -97,24 +119,31 @@ class NarrativeProcessor:
             "NARRATIVE_REVIEW\n"
             "Compare SCRIPT against SOURCE and BRIEF. Check wrong meaning, changed character identity, missing or reordered "
             "major events, invented facts, contradictions, nonsense, and excessive repetition. "
-            "Return ONLY JSON: {\"passed\": true|false, \"issues\": [strings]}. "
+            'Return ONLY JSON: {"passed": true|false, "issues": [strings]}. '
             "passed may be true only when no material issue is found.\n"
             f"BRIEF:\n{self._brief_json(brief)}\nSOURCE:\n{source_text}\nSCRIPT:\n{script}"
         )
-        data = self._json_response(prompt, "narrative review")
+        response = self.review_provider.generate(prompt)
+        data = self._parse_json(response.text, "narrative review")
         model_passed = data.get("passed")
         if not isinstance(model_passed, bool):
             raise ValueError("narrative review passed must be boolean")
         model_issues = self._string_tuple(data.get("issues"), "issues")
 
         issues = tuple(dict.fromkeys((*deterministic, *model_issues)))
+        reviewer = f"{response.provider}/{response.model}"
         checks = (
             "deterministic:non_empty",
             "deterministic:no_exact_duplicate_paragraphs",
             "deterministic:no_placeholder_markers",
-            "model:fidelity_and_coherence_review",
+            "review:fidelity_and_coherence",
         )
-        return ScriptQualityReport(passed=(not issues and model_passed), issues=issues, checks=checks)
+        return ScriptQualityReport(
+            passed=(not issues and model_passed),
+            issues=issues,
+            checks=checks,
+            reviewer=reviewer,
+        )
 
     def _revise(
         self,
@@ -136,10 +165,13 @@ class NarrativeProcessor:
             raise ValueError("model returned an empty repaired script")
         return text
 
-    def _json_response(self, prompt: str, label: str) -> dict:
-        raw = self.provider.generate(prompt).text.strip()
+    def _json_response(self, provider: ModelProvider, prompt: str, label: str) -> dict:
+        return self._parse_json(provider.generate(prompt).text, label)
+
+    @staticmethod
+    def _parse_json(raw: str, label: str) -> dict:
         try:
-            data = json.loads(raw)
+            data = json.loads(raw.strip())
         except json.JSONDecodeError as exc:
             raise ValueError(f"{label} must be valid JSON") from exc
         if not isinstance(data, dict):
@@ -159,6 +191,11 @@ class NarrativeProcessor:
             "events": brief.events,
             "must_preserve": brief.must_preserve,
         }, ensure_ascii=False)
+
+    @staticmethod
+    def _fingerprint(script: str) -> str:
+        normalized = re.sub(r"\s+", " ", script).strip().casefold()
+        return sha256(normalized.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _deterministic_issues(script: str) -> tuple[str, ...]:

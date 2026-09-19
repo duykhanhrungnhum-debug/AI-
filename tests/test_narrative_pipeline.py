@@ -85,3 +85,36 @@ def test_narrative_pipeline_stops_after_revision_limit():
     assert result.review.passed is False
     assert result.revision_count == 1
     assert result.review.issues == ("still wrong",)
+
+def test_narrative_pipeline_detects_repair_loop():
+    model = QueueModel([
+        analysis(),
+        "Lan tìm thấy thư. Minh biến mất.",
+        json.dumps({"passed": False, "issues": ["Minh's explanation is missing"]}),
+        "Lan tìm thấy thư. Minh biến mất.",
+    ])
+
+    result = NarrativeProcessor(model, max_revisions=3).process("Lan finds a letter. Minh explains the secret.")
+
+    assert result.review.passed is False
+    assert result.revision_count == 1
+    assert "repair loop detected: repeated script" in result.review.issues
+
+
+def test_narrative_pipeline_can_use_separate_reviewer():
+    writer = QueueModel([
+        analysis(),
+        "Lan tìm thấy lá thư. Minh giải thích bí mật.",
+    ])
+    reviewer = QueueModel([
+        json.dumps({"passed": True, "issues": []}),
+    ])
+
+    result = NarrativeProcessor(writer, review_provider=reviewer).process(
+        "Lan finds a letter. Minh explains the secret."
+    )
+
+    assert result.review.passed is True
+    assert len(writer.prompts) == 2
+    assert len(reviewer.prompts) == 1
+    assert reviewer.prompts[0].startswith("NARRATIVE_REVIEW")
