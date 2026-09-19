@@ -1,0 +1,158 @@
+name: Kaggle GPU Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggle-gpu-smoke.yml"
+      - "kaggle/gpu-smoke/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-smoke
+  cancel-in-progress: false
+
+jobs:
+  gpu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle API token
+        shell: bash
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "KAGGLE_API_TOKEN repository secret is not configured."
+            exit 1
+          fi
+
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade "kaggle>=2.1.0,<3"
+
+      - name: Resolve authenticated Kaggle username
+        id: kaggle-user
+        shell: bash
+        run: |
+          USERNAME="$(python - <<'PY'
+          import os
+          from kagglesdk.kaggle_client import KaggleClient
+          from kagglesdk.kaggle_creds import KaggleCredentials
+
+          token = os.environ["KAGGLE_API_TOKEN"]
+          client = KaggleClient(user_agent="ai-agent-github-actions/0.1")
+          credentials = KaggleCredentials(client, access_token=token)
+          print(credentials.introspect())
+          PY
+          )"
+          if [ -z "$USERNAME" ]; then
+            echo "Could not resolve Kaggle username from API token."
+            exit 1
+          fi
+          echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
+          echo "Authenticated Kaggle account resolved."
+
+      - name: Prepare private GPU kernel metadata
+        env:
+          KAGGLE_USERNAME: ${{ steps.kaggle-user.outputs.username }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("kaggle/gpu-smoke/kernel-metadata.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          data["id"] = f"{os.environ['KAGGLE_USERNAME']}/ai-agent-gpu-smoke"
+          path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          print("Prepared private Kaggle GPU smoke kernel metadata.")
+          PY
+
+      - name: Push and start Kaggle GPU kernel
+        run: |
+          kaggle kernels push             -p kaggle/gpu-smoke             --accelerator NvidiaTeslaT4             -t 600
+
+      - name: Wait for Kaggle GPU kernel
+        env:
+          KERNEL_REF: ${{ steps.kaggle-user.outputs.username }}/ai-agent-gpu-smoke
+        shell: bash
+        run: |
+          completed=0
+          for attempt in $(seq 1 60); do
+            set +e
+            status="$(kaggle kernels status "$KERNEL_REF" 2>&1)"
+            rc=$?
+            set -e
+            echo "Poll $attempt: $status"
+
+            if [ "$rc" -ne 0 ]; then
+              echo "Kaggle status command failed."
+              exit "$rc"
+            fi
+
+            if echo "$status" | grep -qiE "error|failed|cancel"; then
+              echo "Kaggle kernel failed."
+              exit 1
+            fi
+
+            if echo "$status" | grep -qiE "complete"; then
+              completed=1
+              break
+            fi
+
+            sleep 15
+          done
+
+          if [ "$completed" -ne 1 ]; then
+            echo "Timed out waiting for Kaggle GPU kernel."
+            exit 1
+          fi
+
+      - name: Download Kaggle GPU evidence
+        env:
+          KERNEL_REF: ${{ steps.kaggle-user.outputs.username }}/ai-agent-gpu-smoke
+        run: |
+          mkdir -p kaggle-output
+          kaggle kernels output "$KERNEL_REF" -p kaggle-output -o
+
+      - name: Verify GPU evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report_path = Path("kaggle-output/gpu_report.json")
+          if not report_path.exists():
+              raise SystemExit("gpu_report.json was not returned by Kaggle")
+
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          if report.get("gpu_available") is not True:
+              raise SystemExit(f"GPU smoke test failed: {report}")
+          if not str(report.get("gpu_name", "")).strip():
+              raise SystemExit("GPU report does not contain a GPU name")
+
+          print("KAGGLE_GPU_SMOKE_OK")
+          print(f"GPU: {report['gpu_name']}")
+          print(f"GPU memory MiB: {report.get('memory_total_mib')}")
+          print(f"CUDA visible devices: {report.get('cuda_visible_devices')}")
+          PY
+
+      - name: Upload GPU smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-gpu-smoke-evidence
+          path: kaggle-output/
+          if-no-files-found: warn

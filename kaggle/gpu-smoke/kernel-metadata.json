@@ -1,0 +1,15 @@
+{
+  "id": "__KAGGLE_USERNAME__/ai-agent-gpu-smoke",
+  "title": "AI Agent GPU Smoke",
+  "code_file": "gpu_smoke.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "machine_shape": "NvidiaTeslaT4",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
