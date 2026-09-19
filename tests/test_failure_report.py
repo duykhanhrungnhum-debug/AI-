@@ -1,3 +1,5 @@
+import json
+
 from ai_agent.core.failure_report import FailureReport
 
 
