@@ -1,0 +1,104 @@
+name: Kaggle Image Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggle-image-smoke.yml"
+      - "src/ai_agent/core/kaggle_image.py"
+      - "src/ai_agent/core/kaggle_worker.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-image-smoke
+  cancel-in-progress: false
+
+jobs:
+  image-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "KAGGLE_API_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Install AI package
+        run: python -m pip install -e .
+
+      - name: Generate one real image on Kaggle T4
+        run: |
+          mkdir -p kaggle-image-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from ai_agent.core.image_model import ImageGenerationRequest
+          from ai_agent.core.kaggle_image import KaggleImageProvider
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+          )
+          provider = KaggleImageProvider(
+              worker=worker,
+              kernel_slug="ai-agent-image-smoke",
+              poll_interval=15,
+              max_poll_attempts=120,
+              inference_steps=20,
+          )
+          request = ImageGenerationRequest(
+              prompt=(
+                  "cinematic mysterious abandoned mansion at night, fog, moonlight, "
+                  "dramatic shadows, detailed environment, no people, 16:9 composition"
+              ),
+              negative_prompt="text, watermark, logo, blurry, low quality",
+              width=512,
+              height=512,
+              seed=42,
+          )
+          artifact = provider.generate(request)
+
+          image_path = Path("kaggle-image-output/generated.png")
+          image_path.write_bytes(artifact.data)
+          Path("kaggle-image-output/evidence.json").write_text(
+              json.dumps({
+                  "provider": artifact.provider,
+                  "model": artifact.model,
+                  "evidence": artifact.evidence,
+                  "size_bytes": len(artifact.data),
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("KAGGLE_IMAGE_SMOKE_OK")
+          print(f"Image bytes: {len(artifact.data)}")
+          for item in artifact.evidence:
+              print(item)
+          PY
+
+      - name: Upload generated image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-image-smoke-output
+          path: kaggle-image-output/
+          if-no-files-found: warn
