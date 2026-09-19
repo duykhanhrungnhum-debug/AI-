@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 45
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      KERNEL_REF: duykhanhta/ai-agent-gpu-smoke
 
     steps:
       - name: Checkout
@@ -42,29 +44,7 @@ jobs:
       - name: Install Kaggle CLI
         run: python -m pip install --upgrade "kaggle>=2.1.0,<3"
 
-      - name: Resolve authenticated Kaggle username
-        id: kaggle-user
-        shell: bash
-        run: |
-          USERNAME="$(python - <<'PY'
-          import kaggle
-
-          username = kaggle.api.config_values.get(kaggle.api.CONFIG_NAME_USER)
-          if not username:
-              raise SystemExit("Kaggle CLI did not resolve a username from KAGGLE_API_TOKEN")
-          print(username)
-          PY
-          )"
-          if [ -z "$USERNAME" ]; then
-            echo "Could not resolve Kaggle username from API token."
-            exit 1
-          fi
-          echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
-          echo "Authenticated Kaggle account resolved through Kaggle CLI."
-
       - name: Prepare private GPU kernel metadata
-        env:
-          KAGGLE_USERNAME: ${{ steps.kaggle-user.outputs.username }}
         run: |
           python - <<'PY'
           import json
@@ -80,11 +60,12 @@ jobs:
 
       - name: Push and start Kaggle GPU kernel
         run: |
-          kaggle kernels push             -p kaggle/gpu-smoke             --accelerator NvidiaTeslaT4             -t 600
+          kaggle kernels push \
+            -p kaggle/gpu-smoke \
+            --accelerator NvidiaTeslaT4 \
+            -t 600
 
       - name: Wait for Kaggle GPU kernel
-        env:
-          KERNEL_REF: ${{ steps.kaggle-user.outputs.username }}/ai-agent-gpu-smoke
         shell: bash
         run: |
           completed=0
@@ -119,8 +100,6 @@ jobs:
           fi
 
       - name: Download Kaggle GPU evidence
-        env:
-          KERNEL_REF: ${{ steps.kaggle-user.outputs.username }}/ai-agent-gpu-smoke
         run: |
           mkdir -p kaggle-output
           kaggle kernels output "$KERNEL_REF" -p kaggle-output -o
