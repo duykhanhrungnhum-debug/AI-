@@ -58,6 +58,9 @@ def test_kaggle_narrative_runs_full_cycle_in_one_model_load():
     assert generated.count("AutoModelForCausalLM.from_pretrained") == 1
     assert "NARRATIVE_FACT_REVIEW" in generated
     assert "NARRATIVE_FACT_ADJUDICATION" in generated
+    assert "SentenceTransformer" in generated
+    assert "semantic_adjudicate_fact" in generated
+    assert "semantic_threshold" in generated
     assert "exact contiguous substring copied from SCRIPT" in generated
     assert "NARRATIVE_TARGETED_REPAIR" in generated
     assert "NARRATIVE_REBUILD_FROM_FACTS" in generated
@@ -100,3 +103,10 @@ def test_default_editorial_lessons_capture_known_failure_modes():
     assert "source checklist" in joined
     assert "unchanged" in joined
     assert "rebuild" in joined
+
+
+def test_kaggle_narrative_semantic_verifier_defaults_are_bounded():
+    processor = KaggleNarrativeProcessor(worker=FakeWorker({}), poll_interval=0)
+
+    assert processor.semantic_model == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    assert 0 < processor.semantic_threshold <= 1

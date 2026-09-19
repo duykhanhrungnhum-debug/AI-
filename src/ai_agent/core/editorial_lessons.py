@@ -6,4 +6,5 @@ DEFAULT_EDITORIAL_LESSONS: tuple[str, ...] = (
     "Never mark a required event missing when the script contains evidence for that event.",
     "A repair must make a concrete change for every failed fact ID; do not repeat an unchanged script.",
     "When a targeted repair repeats the same script, switch strategy and rebuild from the verified fact checklist.",
+    "Do not trust self-review alone for cross-language fact preservation; require independent semantic evidence.",
 )

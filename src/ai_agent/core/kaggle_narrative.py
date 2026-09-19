@@ -26,6 +26,8 @@ class KaggleNarrativeProcessor:
     max_revisions: int = 2
     temperature: float = 0.0
     provider: str = "kaggle-gpu-open-model"
+    semantic_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    semantic_threshold: float = 0.62
     lessons: tuple[str, ...] = field(default_factory=lambda: DEFAULT_EDITORIAL_LESSONS)
 
     def __post_init__(self) -> None:
@@ -39,6 +41,10 @@ class KaggleNarrativeProcessor:
             raise ValueError("max_revisions must be non-negative")
         if self.temperature < 0:
             raise ValueError("temperature must be non-negative")
+        if not self.semantic_model.strip():
+            raise ValueError("semantic_model is required")
+        if not 0 < self.semantic_threshold <= 1:
+            raise ValueError("semantic_threshold must be in (0, 1]")
         if any(not lesson.strip() for lesson in self.lessons):
             raise ValueError("editorial lessons must be non-empty")
 
@@ -108,6 +114,18 @@ class KaggleNarrativeProcessor:
             not isinstance(item, str) for item in adjudicated_fact_ids
         ):
             raise ValueError("Kaggle narrative adjudicated_fact_ids is invalid")
+        semantic_scores = review_data.get("semantic_scores", {})
+        if not isinstance(semantic_scores, dict) or any(
+            not isinstance(key, str)
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            for key, value in semantic_scores.items()
+        ):
+            raise ValueError("Kaggle narrative semantic_scores is invalid")
+        semantic_score_evidence = ",".join(
+            f"{key}={float(value):.3f}"
+            for key, value in sorted(semantic_scores.items())
+        ) or "none"
         review = ScriptQualityReport(
             passed=(model_passed and not issues),
             issues=tuple(issues),
@@ -116,6 +134,7 @@ class KaggleNarrativeProcessor:
                 "deterministic:no_exact_duplicate_paragraphs",
                 "deterministic:no_placeholder_markers",
                 "review:fact_id_checklist",
+                "review:multilingual_semantic_fact_adjudication",
                 "review:fact_bound_contradictions",
             ),
             reviewer=f"{self.provider}/{self.model}",
@@ -142,6 +161,8 @@ class KaggleNarrativeProcessor:
                 f"script_revisions:{revisions}",
                 f"editorial_lessons_applied:{len(self.lessons)}",
                 f"review_adjudicated_fact_ids:{','.join(adjudicated_fact_ids) if adjudicated_fact_ids else 'none'}",
+                f"review_semantic_scores:{semantic_score_evidence}",
+                f"semantic_model:{self.semantic_model}",
                 f"repair_strategies:{','.join(strategy_history) if strategy_history else 'none'}",
             ),
         )
@@ -199,6 +220,8 @@ class KaggleNarrativeProcessor:
             "target_language": target_language,
             "max_revisions": self.max_revisions,
             "temperature": self.temperature,
+            "semantic_model": self.semantic_model,
+            "semantic_threshold": self.semantic_threshold,
             "lessons": list(self.lessons),
         }
         config_json = json.dumps(config, ensure_ascii=False)
@@ -217,13 +240,16 @@ class KaggleNarrativeProcessor:
 
             try:
                 import torch
+                from sentence_transformers import SentenceTransformer
                 from transformers import AutoModelForCausalLM, AutoTokenizer
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
                     "transformers<5", "accelerate<2", "safetensors", "sentencepiece",
+                    "sentence-transformers>=3,<4",
                 ])
                 import torch
+                from sentence_transformers import SentenceTransformer
                 from transformers import AutoModelForCausalLM, AutoTokenizer
 
             if not torch.cuda.is_available():
@@ -235,6 +261,10 @@ class KaggleNarrativeProcessor:
                 CONFIG["model"],
                 torch_dtype=torch.float16,
                 device_map="auto",
+            )
+            semantic_model = SentenceTransformer(
+                CONFIG["semantic_model"],
+                device="cuda",
             )
 
             def generate(prompt, max_new_tokens):
@@ -338,6 +368,31 @@ class KaggleNarrativeProcessor:
             )
             script = generate(draft_prompt, 1400).strip()
 
+            def semantic_adjudicate_fact(fact_id, current):
+                fact = fact_by_id[fact_id]
+                segments = [
+                    item.strip()
+                    for item in re.split(r"(?<=[.!?])\s+|\n+", current)
+                    if item.strip()
+                ]
+                if not segments:
+                    return False, "", 0.0
+                embeddings = semantic_model.encode(
+                    [fact["fact"], *segments],
+                    convert_to_tensor=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+                scores = torch.matmul(embeddings[1:], embeddings[0])
+                best_index = int(torch.argmax(scores).item())
+                best_score = float(scores[best_index].item())
+                evidence = segments[best_index]
+                return (
+                    best_score >= float(CONFIG["semantic_threshold"]),
+                    evidence,
+                    best_score,
+                )
+
             def adjudicate_fact(fact_id, current):
                 fact = fact_by_id[fact_id]
                 adjudication_prompt = (
@@ -434,11 +489,20 @@ class KaggleNarrativeProcessor:
                     }})
 
                 adjudicated_fact_ids = []
+                semantic_scores = {}
                 if failed_ids:
                     confirmed_failed_ids = []
                     for fact_id in failed_ids:
-                        preserved, evidence = adjudicate_fact(fact_id, current)
+                        semantic_preserved, semantic_evidence, semantic_score = (
+                            semantic_adjudicate_fact(fact_id, current)
+                        )
+                        semantic_scores[fact_id] = round(semantic_score, 6)
                         adjudicated_fact_ids.append(fact_id)
+                        if semantic_preserved:
+                            preserved = True
+                            evidence = semantic_evidence
+                        else:
+                            preserved, evidence = adjudicate_fact(fact_id, current)
                         if preserved:
                             for check in normalized_checks:
                                 if check["fact_id"] == fact_id:
@@ -482,6 +546,7 @@ class KaggleNarrativeProcessor:
                     "issues": issues,
                     "checks": normalized_checks,
                     "adjudicated_fact_ids": adjudicated_fact_ids,
+                    "semantic_scores": semantic_scores,
                     "failed_fact_ids": failed_ids,
                     "contradictions": normalized_contradictions,
                     "contradiction_fact_ids": contradiction_ids,
@@ -561,6 +626,7 @@ class KaggleNarrativeProcessor:
                 "revision_count": revisions,
                 "failed_fact_ids": review["failed_fact_ids"],
                 "adjudicated_fact_ids": review["adjudicated_fact_ids"],
+                "semantic_scores": review["semantic_scores"],
                 "contradiction_fact_ids": review["contradiction_fact_ids"],
                 "strategy_history": strategy_history,
                 "gpu_name": gpu_name,
