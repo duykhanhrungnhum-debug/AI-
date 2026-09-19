@@ -382,8 +382,13 @@ class KaggleNarrativeProcessor:
 
                 expected_ids = set(fact_by_id)
                 omitted = expected_ids - seen_ids
-                if omitted:
-                    raise RuntimeError("review omitted fact IDs: " + ", ".join(sorted(omitted)))
+                for fact_id in sorted(omitted):
+                    failed_ids.append(fact_id)
+                    normalized_checks.append({
+                        "fact_id": fact_id,
+                        "preserved": False,
+                        "script_evidence": "",
+                    })
 
                 normalized_contradictions = []
                 contradiction_ids = []

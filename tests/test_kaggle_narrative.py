@@ -86,6 +86,8 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     assert source.startswith("from __future__ import annotations")
     assert "repair loop detected after strategy switch" in source
     assert "unknown fact ID" in source
+    assert "for fact_id in sorted(omitted)" in source
+    assert '"preserved": False' in source
 
 
 def test_default_editorial_lessons_capture_known_failure_modes():
