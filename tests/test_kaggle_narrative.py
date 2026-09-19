@@ -1,6 +1,7 @@
 import hashlib
 import json
 
+from ai_agent.core.editorial_lessons import DEFAULT_EDITORIAL_LESSONS
 from ai_agent.core.kaggle_narrative import KaggleNarrativeProcessor
 from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
 
@@ -22,7 +23,7 @@ class FakeWorker:
         return json.dumps(self.result, ensure_ascii=False).encode()
 
 
-def make_result(source, script, *, passed=True, issues=None):
+def make_result(source, script, *, passed=True, issues=None, strategies=None):
     return {
         "model": "Qwen/Qwen2.5-3B-Instruct",
         "gpu_name": "Tesla T4",
@@ -34,11 +35,9 @@ def make_result(source, script, *, passed=True, issues=None):
             "must_preserve": ["the letter has no sender"],
         },
         "script": script,
-        "review": {
-            "passed": passed,
-            "issues": issues or [],
-        },
+        "review": {"passed": passed, "issues": issues or []},
         "revision_count": 1,
+        "strategy_history": strategies or ["targeted_repair"],
     }
 
 
@@ -54,11 +53,13 @@ def test_kaggle_narrative_runs_full_cycle_in_one_model_load():
     assert result.script == script
     assert result.revision_count == 1
     assert "gpu:Tesla T4" in result.evidence
-    assert worker.submitted["source"].count("AutoModelForCausalLM.from_pretrained") == 1
-    assert "NARRATIVE_ANALYSIS" in worker.submitted["source"]
-    assert "NARRATIVE_REWRITE" in worker.submitted["source"]
-    assert "NARRATIVE_REVIEW" in worker.submitted["source"]
-    assert "NARRATIVE_REPAIR" in worker.submitted["source"]
+    assert f"editorial_lessons_applied:{len(DEFAULT_EDITORIAL_LESSONS)}" in result.evidence
+    generated = worker.submitted["source"]
+    assert generated.count("AutoModelForCausalLM.from_pretrained") == 1
+    assert "NARRATIVE_FACT_REVIEW" in generated
+    assert "NARRATIVE_TARGETED_REPAIR" in generated
+    assert "NARRATIVE_REBUILD_FROM_FACTS" in generated
+    assert "FACT_CHECKLIST" in generated
 
 
 def test_kaggle_narrative_host_rejects_duplicate_paragraph_even_if_model_passes():
@@ -75,10 +76,7 @@ def test_kaggle_narrative_host_rejects_duplicate_paragraph_even_if_model_passes(
 
 
 def test_kaggle_narrative_generated_worker_source_compiles():
-    processor = KaggleNarrativeProcessor(
-        worker=FakeWorker({}),
-        poll_interval=0,
-    )
+    processor = KaggleNarrativeProcessor(worker=FakeWorker({}), poll_interval=0)
     source = processor._build_worker_source(
         "Lan found a letter. Do not open the door.",
         "Vietnamese",
@@ -86,3 +84,14 @@ def test_kaggle_narrative_generated_worker_source_compiles():
 
     compile(source, "<generated-kaggle-worker>", "exec")
     assert source.startswith("from __future__ import annotations")
+    assert "repair loop detected after strategy switch" in source
+    assert "unknown fact ID" in source
+
+
+def test_default_editorial_lessons_capture_known_failure_modes():
+    joined = " ".join(DEFAULT_EDITORIAL_LESSONS).casefold()
+
+    assert "character names" in joined
+    assert "source checklist" in joined
+    assert "unchanged" in joined
+    assert "rebuild" in joined
