@@ -57,6 +57,8 @@ def test_kaggle_narrative_runs_full_cycle_in_one_model_load():
     generated = worker.submitted["source"]
     assert generated.count("AutoModelForCausalLM.from_pretrained") == 1
     assert "NARRATIVE_FACT_REVIEW" in generated
+    assert "NARRATIVE_FACT_ADJUDICATION" in generated
+    assert "exact contiguous substring copied from SCRIPT" in generated
     assert "NARRATIVE_TARGETED_REPAIR" in generated
     assert "NARRATIVE_REBUILD_FROM_FACTS" in generated
     assert "FACT_CHECKLIST" in generated

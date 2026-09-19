@@ -103,6 +103,11 @@ class KaggleNarrativeProcessor:
         model_passed = review_data.get("passed")
         if not isinstance(model_passed, bool):
             raise ValueError("Kaggle narrative review passed must be boolean")
+        adjudicated_fact_ids = review_data.get("adjudicated_fact_ids", [])
+        if not isinstance(adjudicated_fact_ids, list) or any(
+            not isinstance(item, str) for item in adjudicated_fact_ids
+        ):
+            raise ValueError("Kaggle narrative adjudicated_fact_ids is invalid")
         review = ScriptQualityReport(
             passed=(model_passed and not issues),
             issues=tuple(issues),
@@ -136,6 +141,7 @@ class KaggleNarrativeProcessor:
                 f"script_sha256:{digest}",
                 f"script_revisions:{revisions}",
                 f"editorial_lessons_applied:{len(self.lessons)}",
+                f"review_adjudicated_fact_ids:{','.join(adjudicated_fact_ids) if adjudicated_fact_ids else 'none'}",
                 f"repair_strategies:{','.join(strategy_history) if strategy_history else 'none'}",
             ),
         )
@@ -322,6 +328,7 @@ class KaggleNarrativeProcessor:
                 raise RuntimeError("narrative analysis produced an empty fact checklist")
 
             facts_json = json.dumps(facts, ensure_ascii=False)
+            fact_by_id = {{item["id"]: item for item in facts}}
             draft_prompt = (
                 "NARRATIVE_REWRITE\n"
                 f"Rewrite SOURCE naturally in {{CONFIG['target_language']}}. "
@@ -330,6 +337,32 @@ class KaggleNarrativeProcessor:
                 f"EDITORIAL_LESSONS:\n{{lessons_text}}\nFACT_CHECKLIST:\n{{facts_json}}\nSOURCE:\n{{source}}"
             )
             script = generate(draft_prompt, 1400).strip()
+
+            def adjudicate_fact(fact_id, current):
+                fact = fact_by_id[fact_id]
+                adjudication_prompt = (
+                    "NARRATIVE_FACT_ADJUDICATION\n"
+                    "Decide only whether SCRIPT expresses the same concrete meaning as FACT in the target language. "
+                    "Do not judge style and do not infer unrelated omissions. If preserved, script_evidence must be an "
+                    "exact contiguous substring copied from SCRIPT. Return ONLY JSON with keys preserved and "
+                    "script_evidence.\n"
+                    f"FACT_ID: {{fact_id}}\nFACT: {{fact['fact']}}\nSCRIPT:\n{{current}}"
+                )
+                data = parse_json(
+                    generate(adjudication_prompt, 350),
+                    "narrative fact adjudication",
+                )
+                preserved = data.get("preserved")
+                evidence = data.get("script_evidence")
+                if not isinstance(preserved, bool) or not isinstance(evidence, str):
+                    raise RuntimeError("fact adjudication fields are invalid")
+                evidence = evidence.strip()
+                if preserved and (
+                    not evidence
+                    or evidence.casefold() not in current.casefold()
+                ):
+                    preserved = False
+                return preserved, evidence
 
             def review_script(current):
                 review_prompt = (
@@ -350,7 +383,6 @@ class KaggleNarrativeProcessor:
                 if not isinstance(checks, list) or not isinstance(contradictions, list):
                     raise RuntimeError("review checks and contradictions must be arrays")
 
-                fact_by_id = {{item["id"]: item for item in facts}}
                 seen_ids = set()
                 failed_ids = []
                 normalized_checks = []
@@ -390,6 +422,22 @@ class KaggleNarrativeProcessor:
                         "script_evidence": "",
                     }})
 
+                adjudicated_fact_ids = []
+                if failed_ids:
+                    confirmed_failed_ids = []
+                    for fact_id in failed_ids:
+                        preserved, evidence = adjudicate_fact(fact_id, current)
+                        adjudicated_fact_ids.append(fact_id)
+                        if preserved:
+                            for check in normalized_checks:
+                                if check["fact_id"] == fact_id:
+                                    check["preserved"] = True
+                                    check["script_evidence"] = evidence
+                                    break
+                        else:
+                            confirmed_failed_ids.append(fact_id)
+                    failed_ids = confirmed_failed_ids
+
                 normalized_contradictions = []
                 contradiction_ids = []
                 for item in contradictions:
@@ -422,6 +470,7 @@ class KaggleNarrativeProcessor:
                     "passed": not issues,
                     "issues": issues,
                     "checks": normalized_checks,
+                    "adjudicated_fact_ids": adjudicated_fact_ids,
                     "failed_fact_ids": failed_ids,
                     "contradictions": normalized_contradictions,
                     "contradiction_fact_ids": contradiction_ids,
@@ -500,6 +549,7 @@ class KaggleNarrativeProcessor:
                 "review_passed": review["passed"],
                 "revision_count": revisions,
                 "failed_fact_ids": review["failed_fact_ids"],
+                "adjudicated_fact_ids": review["adjudicated_fact_ids"],
                 "contradiction_fact_ids": review["contradiction_fact_ids"],
                 "strategy_history": strategy_history,
                 "gpu_name": gpu_name,

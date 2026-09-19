@@ -75,6 +75,26 @@ jobs:
           )
           try:
               result = processor.process(source, target_language="Vietnamese")
+              snapshot = {
+                  "script": result.script,
+                  "brief": {
+                      "characters": result.brief.characters,
+                      "events": result.brief.events,
+                      "must_preserve": result.brief.must_preserve,
+                  },
+                  "review": {
+                      "passed": result.review.passed,
+                      "issues": result.review.issues,
+                      "checks": result.review.checks,
+                      "reviewer": result.review.reviewer,
+                  },
+                  "revision_count": result.revision_count,
+                  "evidence": result.evidence,
+              }
+              Path("narrative-quality-output/result.json").write_text(
+                  json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8",
+              )
     
               if not result.review.passed:
                   raise SystemExit(f"Narrative verification failed: {result.review.issues}")
