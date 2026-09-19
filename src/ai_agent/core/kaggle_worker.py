@@ -169,7 +169,7 @@ class KaggleGpuWorker:
             data=body,
             method=method,
             headers={
-                "Authorization": f"Bearer {self.api_token}",
+                "Authorization": f"Bearer {self.api_token.strip()}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "User-Agent": self.user_agent,
