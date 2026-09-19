@@ -47,14 +47,12 @@ jobs:
         shell: bash
         run: |
           USERNAME="$(python - <<'PY'
-          import os
-          from kagglesdk.kaggle_client import KaggleClient
-          from kagglesdk.kaggle_creds import KaggleCredentials
+          import kaggle
 
-          token = os.environ["KAGGLE_API_TOKEN"]
-          client = KaggleClient(user_agent="ai-agent-github-actions/0.1")
-          credentials = KaggleCredentials(client, access_token=token)
-          print(credentials.introspect())
+          username = kaggle.api.config_values.get(kaggle.api.CONFIG_NAME_USER)
+          if not username:
+              raise SystemExit("Kaggle CLI did not resolve a username from KAGGLE_API_TOKEN")
+          print(username)
           PY
           )"
           if [ -z "$USERNAME" ]; then
@@ -62,7 +60,7 @@ jobs:
             exit 1
           fi
           echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
-          echo "Authenticated Kaggle account resolved."
+          echo "Authenticated Kaggle account resolved through Kaggle CLI."
 
       - name: Prepare private GPU kernel metadata
         env:
