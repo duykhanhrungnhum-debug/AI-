@@ -1,0 +1,126 @@
+name: Kaggle Image Batch Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kaggle-image-batch-smoke.yml"
+      - "src/ai_agent/core/kaggle_image_batch.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-image-batch-smoke
+  cancel-in-progress: false
+
+jobs:
+  image-batch-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: |
+          if [ -z "$KAGGLE_API_TOKEN" ]; then
+            echo "KAGGLE_API_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Install AI package
+        run: python -m pip install -e .
+
+      - name: Generate a YouTube-style scene batch on one T4 session
+        run: |
+          mkdir -p kaggle-batch-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from ai_agent.core.kaggle_image_batch import (
+              KaggleBatchImageProvider,
+              SceneImageRequest,
+          )
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+          )
+          provider = KaggleBatchImageProvider(
+              worker=worker,
+              kernel_slug="ai-agent-image-batch-smoke",
+              poll_interval=15,
+              max_poll_attempts=120,
+              inference_steps=12,
+          )
+          scenes = [
+              SceneImageRequest(
+                  "opening",
+                  "cinematic abandoned mansion at night, heavy fog, moonlight, "
+                  "mysterious horror atmosphere, no people, widescreen composition",
+                  "text, watermark, logo, blurry, low quality",
+                  512, 288, 101,
+              ),
+              SceneImageRequest(
+                  "clue",
+                  "cinematic close view of an old sealed letter on a dusty wooden table, "
+                  "single candle light, mystery atmosphere, no people, widescreen composition",
+                  "text, watermark, logo, blurry, low quality",
+                  512, 288, 202,
+              ),
+              SceneImageRequest(
+                  "corridor",
+                  "cinematic dark mansion corridor, old doors, cold moonlight through windows, "
+                  "subtle fog, suspense horror atmosphere, no people, widescreen composition",
+                  "text, watermark, logo, blurry, low quality",
+                  512, 288, 303,
+              ),
+          ]
+          result = provider.generate_batch(scenes)
+          if not result.verified:
+              raise SystemExit(f"Batch verification failed: {result.failed_scene_ids}")
+
+          output = Path("kaggle-batch-output")
+          manifest = []
+          for index, scene in enumerate(result.scenes):
+              path = output / f"{index:02d}_{scene.scene_id}.png"
+              path.write_bytes(scene.artifact.data)
+              manifest.append({
+                  "scene_id": scene.scene_id,
+                  "verified": scene.verified,
+                  "issues": scene.issues,
+                  "size_bytes": len(scene.artifact.data),
+                  "evidence": scene.artifact.evidence,
+              })
+
+          (output / "manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("KAGGLE_IMAGE_BATCH_SMOKE_OK")
+          print(f"Scenes verified: {len(result.scenes)}")
+          for scene in result.scenes:
+              print(scene.scene_id, "VERIFIED", len(scene.artifact.data))
+          PY
+
+      - name: Upload batch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-image-batch-output
+          path: kaggle-batch-output/
+          if-no-files-found: warn
