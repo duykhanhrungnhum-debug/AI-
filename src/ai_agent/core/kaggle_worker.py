@@ -66,7 +66,7 @@ class KaggleGpuWorker:
         slug: str,
         title: str,
         source: str,
-        machine_shape: str = "NvidiaTeslaT4",
+        machine_shape: str | None = None,
         enable_internet: bool = False,
         is_private: bool = True,
     ) -> KaggleKernelSubmission:
@@ -79,8 +79,8 @@ class KaggleGpuWorker:
             raise ValueError("title is required")
         if not source.strip():
             raise ValueError("source must not be empty")
-        if not machine_shape.strip():
-            raise ValueError("machine_shape is required")
+        if machine_shape is not None and not machine_shape.strip():
+            raise ValueError("machine_shape must be non-empty when provided")
 
         full_slug = f"{self.username.strip()}/{slug}"
         payload = {
@@ -93,8 +93,9 @@ class KaggleGpuWorker:
             "enableGpu": True,
             "enableTpu": False,
             "enableInternet": enable_internet,
-            "machineShape": machine_shape,
         }
+        if machine_shape is not None:
+            payload["machineShape"] = machine_shape
         data = self._request_json("POST", "/kernels/push", payload=payload)
 
         error = data.get("error")
@@ -127,6 +128,39 @@ class KaggleGpuWorker:
             status=raw_status.strip(),
             failure_message=str(failure or "").strip(),
         )
+
+    def output_metadata(self, slug: str) -> dict:
+        """Return metadata for the latest kernel output."""
+        assert_core_invariants()
+        slug = slug.strip()
+        if not slug or "/" in slug:
+            raise ValueError("slug must be a non-empty kernel slug without an owner prefix")
+        query = urlencode({"userName": self.username.strip(), "kernelSlug": slug})
+        return self._request_json("GET", f"/kernels/output?{query}")
+
+    def download_output_file(self, slug: str, filename: str) -> bytes:
+        """Download one named output file using Kaggle's signed output URL."""
+        filename = filename.strip()
+        if not filename:
+            raise ValueError("filename is required")
+        metadata = self.output_metadata(slug)
+        files = metadata.get("files")
+        if not isinstance(files, list):
+            raise ValueError("Kaggle output response does not contain files")
+
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            item_name = item.get("fileName", item.get("file_name"))
+            if item_name != filename:
+                continue
+            url = item.get("url")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                raise ValueError(f"Kaggle output file {filename} has no download URL")
+            request = Request(url, headers={"User-Agent": self.user_agent})
+            with urlopen(request, timeout=self.timeout) as response:
+                return response.read()
+        raise FileNotFoundError(f"Kaggle output file not found: {filename}")
 
     def _request_json(self, method: str, path: str, *, payload: dict | None = None) -> dict:
         body = json.dumps(payload).encode("utf-8") if payload is not None else None

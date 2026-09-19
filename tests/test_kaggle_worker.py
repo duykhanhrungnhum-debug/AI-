@@ -46,7 +46,7 @@ def test_kaggle_worker_submits_private_gpu_script_with_bearer_token(monkeypatch)
     assert captured["headers"]["Authorization"] == "Bearer KGAT_secret"
     assert captured["payload"]["slug"] == "testuser/gpu-smoke"
     assert captured["payload"]["enableGpu"] is True
-    assert captured["payload"]["machineShape"] == "NvidiaTeslaT4"
+    assert "machineShape" not in captured["payload"]
     assert captured["payload"]["isPrivate"] is True
     assert submission.ref == "testuser/gpu-smoke"
     assert submission.version_number == 3
@@ -85,3 +85,58 @@ def test_kaggle_status_requires_status_field(monkeypatch):
 
     with pytest.raises(ValueError, match="status"):
         worker.status("gpu-smoke")
+
+
+def test_kaggle_worker_can_request_specific_machine_shape(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"versionNumber": 1, "kernelId": 1})
+
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.urlopen", fake_urlopen)
+    worker = KaggleGpuWorker(api_token="KGAT_secret", username="testuser")
+    worker.submit_script(
+        slug="gpu-smoke",
+        title="GPU Smoke",
+        source="print('ok')",
+        machine_shape="NvidiaTeslaT4",
+    )
+
+    assert captured["payload"]["machineShape"] == "NvidiaTeslaT4"
+
+
+def test_kaggle_worker_downloads_named_output_file(monkeypatch):
+    calls = []
+
+    class RawResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.data
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        if "/kernels/output?" in request.full_url:
+            return FakeResponse({
+                "files": [
+                    {"fileName": "gpu_report.json", "url": "https://signed.example/report"}
+                ]
+            })
+        return RawResponse(b'{"gpu_available": true}')
+
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.urlopen", fake_urlopen)
+    worker = KaggleGpuWorker(api_token="KGAT_secret", username="testuser")
+
+    data = worker.download_output_file("gpu-smoke", "gpu_report.json")
+
+    assert data == b'{"gpu_available": true}'
+    assert any("/kernels/output?" in url for url in calls)
+    assert calls[-1] == "https://signed.example/report"
