@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .agent_state/trading
-          key: trading-state-${{ github.run_id }}
+          key: trading-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             trading-state-
 
@@ -78,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trading-training-${{ github.run_id }}
+          name: trading-training-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             trading_training_episode.json
             .agent_state/trading/state.json
@@ -90,4 +90,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .agent_state/trading
-          key: trading-state-${{ github.run_id }}
+          key: trading-state-${{ github.run_id }}-${{ github.run_attempt }}
