@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: hidden-beyond-longform-first-upload
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   process-and-upload:
