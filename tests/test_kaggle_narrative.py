@@ -104,6 +104,12 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     review_section = source.split("NARRATIVE_FACT_REVIEW", 1)[1].split("def review_script", 1)[0] if False else source
     assert "FACT_CHECKLIST, which was extracted from SOURCE" in source
     assert 'f"SOURCE:\\n{source}\\nSCRIPT:\\n{current}"' not in source
+    assert "decoder.raw_decode" in source
+    assert "def split_source" in source
+    assert "Analyze SOURCE_CHUNK" in source
+    assert 'if CONFIG["review_only"]:' in source
+    assert '"repetition_penalty": 1.08' in source
+    assert 'def adjudicate_fact(fact_id, current, candidate_evidence="")' in source
 
 
 def test_default_editorial_lessons_capture_known_failure_modes():
