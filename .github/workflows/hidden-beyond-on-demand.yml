@@ -57,31 +57,7 @@ jobs:
           python -m piper.download_voices "$PIPER_VOICE" --download-dir piper-voices
       - name: Translate and synthesize on demand
         run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          from ai_agent.core.kaggle_model import KaggleModelProvider
-          from ai_agent.core.kaggle_worker import KaggleGpuWorker
-          from ai_agent.core.tts_model import PiperTTSProvider
-          req=json.loads(Path("request/request.json").read_text(encoding="utf-8"))
-          segments=req["segments"]
-          prompts=[f"Translate this dialogue into natural Vietnamese suitable for dubbing. Preserve meaning and names. Return only Vietnamese text:\n{x['text']}" for x in segments]
-          worker=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"])
-          llm=KaggleModelProvider(worker=worker,model="Qwen/Qwen2.5-3B-Instruct",kernel_slug="hidden-beyond-on-demand",poll_interval=15,max_poll_attempts=180,max_new_tokens=256,temperature=0.0)
-          batch=llm.generate_many(prompts)
-          voice=PiperTTSProvider(model_path=f"piper-voices/{os.environ['PIPER_VOICE']}.onnx",binary="piper",timeout=300,min_duration_seconds=0.05)
-          out=[]
-          for src,res in zip(segments,batch.responses,strict=True):
-              audio=voice.synthesize(res.text)
-              name=f"segment-{int(src['index']):05d}.wav"
-              Path("result",name).write_bytes(audio.data)
-              out.append({"index":src["index"],"start":src["start"],"end":src["end"],"translation":res.text,"audio_file":name,"audio_evidence":audio.evidence})
-          title_prompt="Translate this video title naturally to Vietnamese. Return only the Vietnamese title:\n"+req["title"]
-          title=llm.generate(title_prompt).text.strip()
-          report={"request_id":req["request_id"],"translated_title":title,"segments":out,"llm_evidence":batch.evidence}
-          Path("result/result.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-          print("HIDDEN_BEYOND_ON_DEMAND_AI_OK")
-          PY
+          python hidden_beyond/process_request.py
       - name: Upload AI result
         uses: actions/upload-artifact@v4
         with:
