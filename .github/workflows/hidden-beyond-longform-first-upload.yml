@@ -1,0 +1,119 @@
+name: Hidden Beyond Longform First Upload
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/longform/active.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hidden-beyond-longform-first-upload
+  cancel-in-progress: false
+
+jobs:
+  process-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      KAGGLE_KERNEL_SLUG: hidden-beyond-longform-first
+      LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local coordinator and media verifier
+        run: |
+          set -Eeuo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          python -m pip install -e .
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
+
+      - name: Process complete first episode on Kaggle
+        run: |
+          set -Eeuo pipefail
+          python scripts/submit_hidden_beyond_longform.py             --config hidden_beyond/longform/active.json             --out longform-output
+
+      - name: Verify completed media
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s longform-output/processed.mp4
+          test -s longform-output/metadata.json
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 longform-output/processed.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 longform-output/processed.mp4 | grep -q audio
+          SIZE="$(stat -c%s longform-output/processed.mp4)"
+          EXPECTED="$(jq -r '.size_bytes' longform-output/metadata.json)"
+          test "$SIZE" = "$EXPECTED"
+          echo "LONGFORM_MEDIA_VERIFIED bytes=$SIZE duration=$(jq -r '.duration_seconds' longform-output/metadata.json)"
+
+      - name: Prepare direct YouTube upload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+
+          SERIES_ID="$(jq -r '.series_id' hidden_beyond/longform/active.json)"
+          SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/longform/active.json)"
+          EPISODE="$(jq -r '.episode_number' hidden_beyond/longform/active.json)"
+          TITLE="$(jq -r '.translated_title' longform-output/metadata.json)"
+          SIZE="$(stat -c%s longform-output/processed.mp4)"
+
+          jq -n             --argjson series_id "$SERIES_ID"             --arg source_video_id "$SOURCE_VIDEO_ID"             --argjson episode_number "$EPISODE"             --arg translated_title "$TITLE"             --argjson size_bytes "$SIZE"             '{series_id:$series_id,source_video_id:$source_video_id,episode_number:$episode_number,translated_title:$translated_title,size_bytes:$size_bytes}'             > prepare-body.json
+
+          curl -fsSL -X POST "$LONGFORM_API/prepare"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @prepare-body.json > prepare.json
+          cat prepare.json
+          test "$(jq -r '.stage' prepare.json)" = "ready"
+
+      - name: Upload first episode to YouTube
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          UPLOAD_URL="$(jq -r '.upload_url' prepare.json)"
+          test -n "$UPLOAD_URL" && test "$UPLOAD_URL" != "null"
+          curl --fail-with-body -sS -X PUT             -H "content-type: video/mp4"             --data-binary @longform-output/processed.mp4             "$UPLOAD_URL" > youtube-upload.json
+          cat youtube-upload.json
+          VIDEO_ID="$(jq -r '.id' youtube-upload.json)"
+          test -n "$VIDEO_ID" && test "$VIDEO_ID" != "null"
+          echo "YOUTUBE_VIDEO_ID=$VIDEO_ID" >> "$GITHUB_ENV"
+
+      - name: Attach to playlist and mark uploaded
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          SERIES_ID="$(jq -r '.series_id' hidden_beyond/longform/active.json)"
+          SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/longform/active.json)"
+          EPISODE="$(jq -r '.episode_number' hidden_beyond/longform/active.json)"
+
+          jq -n             --argjson series_id "$SERIES_ID"             --arg source_video_id "$SOURCE_VIDEO_ID"             --argjson episode_number "$EPISODE"             --arg youtube_video_id "$YOUTUBE_VIDEO_ID"             '{series_id:$series_id,source_video_id:$source_video_id,episode_number:$episode_number,youtube_video_id:$youtube_video_id}'             > complete-body.json
+
+          curl -fsSL -X POST "$LONGFORM_API/complete"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @complete-body.json > complete.json
+          cat complete.json
+          test "$(jq -r '.stage' complete.json)" = "uploaded"
+          echo "HIDDEN_BEYOND_FIRST_EPISODE_UPLOADED https://www.youtube.com/watch?v=$YOUTUBE_VIDEO_ID"
+
+      - name: Preserve upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-first-longform-upload-evidence
+          path: |
+            longform-output/metadata.json
+            longform-output/vi.srt
+            prepare.json
+            youtube-upload.json
+            complete.json
+          if-no-files-found: warn
+          retention-days: 7
