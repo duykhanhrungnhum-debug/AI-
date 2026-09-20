@@ -187,6 +187,33 @@ def normalize_translated_names(source: str, translated: str) -> str:
     return value
 
 
+def polish_spoken_vietnamese(source: str, translated: str) -> str:
+    """Conservative post-editing for dubbing: remove stiff written phrasing without changing facts."""
+    value = translated.strip()
+    substitutions = (
+        (r"(?i)\bxin vui lòng\b", "làm ơn"),
+        (r"(?i)\btôi đoán rằng\b", "chắc là"),
+        (r"(?i)\btôi nghĩ rằng\b", "tôi nghĩ"),
+        (r"(?i)\bcó lẽ là\b", "có lẽ"),
+        (r"(?i)\bbây giờ thì\b", "giờ thì"),
+        (r"(?i)\bkhông phải là\b", "không phải"),
+    )
+    for pattern, replacement in substitutions:
+        value = re.sub(pattern, replacement, value)
+
+    value = re.sub(r"\s+", " ", value).strip()
+    # Preserve source sentence intent because punctuation affects Piper rhythm/prosody.
+    stripped = value.rstrip(" .!?")
+    source = source.strip()
+    if source.endswith("?"):
+        value = stripped + "?"
+    elif source.endswith("!"):
+        value = stripped + "!"
+    elif source.endswith(".") and not value.endswith((".", "!", "?")):
+        value = stripped + "."
+    return value
+
+
 def assert_content_coverage(source: str, translated: str, *, field: str) -> None:
     source_words = re.findall(r"[A-Za-z0-9]+", source)
     translated_words = re.findall(r"[A-Za-zÀ-ỹ0-9]+", translated)
@@ -237,9 +264,12 @@ def main() -> None:
         )
     ]
     cleaned = [
-        normalize_translated_names(
+        polish_spoken_vietnamese(
             source,
-            clean_translation(raw, field=f"segment {index}")
+            normalize_translated_names(
+                source,
+                clean_translation(raw, field=f"segment {index}")
+            )
         )
         for index, (source, raw) in enumerate(zip(source_texts[:-1], restored[:-1], strict=True), 1)
     ]
@@ -284,7 +314,7 @@ def main() -> None:
         "llm_evidence": [
             *evidence,
             "translation_provider:envit5-for-en+opus-fallback-for-zh",
-            "quality_gate:no_cjk+no_repeat+hybrid_name_preservation+coverage+number_preservation",
+            "quality_gate:no_cjk+no_repeat+hybrid_name_preservation+coverage+number_preservation+spoken_style",
             "tts_mode:piper-python-api-single-model-load",
         ],
         "timing": {
