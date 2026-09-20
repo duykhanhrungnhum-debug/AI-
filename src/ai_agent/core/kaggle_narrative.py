@@ -399,14 +399,18 @@ class KaggleNarrativeProcessor:
             def analyze_piece(piece, index, total):
                 prompt = (
                     "NARRATIVE_ANALYSIS\n"
-                    f"Analyze SOURCE_CHUNK {{index}}/{{total}} only. Extract concise facts explicitly supported by it. "
+                    f"Analyze SOURCE_CHUNK {{index}}/{{total}} only. Extract only story-critical facts explicitly supported by it. "
+                    f"Write every extracted fact in {{CONFIG['target_language']}} so it can be checked against the target-language script. "
                     "Return one JSON object only, with keys characters, events, must_preserve. "
-                    "characters: at most 4 named people or sentient beings; never places, countries, mountains, or descriptions. "
-                    "events: at most 5 chronological plot events. must_preserve: at most 5 concrete details whose loss changes meaning. "
+                    "characters: at most 3 story-active named people or sentient beings who materially act in this episode; "
+                    "exclude figures mentioned only in poems, cosmology, background history, examples, or quoted references. "
+                    "events: at most 4 chronological plot events that materially advance the episode. "
+                    "must_preserve: at most 3 concrete plot details whose loss would change the story outcome. "
+                    "Exclude ornamental scenery, repeated restatements, and facts already represented by an event. "
                     "No duplicates, no commentary, no markdown fences.\n"
                     f"SOURCE_CHUNK:\n{{piece}}"
                 )
-                return parse_json(generate(prompt, 420), f"narrative analysis chunk {{index}}")
+                return parse_json(generate(prompt, 360), f"narrative analysis chunk {{index}}")
 
             if CONFIG["review_only"]:
                 chunks = split_source(source)
@@ -419,9 +423,9 @@ class KaggleNarrativeProcessor:
                             raise RuntimeError(f"narrative analysis chunk {{index}} field {{key}} must be an array")
                         merged[key].extend(values)
                 brief = {{
-                    "characters": string_list(merged["characters"], "characters", 8),
-                    "events": string_list(merged["events"], "events", 14),
-                    "must_preserve": string_list(merged["must_preserve"], "must_preserve", 14),
+                    "characters": string_list(merged["characters"], "characters", 6),
+                    "events": string_list(merged["events"], "events", 12),
+                    "must_preserve": string_list(merged["must_preserve"], "must_preserve", 8),
                 }}
             else:
                 analysis_prompt = (
@@ -471,7 +475,7 @@ class KaggleNarrativeProcessor:
                     if item.strip()
                 ]
                 if not segments:
-                    return False, "", 0.0
+                    return False, "", 0.0, ""
                 embeddings = semantic_model.encode(
                     [fact["fact"], *segments],
                     convert_to_tensor=True,
@@ -479,13 +483,18 @@ class KaggleNarrativeProcessor:
                     show_progress_bar=False,
                 )
                 scores = torch.matmul(embeddings[1:], embeddings[0])
-                best_index = int(torch.argmax(scores).item())
+                ranked = torch.argsort(scores, descending=True)[:4].tolist()
+                best_index = int(ranked[0])
                 best_score = float(scores[best_index].item())
                 evidence = segments[best_index]
+                candidate_evidence = "\n".join(
+                    f"- {{segments[int(index)]}}" for index in ranked
+                )
                 return (
                     best_score >= float(CONFIG["semantic_threshold"]),
                     evidence,
                     best_score,
+                    candidate_evidence,
                 )
 
             def adjudicate_fact(fact_id, current, candidate_evidence=""):
@@ -533,9 +542,12 @@ class KaggleNarrativeProcessor:
                     adjudicated_fact_ids = []
                     semantic_scores = {{}}
                     for fact_id in fact_by_id:
-                        semantic_preserved, semantic_evidence, semantic_score = (
-                            semantic_adjudicate_fact(fact_id, current)
-                        )
+                        (
+                            semantic_preserved,
+                            semantic_evidence,
+                            semantic_score,
+                            semantic_candidates,
+                        ) = semantic_adjudicate_fact(fact_id, current)
                         semantic_scores[fact_id] = round(semantic_score, 6)
                         preserved = semantic_preserved
                         evidence = semantic_evidence if semantic_preserved else ""
@@ -544,7 +556,7 @@ class KaggleNarrativeProcessor:
                             preserved, evidence = adjudicate_fact(
                                 fact_id,
                                 current,
-                                semantic_evidence,
+                                semantic_candidates,
                             )
                         normalized_checks.append({{
                             "fact_id": fact_id,
