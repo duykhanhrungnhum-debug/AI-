@@ -263,15 +263,17 @@ class KaggleNarrativeProcessor:
             os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
             try:
+                import bitsandbytes
                 import torch
                 from sentence_transformers import SentenceTransformer
                 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
             except ImportError:
                 subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", "--quiet",
+                    sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
                     "transformers<5", "accelerate<2", "safetensors", "sentencepiece",
-                    "sentence-transformers>=3,<4", "bitsandbytes>=0.45,<1",
+                    "sentence-transformers>=3,<4", "bitsandbytes>=0.46.1,<1",
                 ])
+                import bitsandbytes
                 import torch
                 from sentence_transformers import SentenceTransformer
                 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
