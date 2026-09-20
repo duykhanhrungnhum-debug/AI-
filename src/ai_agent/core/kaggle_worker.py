@@ -75,6 +75,7 @@ class KaggleGpuWorker:
         source: str,
         machine_shape: str | None = None,
         enable_internet: bool = False,
+        enable_gpu: bool = True,
         is_private: bool = True,
     ) -> KaggleKernelSubmission:
         assert_core_invariants()
@@ -97,7 +98,7 @@ class KaggleGpuWorker:
             "language": "python",
             "kernelType": "script",
             "isPrivate": is_private,
-            "enableGpu": True,
+            "enableGpu": bool(enable_gpu),
             "enableTpu": False,
             "enableInternet": enable_internet,
         }
