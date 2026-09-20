@@ -14,18 +14,28 @@ CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 REPEAT_RE = re.compile(r"\b([\wÀ-ỹ]+)(?:\s+\1){2,}\b", re.IGNORECASE)
 
 
-def parse_object(raw: str) -> dict:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    if start < 0:
-        raise ValueError("AI response has no JSON object")
-    obj, _ = json.JSONDecoder().raw_decode(text[start:])
-    if not isinstance(obj, dict):
-        raise ValueError("AI response must be a JSON object")
-    return obj
+def parse_lines(raw: str, expected_indexes: list[int]) -> tuple[str, dict[int, str]]:
+    title = ""
+    items: dict[int, str] = {}
+    for original in raw.splitlines():
+        line = original.strip()
+        if not line or line.startswith("```"):
+            continue
+        if line.upper().startswith("TITLE\t"):
+            title = line.split("\t", 1)[1].strip()
+            continue
+        match = re.match(r"^(\d+)\t(.+)$", line)
+        if not match:
+            continue
+        idx = int(match.group(1))
+        if idx in items:
+            raise ValueError(f"duplicate translated segment index {idx}")
+        items[idx] = match.group(2).strip()
+    if not title:
+        raise ValueError("AI response has no TITLE line")
+    if sorted(items) != sorted(expected_indexes):
+        raise ValueError(f"AI returned indexes {sorted(items)}; expected {sorted(expected_indexes)}")
+    return title, items
 
 
 def collapse_runaway_repetition(text: str) -> str:
@@ -68,14 +78,14 @@ def main() -> None:
     prompt = (
         "You are the Vietnamese dubbing editor for Hidden Beyond. "
         "Translate the ENTIRE English dialogue below with full episode context, not line-by-line in isolation. "
-        "Return one JSON object only, no markdown and no commentary. "
-        "Schema: {\"title\":\"Vietnamese title\",\"segments\":[{\"index\":1,\"vi\":\"...\"}]}. "
+        "Return plain tab-separated lines only, no JSON, no markdown and no commentary. "
+        "First line must be TITLE<TAB>Vietnamese title. Then one line per segment as INDEX<TAB>Vietnamese dialogue. "
         "Rules: output natural spoken Vietnamese only; never output Chinese/Japanese/Korean characters; "
         "do not repeat a word or filler unnecessarily; preserve meaning; keep each line concise enough for its seconds value; "
         "preserve proper names exactly: Pepper, Carrot, Saffron, Morevna, Synfig, RabbiDuck, DragonCow; "
         "translate 'Pepper & Carrot' as 'Pepper & Carrot', not as vegetables; "
         "keep every input index exactly once and in order. "
-        "Silently review the full translation for consistency, names, Vietnamese-only output and repetition before returning final JSON.\n"
+        "Silently review the full translation for consistency, names, Vietnamese-only output and repetition before returning final lines.\n"
         f"TITLE: {req['title']}\n"
         "SEGMENTS_JSON:\n"
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
@@ -93,29 +103,17 @@ def main() -> None:
         kernel_slug="hidden-beyond-on-demand",
         poll_interval=5,
         max_poll_attempts=360,
-        max_new_tokens=1800,
+        max_new_tokens=1400,
         temperature=0.0,
     )
     response = llm.generate(prompt)
-    data = parse_object(response.text)
-    title = validate_translation(str(data.get("title", "")), field="title")
-    translated = data.get("segments")
-    if not isinstance(translated, list) or len(translated) != len(segments):
-        got = len(translated) if isinstance(translated, list) else "invalid"
-        raise ValueError(f"AI returned {got} segments; expected {len(segments)}")
-
-    by_index: dict[int, str] = {}
-    for item in translated:
-        if not isinstance(item, dict):
-            raise ValueError("translation segment must be an object")
-        idx = int(item.get("index"))
-        if idx in by_index:
-            raise ValueError(f"duplicate translated segment index {idx}")
-        by_index[idx] = validate_translation(str(item.get("vi", "")), field=f"segment {idx}")
-
     expected = [int(s["index"]) for s in segments]
-    if sorted(by_index) != sorted(expected):
-        raise ValueError("translated segment indexes do not match request")
+    raw_title, raw_by_index = parse_lines(response.text, expected)
+    title = validate_translation(raw_title, field="title")
+    by_index = {
+        idx: validate_translation(text, field=f"segment {idx}")
+        for idx, text in raw_by_index.items()
+    }
 
     texts = [by_index[int(s["index"])] for s in segments]
     voice = PiperTTSProvider(
