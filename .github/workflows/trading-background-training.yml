@@ -47,13 +47,27 @@ jobs:
           restore-keys: |
             trading-state-
 
-      - name: Run oil research learning cycle
+      - name: Run oil research learning cycle with immediate retry
         id: train
-        run: >-
-          python scripts/trading_background_train.py
-          --state .agent_state/trading/state.json
-          --output trading_training_episode.json
-          --news-per-query 3
+        shell: bash
+        run: |
+          set +e
+          rc=1
+          for attempt in 1 2 3; do
+            echo "Trading learning attempt $attempt/3"
+            python scripts/trading_background_train.py               --state .agent_state/trading/state.json               --output trading_training_episode.json               --news-per-query 3
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "Trading learning VERIFIED on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Trading learning attempt $attempt failed with exit code $rc"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 30
+            fi
+          done
+          echo "::error::Trading learning failed after 3 attempts"
+          exit "$rc"
 
       - name: Upload research evidence
         if: always()
