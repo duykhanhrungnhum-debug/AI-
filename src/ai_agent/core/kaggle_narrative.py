@@ -643,16 +643,23 @@ class KaggleNarrativeProcessor:
                 if failed_ids:
                     confirmed_failed_ids = []
                     for fact_id in failed_ids:
-                        semantic_preserved, semantic_evidence, semantic_score = (
-                            semantic_adjudicate_fact(fact_id, current)
-                        )
+                        (
+                            semantic_preserved,
+                            semantic_evidence,
+                            semantic_score,
+                            semantic_candidates,
+                        ) = semantic_adjudicate_fact(fact_id, current)
                         semantic_scores[fact_id] = round(semantic_score, 6)
                         adjudicated_fact_ids.append(fact_id)
                         if semantic_preserved:
                             preserved = True
                             evidence = semantic_evidence
                         else:
-                            preserved, evidence = adjudicate_fact(fact_id, current)
+                            preserved, evidence = adjudicate_fact(
+                                fact_id,
+                                current,
+                                semantic_candidates,
+                            )
                         if preserved:
                             for check in normalized_checks:
                                 if check["fact_id"] == fact_id:
