@@ -78,3 +78,8 @@ jobs:
           name: hidden-beyond-ai-result
           path: result/
           if-no-files-found: error
+          retention-days: 1
+      - name: Wake Bot to finish video
+        run: |
+          gh workflow run resume-ai-video.yml --repo duykhanhrungnhum-debug/mystery-video -f ai_run_id="$GITHUB_RUN_ID" -f request_run_id="${{ inputs.request_artifact_run_id }}"
+          echo "Bot resume dispatched from AI run $GITHUB_RUN_ID"
