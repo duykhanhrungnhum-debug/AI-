@@ -185,5 +185,5 @@
       "text": "and make the best potion for tomorrow's challenge."
     }
   ],
-  "optimization_test": "quality-speed-v4-flex-line-parser"
+  "optimization_test": "quality-speed-v5-neighbor-context"
 }
