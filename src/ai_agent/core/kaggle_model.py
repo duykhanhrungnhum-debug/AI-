@@ -169,6 +169,8 @@ class KaggleModelProvider:
                 device_map="auto",
             )
 
+            model.eval()
+
             responses = []
             for prompt in CONFIG["prompts"]:
                 messages = [{{"role": "user", "content": prompt}}]
@@ -181,6 +183,8 @@ class KaggleModelProvider:
                 generate_kwargs = {{
                     "max_new_tokens": int(CONFIG["max_new_tokens"]),
                     "do_sample": float(CONFIG["temperature"]) > 0,
+                    "repetition_penalty": 1.08,
+                    "no_repeat_ngram_size": 3,
                 }}
                 if generate_kwargs["do_sample"]:
                     generate_kwargs["temperature"] = float(CONFIG["temperature"])
