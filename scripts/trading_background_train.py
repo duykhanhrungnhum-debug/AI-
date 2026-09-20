@@ -14,6 +14,7 @@ from ai_agent.core.trading_skill import (
     TradingEvidenceVerifier,
     TradingResearchEpisode,
     research_plan,
+    source_hubs,
 )
 
 
@@ -32,6 +33,24 @@ def save_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def add_retrieval(episode: TradingResearchEpisode, researcher: InternetResearcher, *,
+                  category: str, title: str, url: str, seen_urls: set[str]) -> None:
+    if url in seen_urls:
+        return
+    seen_urls.add(url)
+    try:
+        document = researcher.fetch(url)
+        episode.evidence.append(TradingEvidence.from_retrieval(
+            category=category,
+            title=title,
+            url=url,
+            content_hash=document.content_hash,
+            retrieved_at=document.retrieved_at,
+        ))
+    except Exception as exc:
+        episode.errors.append(f"fetch:{url}: {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="trading_training_episode.json")
@@ -44,28 +63,30 @@ def main() -> int:
     episode = TradingResearchEpisode()
     seen_urls: set[str] = set()
 
+    # First fetch stable primary-source hubs. This is the resilient baseline and
+    # makes the learning cycle independent of any single search engine layout.
+    for category, title, url in source_hubs():
+        add_retrieval(
+            episode, researcher, category=category, title=title, url=url,
+            seen_urls=seen_urls,
+        )
+
+    # Then enrich with current discovered pages/news. Search failure is recorded
+    # but cannot erase successfully retrieved primary-source evidence.
     for category, query in research_plan():
         try:
             results = provider.search(query, limit=args.results_per_query)
+            if not results:
+                episode.errors.append(f"search-empty:{category}:{query}")
         except Exception as exc:
             episode.errors.append(f"search:{category}:{query}: {exc}")
             continue
 
         for result in results:
-            if result.url in seen_urls:
-                continue
-            seen_urls.add(result.url)
-            try:
-                document = researcher.fetch(result.url)
-                episode.evidence.append(TradingEvidence.from_retrieval(
-                    category=category,
-                    title=result.title,
-                    url=result.url,
-                    content_hash=document.content_hash,
-                    retrieved_at=document.retrieved_at,
-                ))
-            except Exception as exc:
-                episode.errors.append(f"fetch:{result.url}: {exc}")
+            add_retrieval(
+                episode, researcher, category=category,
+                title=result.title or query, url=result.url, seen_urls=seen_urls,
+            )
 
     episode.verification = TradingEvidenceVerifier().verify(episode.evidence)
 
@@ -104,6 +125,8 @@ def main() -> int:
     save_state(state_path, state)
 
     print(json.dumps(summary, ensure_ascii=False))
+    for error in episode.errors:
+        print("WARN " + error)
     if episode.verification.passed:
         return 0
     print("Trading learning cycle NOT VERIFIED: " + "; ".join(episode.verification.reasons))
