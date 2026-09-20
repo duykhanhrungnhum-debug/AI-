@@ -295,11 +295,11 @@ def main() -> int:
                 "verification": verification,
             },
         )
-        if completed.get("stage") != "verified_publish_ready":
-            raise RuntimeError(f"visual-complete did not verify episode: {completed}")
+        if completed.get("stage") not in {"technical_video_ready", "verified_publish_ready"}:
+            raise RuntimeError(f"visual-complete did not accept episode: {completed}")
 
         evidence = {
-            "stage": "verified_publish_ready",
+            "stage": completed.get("stage"),
             "episode_id": episode_id,
             "series_title": job.get("series_title"),
             "episode_no": job.get("episode_no"),
