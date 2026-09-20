@@ -1,19 +1,14 @@
 name: Kaggle Image Smoke
 
+
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/kaggle-image-smoke.yml"
-      - "src/ai_agent/core/kaggle_image.py"
-      - "src/ai_agent/core/kaggle_worker.py"
 
 permissions:
   contents: read
 
 concurrency:
-  group: kaggle-image-smoke
+  group: kaggle-gpu-session
   cancel-in-progress: false
 
 jobs:
