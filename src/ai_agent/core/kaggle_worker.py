@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from time import sleep
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -49,6 +50,8 @@ class KaggleGpuWorker:
     base_url: str = "https://www.kaggle.com/api/v1"
     timeout: float = 60.0
     user_agent: str = "AI-Agent-Kaggle/0.1"
+    submission_retry_attempts: int = 5
+    submission_retry_delay_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if not self.api_token.strip():
@@ -59,6 +62,10 @@ class KaggleGpuWorker:
             raise ValueError("base_url must use HTTP(S)")
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
+        if self.submission_retry_attempts <= 0:
+            raise ValueError("submission_retry_attempts must be positive")
+        if self.submission_retry_delay_seconds < 0:
+            raise ValueError("submission_retry_delay_seconds must be non-negative")
 
     def submit_script(
         self,
@@ -96,11 +103,20 @@ class KaggleGpuWorker:
         }
         if machine_shape is not None:
             payload["machineShape"] = machine_shape
-        data = self._request_json("POST", "/kernels/push", payload=payload)
-
-        error = data.get("error")
-        if error:
-            raise RuntimeError(f"Kaggle rejected kernel submission: {error}")
+        data = {}
+        for attempt in range(1, self.submission_retry_attempts + 1):
+            data = self._request_json("POST", "/kernels/push", payload=payload)
+            error = data.get("error")
+            if not error:
+                break
+            message = str(error)
+            capacity_limited = (
+                "maximum batch gpu session count" in message.casefold()
+                and "reached" in message.casefold()
+            )
+            if not capacity_limited or attempt >= self.submission_retry_attempts:
+                raise RuntimeError(f"Kaggle rejected kernel submission: {message}")
+            sleep(self.submission_retry_delay_seconds * attempt)
 
         version = data.get("versionNumber", data.get("version_number"))
         kernel_id = data.get("kernelId", data.get("kernel_id"))
