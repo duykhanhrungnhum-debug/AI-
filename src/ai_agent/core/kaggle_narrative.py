@@ -310,6 +310,7 @@ class KaggleNarrativeProcessor:
                 kwargs = {{
                     "max_new_tokens": max_new_tokens,
                     "do_sample": float(CONFIG["temperature"]) > 0,
+                    "repetition_penalty": 1.08,
                 }}
                 if kwargs["do_sample"]:
                     kwargs["temperature"] = float(CONFIG["temperature"])
@@ -322,26 +323,40 @@ class KaggleNarrativeProcessor:
 
             def parse_json(raw, label):
                 cleaned = raw.strip()
-                fence = chr(96) * 3
-                if cleaned.startswith(fence):
-                    lines = cleaned.splitlines()
-                    if lines and lines[0].startswith(fence):
-                        lines = lines[1:]
-                    if lines and lines[-1].strip() == fence:
-                        lines = lines[:-1]
-                    cleaned = "\n".join(lines).strip()
-                try:
-                    data = json.loads(cleaned)
-                except json.JSONDecodeError as exc:
-                    raise RuntimeError(f"{{label}} is not valid JSON: {{cleaned[:400]}}") from exc
-                if not isinstance(data, dict):
-                    raise RuntimeError(f"{{label}} must be a JSON object")
-                return data
+                decoder = json.JSONDecoder()
+                candidates = [cleaned]
+                first_object = cleaned.find("{")
+                if first_object > 0:
+                    candidates.append(cleaned[first_object:])
+                last_error = None
+                for candidate in candidates:
+                    try:
+                        data, _ = decoder.raw_decode(candidate.lstrip())
+                    except json.JSONDecodeError as exc:
+                        last_error = exc
+                        continue
+                    if not isinstance(data, dict):
+                        raise RuntimeError(f"{{label}} must be a JSON object")
+                    return data
+                raise RuntimeError(
+                    f"{{label}} is not valid JSON: {{cleaned[:400]}}"
+                ) from last_error
 
-            def string_list(value, label):
+            def string_list(value, label, limit=None):
                 if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
                     raise RuntimeError(f"{{label}} must be an array of strings")
-                return [item.strip() for item in value if item.strip()]
+                result = []
+                seen = set()
+                for item in value:
+                    item = re.sub(r"\\s+", " ", item).strip()
+                    key = item.casefold()
+                    if not item or key in seen:
+                        continue
+                    seen.add(key)
+                    result.append(item)
+                    if limit is not None and len(result) >= limit:
+                        break
+                return result
 
             def deterministic_issues(script):
                 issues = []
@@ -366,20 +381,63 @@ class KaggleNarrativeProcessor:
 
             source = CONFIG["source"]
             lessons_text = "\n".join(f"- {{item}}" for item in CONFIG["lessons"])
-            analysis_prompt = (
-                "NARRATIVE_ANALYSIS\n"
-                "Read SOURCE carefully. Extract only facts explicitly supported by SOURCE. "
-                "Return ONLY JSON with keys characters, events, must_preserve; each value is an array of short strings. "
-                "characters contains stable names/identities only. events stays chronological. "
-                "must_preserve contains concrete details whose loss changes meaning.\n"
-                f"EDITORIAL_LESSONS:\n{{lessons_text}}\nSOURCE:\n{{source}}"
-            )
-            brief = parse_json(generate(analysis_prompt, 800), "narrative analysis")
-            brief = {{
-                "characters": string_list(brief.get("characters"), "characters"),
-                "events": string_list(brief.get("events"), "events"),
-                "must_preserve": string_list(brief.get("must_preserve"), "must_preserve"),
-            }}
+
+            def split_source(text, max_chars=1400):
+                paragraphs = [item.strip() for item in re.split(r"\n\s*\n", text) if item.strip()]
+                chunks = []
+                current = ""
+                for paragraph in paragraphs:
+                    if current and len(current) + len(paragraph) + 2 > max_chars:
+                        chunks.append(current)
+                        current = paragraph
+                    else:
+                        current = paragraph if not current else current + "\n\n" + paragraph
+                if current:
+                    chunks.append(current)
+                return chunks or [text]
+
+            def analyze_piece(piece, index, total):
+                prompt = (
+                    "NARRATIVE_ANALYSIS\n"
+                    f"Analyze SOURCE_CHUNK {{index}}/{{total}} only. Extract concise facts explicitly supported by it. "
+                    "Return one JSON object only, with keys characters, events, must_preserve. "
+                    "characters: at most 4 named people or sentient beings; never places, countries, mountains, or descriptions. "
+                    "events: at most 5 chronological plot events. must_preserve: at most 5 concrete details whose loss changes meaning. "
+                    "No duplicates, no commentary, no markdown fences.\n"
+                    f"SOURCE_CHUNK:\n{{piece}}"
+                )
+                return parse_json(generate(prompt, 420), f"narrative analysis chunk {{index}}")
+
+            if CONFIG["review_only"]:
+                chunks = split_source(source)
+                merged = {{"characters": [], "events": [], "must_preserve": []}}
+                for index, piece in enumerate(chunks, 1):
+                    piece_brief = analyze_piece(piece, index, len(chunks))
+                    for key in merged:
+                        values = piece_brief.get(key, [])
+                        if not isinstance(values, list):
+                            raise RuntimeError(f"narrative analysis chunk {{index}} field {{key}} must be an array")
+                        merged[key].extend(values)
+                brief = {{
+                    "characters": string_list(merged["characters"], "characters", 8),
+                    "events": string_list(merged["events"], "events", 14),
+                    "must_preserve": string_list(merged["must_preserve"], "must_preserve", 14),
+                }}
+            else:
+                analysis_prompt = (
+                    "NARRATIVE_ANALYSIS\n"
+                    "Read SOURCE carefully. Extract only facts explicitly supported by SOURCE. "
+                    "Return ONLY JSON with keys characters, events, must_preserve; each value is an array of short strings. "
+                    "characters contains stable names/identities only, never places. events stays chronological. "
+                    "must_preserve contains concrete details whose loss changes meaning. No duplicates.\n"
+                    f"EDITORIAL_LESSONS:\n{{lessons_text}}\nSOURCE:\n{{source}}"
+                )
+                brief_raw = parse_json(generate(analysis_prompt, 900), "narrative analysis")
+                brief = {{
+                    "characters": string_list(brief_raw.get("characters"), "characters", 12),
+                    "events": string_list(brief_raw.get("events"), "events", 24),
+                    "must_preserve": string_list(brief_raw.get("must_preserve"), "must_preserve", 24),
+                }}
 
             facts = []
             for index, item in enumerate(brief["characters"], 1):
@@ -430,15 +488,16 @@ class KaggleNarrativeProcessor:
                     best_score,
                 )
 
-            def adjudicate_fact(fact_id, current):
+            def adjudicate_fact(fact_id, current, candidate_evidence=""):
                 fact = fact_by_id[fact_id]
+                script_scope = candidate_evidence.strip() or current
                 adjudication_prompt = (
                     "NARRATIVE_FACT_ADJUDICATION\n"
-                    "Decide only whether SCRIPT expresses the same concrete meaning as FACT in the target language. "
+                    "Decide only whether SCRIPT_EVIDENCE expresses the same concrete meaning as FACT in the target language. "
                     "Do not judge style and do not infer unrelated omissions. If preserved, script_evidence must be an "
-                    "exact contiguous substring copied from SCRIPT. Return ONLY JSON with keys preserved and "
-                    "script_evidence.\n"
-                    f"FACT_ID: {{fact_id}}\nFACT: {{fact['fact']}}\nSCRIPT:\n{{current}}"
+                    "exact contiguous substring copied from SCRIPT_EVIDENCE. Return ONLY JSON with keys preserved and "
+                    "script_evidence. No commentary or markdown.\n"
+                    f"FACT_ID: {{fact_id}}\nFACT: {{fact['fact']}}\nSCRIPT_EVIDENCE:\n{{script_scope}}"
                 )
                 try:
                     data = parse_json(
@@ -468,6 +527,47 @@ class KaggleNarrativeProcessor:
                 return preserved, evidence
 
             def review_script(current):
+                if CONFIG["review_only"]:
+                    normalized_checks = []
+                    failed_ids = []
+                    adjudicated_fact_ids = []
+                    semantic_scores = {{}}
+                    for fact_id in fact_by_id:
+                        semantic_preserved, semantic_evidence, semantic_score = (
+                            semantic_adjudicate_fact(fact_id, current)
+                        )
+                        semantic_scores[fact_id] = round(semantic_score, 6)
+                        preserved = semantic_preserved
+                        evidence = semantic_evidence if semantic_preserved else ""
+                        if not semantic_preserved:
+                            adjudicated_fact_ids.append(fact_id)
+                            preserved, evidence = adjudicate_fact(
+                                fact_id,
+                                current,
+                                semantic_evidence,
+                            )
+                        normalized_checks.append({{
+                            "fact_id": fact_id,
+                            "preserved": bool(preserved),
+                            "script_evidence": evidence.strip() if isinstance(evidence, str) else "",
+                        }})
+                        if not preserved:
+                            failed_ids.append(fact_id)
+
+                    issues = list(deterministic_issues(current))
+                    for fact_id in failed_ids:
+                        issues.append(f"missing fact {{fact_id}}: {{fact_by_id[fact_id]['fact']}}")
+                    return {{
+                        "passed": not issues,
+                        "issues": issues,
+                        "checks": normalized_checks,
+                        "adjudicated_fact_ids": adjudicated_fact_ids,
+                        "semantic_scores": semantic_scores,
+                        "failed_fact_ids": failed_ids,
+                        "contradictions": [],
+                        "contradiction_fact_ids": [],
+                    }}
+
                 review_prompt = (
                     "NARRATIVE_FACT_REVIEW\n"
                     "Audit SCRIPT against FACT_CHECKLIST, which was extracted from SOURCE and is the source-of-truth checklist. "
@@ -503,7 +603,7 @@ class KaggleNarrativeProcessor:
                     if not isinstance(preserved, bool) or not isinstance(evidence, str):
                         raise RuntimeError("review check has invalid fields")
                     seen_ids.add(fact_id)
-                    if fact_by_id[fact_id]["kind"] == "character":
+                    if fact_by_id[fact_id]["kind"] == "character" and not CONFIG["review_only"]:
                         character = fact_by_id[fact_id]["fact"].strip()
                         if character and character.casefold() not in current.casefold():
                             preserved = False
