@@ -57,7 +57,7 @@ def main() -> None:
     try:
         s=worker.submit_script(
             slug=slug,
-            title=f"Hidden Beyond AI {job['job_id']}",
+            title=f"HB AI {str(job['job_id'])[:8]}",
             source=source,
             enable_internet=True,
             enable_gpu=True,
