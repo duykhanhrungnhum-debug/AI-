@@ -476,6 +476,31 @@ class KaggleNarrativeProcessor:
                     brief["events"],
                     brief["must_preserve"],
                 )
+
+                def self_contained_preserve(item):
+                    lowered = item.casefold()
+                    vague_references = (
+                        "这些",
+                        "那些",
+                        "此等",
+                        "these beings",
+                        "those beings",
+                        "these people",
+                        "those people",
+                        "these figures",
+                        "those figures",
+                        "những người này",
+                        "những người đó",
+                        "những tồn tại này",
+                        "những tồn tại đó",
+                    )
+                    return not any(token in lowered for token in vague_references)
+
+                brief["must_preserve"] = [
+                    item
+                    for item in brief["must_preserve"]
+                    if self_contained_preserve(item)
+                ]
             else:
                 analysis_prompt = (
                     "NARRATIVE_ANALYSIS\n"
