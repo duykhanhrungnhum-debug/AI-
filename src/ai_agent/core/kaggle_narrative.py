@@ -325,7 +325,7 @@ class KaggleNarrativeProcessor:
                 cleaned = raw.strip()
                 decoder = json.JSONDecoder()
                 candidates = [cleaned]
-                first_object = cleaned.find("{")
+                first_object = cleaned.find("{{")
                 if first_object > 0:
                     candidates.append(cleaned[first_object:])
                 last_error = None
