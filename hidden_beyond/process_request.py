@@ -7,6 +7,7 @@ import re
 import textwrap
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.tts_model import PiperTTSProvider
@@ -137,8 +138,20 @@ def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -
         enable_internet=True,
         is_private=True,
     )
+    time.sleep(5)
+    transient_status_errors = 0
     for _ in range(180):
-        status = worker.status("hidden-beyond-marian")
+        try:
+            status = worker.status("hidden-beyond-marian")
+            transient_status_errors = 0
+        except HTTPError as exc:
+            if exc.code not in {403, 404, 429}:
+                raise
+            transient_status_errors += 1
+            if transient_status_errors > 12:
+                raise RuntimeError(f"Kaggle status stayed unavailable with HTTP {exc.code}") from exc
+            time.sleep(min(5 * transient_status_errors, 30))
+            continue
         if status.terminal:
             if not status.successful:
                 logs = worker.logs("hidden-beyond-marian")
