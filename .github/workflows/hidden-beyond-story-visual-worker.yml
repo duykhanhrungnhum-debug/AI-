@@ -2,14 +2,6 @@ name: Hidden Beyond Story Visual Worker
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/hidden-beyond-story-visual-worker.yml"
-      - "scripts/hidden_beyond_story_visual_worker.py"
-      - "src/ai_agent/core/kaggle_image_batch.py"
-      - "src/ai_agent/core/kaggle_worker.py"
-      - "src/ai_agent/core/video_builder.py"
 
 permissions:
   contents: read
