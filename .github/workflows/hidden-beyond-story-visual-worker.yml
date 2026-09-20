@@ -4,10 +4,6 @@ on:
   schedule:
     - cron: "2,12,22,32,42,52 * * * *"
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/hidden-beyond-story-visual-worker.yml"
 
 permissions:
   contents: read
