@@ -1,0 +1,102 @@
+name: Hidden Beyond Finish AI Video
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/finish/active.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: hidden-beyond-finish-video
+  cancel-in-progress: false
+
+jobs:
+  finish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AI_MEDIA_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/ai-media-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
+
+      - name: Load finish request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s hidden_beyond/finish/active.json
+          AI_RUN_ID="$(jq -r '.ai_run_id' hidden_beyond/finish/active.json)"
+          VIDEO_ID="$(jq -r '.video_id' hidden_beyond/finish/active.json)"
+          test "$AI_RUN_ID" != "null" && test -n "$AI_RUN_ID"
+          test "$VIDEO_ID" != "null" && test -n "$VIDEO_ID"
+          echo "AI_RUN_ID=$AI_RUN_ID" >> "$GITHUB_ENV"
+          echo "VIDEO_ID=$VIDEO_ID" >> "$GITHUB_ENV"
+
+      - name: Download AI result
+        run: |
+          mkdir -p ai-result
+          gh run download "$AI_RUN_ID" --repo duykhanhrungnhum-debug/AI- --name hidden-beyond-ai-result --dir ai-result
+          test -s ai-result/result.json
+          test "$(find ai-result -name 'segment-*.wav' | wc -l)" -gt 0
+
+      - name: Get fresh media URLs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-ai-media" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          jq -n --argjson video_id "$VIDEO_ID" '{video_id:$video_id}' > prepare-body.json
+          curl -fsSL -X POST "$AI_MEDIA_API/prepare" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @prepare-body.json > prepare.json
+          cat prepare.json
+          test "$(jq -r '.stage' prepare.json)" = "ready"
+
+      - name: Download original and mux Vietnamese dub
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -fL --retry 3 --retry-all-errors "$(jq -r '.original_download_url' prepare.json)" -o input.media
+          python hidden_beyond/finish_video.py --input input.media --result ai-result/result.json --output processed.mp4 --srt vi.srt --metadata metadata.json
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 processed.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 processed.mp4 | grep -q audio
+          test -s vi.srt
+          test -s metadata.json
+
+      - name: Upload processed media
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -fsS -X PUT "$(jq -r '.processed.signedUrl' prepare.json)" -H "content-type: video/mp4" --data-binary @processed.mp4
+          curl -fsS -X PUT "$(jq -r '.subtitle.signedUrl' prepare.json)" -H "content-type: text/plain; charset=utf-8" --data-binary @vi.srt
+
+      - name: Mark processed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-ai-media" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          TITLE="$(jq -r '.translated_title' metadata.json)"
+          PROCESSED_PATH="$(jq -r '.processed.path' prepare.json)"
+          SUBTITLE_PATH="$(jq -r '.subtitle.path' prepare.json)"
+          jq -n --argjson video_id "$VIDEO_ID" --arg translated_title "$TITLE" --arg processed_path "$PROCESSED_PATH" --arg subtitle_path "$SUBTITLE_PATH" '{video_id:$video_id,translated_title:$translated_title,processed_path:$processed_path,subtitle_path:$subtitle_path}' > complete.json
+          curl -fsSL -X POST "$AI_MEDIA_API/complete" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @complete.json > completed.json
+          cat completed.json
+          test "$(jq -r '.stage' completed.json)" = "processed"
+
+      - name: Upload finish evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-finished-video
+          path: |
+            metadata.json
+            completed.json
+          if-no-files-found: error
+          retention-days: 7
