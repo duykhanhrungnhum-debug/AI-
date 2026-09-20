@@ -18,7 +18,7 @@ concurrency:
 jobs:
   process-and-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 100
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
@@ -44,6 +44,26 @@ jobs:
         run: |
           set -Eeuo pipefail
           python scripts/submit_hidden_beyond_longform.py             --config hidden_beyond/longform/active.json             --out longform-output
+
+      - name: Report failure immediately
+        if: failure() || cancelled()
+        shell: bash
+        run: |
+          set +e
+          echo "## Hidden Beyond run failed or stalled" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s longform-output/failure.json ]; then
+            REASON="$(jq -r '.reason // "unknown"' longform-output/failure.json)"
+            DETAIL="$(jq -r '.detail // ""' longform-output/failure.json)"
+            echo "**Reason:** $REASON" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Detail:** $DETAIL" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Hidden Beyond pipeline stopped::$REASON - $DETAIL"
+          else
+            echo "**Reason:** workflow_failed_without_failure_json" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Hidden Beyond pipeline stopped::Workflow failed before a structured failure report was written."
+          fi
+          echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify completed media
         shell: bash
@@ -115,5 +135,6 @@ jobs:
             prepare.json
             youtube-upload.json
             complete.json
+            longform-output/failure.json
           if-no-files-found: warn
           retention-days: 7
