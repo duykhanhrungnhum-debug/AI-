@@ -14,26 +14,28 @@ CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 REPEAT_RE = re.compile(r"\b([\wÀ-ỹ]+)(?:\s+\1){2,}\b", re.IGNORECASE)
 
 
-def parse_lines(raw: str, expected_indexes: list[int]) -> tuple[str, dict[int, str]]:
-    title = ""
+def parse_lines(raw: str, expected_indexes: list[int]) -> tuple[str | None, dict[int, str]]:
+    title: str | None = None
     items: dict[int, str] = {}
     for original in raw.splitlines():
-        line = original.strip()
-        if not line or line.startswith("```"):
+        line = original.strip().strip(chr(96))
+        if not line:
             continue
-        if line.upper().startswith("TITLE\t"):
-            title = line.split("\t", 1)[1].strip()
+        title_match = re.match(r"^(?:TITLE|TIÊU\s*ĐỀ)\s*(?:\t|:|-)+\s*(.+)$", line, re.IGNORECASE)
+        if title_match:
+            title = title_match.group(1).strip()
             continue
-        match = re.match(r"^(\d+)\t(.+)$", line)
+        match = re.match(r"^(\d+)\s*(?:\t|:|\.|\)|-)\s*(.+)$", line)
         if not match:
             continue
         idx = int(match.group(1))
         if idx in items:
             raise ValueError(f"duplicate translated segment index {idx}")
         items[idx] = match.group(2).strip()
-    if not title:
-        raise ValueError("AI response has no TITLE line")
     if sorted(items) != sorted(expected_indexes):
+        print("RAW_AI_RESPONSE_START")
+        print(raw)
+        print("RAW_AI_RESPONSE_END")
         raise ValueError(f"AI returned indexes {sorted(items)}; expected {sorted(expected_indexes)}")
     return title, items
 
@@ -79,7 +81,7 @@ def main() -> None:
         "You are the Vietnamese dubbing editor for Hidden Beyond. "
         "Translate the ENTIRE English dialogue below with full episode context, not line-by-line in isolation. "
         "Return plain tab-separated lines only, no JSON, no markdown and no commentary. "
-        "First line must be TITLE<TAB>Vietnamese title. Then one line per segment as INDEX<TAB>Vietnamese dialogue. "
+        "Use this exact shape: first line TITLE: Vietnamese title; then lines 1: Vietnamese dialogue, 2: Vietnamese dialogue, and so on. "
         "Rules: output natural spoken Vietnamese only; never output Chinese/Japanese/Korean characters; "
         "do not repeat a word or filler unnecessarily; preserve meaning; keep each line concise enough for its seconds value; "
         "preserve proper names exactly: Pepper, Carrot, Saffron, Morevna, Synfig, RabbiDuck, DragonCow; "
