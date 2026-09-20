@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ai_agent.core.news_rss import GoogleNewsRSSProvider
 from ai_agent.core.researcher import InternetResearcher
+from ai_agent.core.trading_learning_memory import record_learning_memory, source_on_cooldown
 from ai_agent.core.trading_skill import (
     TradingEvidence,
     TradingEvidenceVerifier,
@@ -18,14 +19,33 @@ from ai_agent.core.trading_skill import (
 )
 
 
+def default_state() -> dict:
+    return {
+        "schema": 3,
+        "cycles": 0,
+        "verified_cycles": 0,
+        "history": [],
+        "source_success": {},
+        "coverage": {},
+        "news_headlines": [],
+        "error_memory": {},
+        "source_cooldowns": {},
+        "lessons": [],
+    }
+
+
 def load_state(path: Path) -> dict:
     if not path.exists():
-        return {"schema": 2, "cycles": 0, "verified_cycles": 0, "history": [], "source_success": {}, "coverage": {}, "news_headlines": []}
+        return default_state()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            return default_state()
+        base = default_state()
+        base.update(payload)
+        return base
     except Exception:
-        return {"schema": 2, "cycles": 0, "verified_cycles": 0, "history": [], "source_success": {}, "coverage": {}, "news_headlines": []}
+        return default_state()
 
 
 def save_state(path: Path, state: dict) -> None:
@@ -33,11 +53,24 @@ def save_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def add_retrieval(episode: TradingResearchEpisode, researcher: InternetResearcher, *,
-                  category: str, title: str, url: str, seen_urls: set[str]) -> None:
+def add_retrieval(
+    episode: TradingResearchEpisode,
+    researcher: InternetResearcher,
+    *,
+    category: str,
+    title: str,
+    url: str,
+    seen_urls: set[str],
+    state: dict,
+    cycle: int,
+    skipped_sources: list[dict],
+) -> None:
     if url in seen_urls:
         return
     seen_urls.add(url)
+    if source_on_cooldown(state, url, cycle):
+        skipped_sources.append({"category": category, "title": title, "url": url, "reason": "learning-memory-cooldown"})
+        return
     try:
         document = researcher.fetch(url)
         episode.evidence.append(TradingEvidence.from_retrieval(
@@ -58,17 +91,31 @@ def main() -> int:
     parser.add_argument("--news-per-query", type=int, default=3)
     args = parser.parse_args()
 
+    state_path = Path(args.state)
+    state = load_state(state_path)
+    cycle = int(state.get("cycles", 0)) + 1
+
     news = GoogleNewsRSSProvider(timeout=15.0)
     researcher = InternetResearcher(timeout=15.0, max_bytes=750_000)
     episode = TradingResearchEpisode()
     seen_urls: set[str] = set()
     news_signals: list[dict] = []
+    skipped_sources: list[dict] = []
 
-    # Authoritative baseline: official sources are retrieved and hashed.
+    # Authoritative baseline: official sources are retrieved and hashed. Sources
+    # that repeatedly fail are temporarily cooled down so the unattended agent
+    # learns from failure instead of repeating the same ineffective request.
     for category, title, url in source_hubs():
         add_retrieval(
-            episode, researcher, category=category, title=title, url=url,
+            episode,
+            researcher,
+            category=category,
+            title=title,
+            url=url,
             seen_urls=seen_urls,
+            state=state,
+            cycle=cycle,
+            skipped_sources=skipped_sources,
         )
 
     # Current-events layer: keyless RSS search surfaces changing real-world
@@ -84,17 +131,18 @@ def main() -> int:
             episode.errors.append(f"news:{category}:{query}: {exc}")
 
     episode.verification = TradingEvidenceVerifier().verify(episode.evidence)
+    new_lessons = record_learning_memory(state, episode.errors, cycle=cycle)
 
     payload = episode.to_dict()
     payload["news_signals"] = news_signals
+    payload["skipped_sources"] = skipped_sources
+    payload["new_lessons"] = new_lessons
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    state_path = Path(args.state)
-    state = load_state(state_path)
-    state["schema"] = 2
-    state["cycles"] = int(state.get("cycles", 0)) + 1
+    state["schema"] = 3
+    state["cycles"] = cycle
     if episode.verification.passed:
         state["verified_cycles"] = int(state.get("verified_cycles", 0)) + 1
 
@@ -108,11 +156,16 @@ def main() -> int:
 
     recent_headlines = list(state.get("news_headlines", []))
     recent_headlines.extend(news_signals)
-    # Bounded memory prevents an unattended cloud job from growing forever.
     state["news_headlines"] = recent_headlines[-150:]
 
+    recurring_errors = sum(
+        int(item.get("count", 0)) >= 2
+        for item in state.get("error_memory", {}).values()
+        if isinstance(item, dict)
+    )
     summary = {
         "created_at": episode.created_at,
+        "cycle": cycle,
         "verified": episode.verification.passed,
         "evidence_count": len(episode.evidence),
         "independent_domains": episode.verification.independent_domains,
@@ -120,6 +173,9 @@ def main() -> int:
         "categories": list(episode.verification.categories),
         "news_signal_count": len(news_signals),
         "error_count": len(episode.errors),
+        "skipped_source_count": len(skipped_sources),
+        "new_lesson_count": len(new_lessons),
+        "recurring_error_count": recurring_errors,
     }
     history = list(state.get("history", []))
     history.append(summary)
@@ -128,6 +184,10 @@ def main() -> int:
     save_state(state_path, state)
 
     print(json.dumps(summary, ensure_ascii=False))
+    for lesson in new_lessons:
+        print("LESSON " + lesson["lesson"])
+    for skipped in skipped_sources:
+        print("LEARNED-SKIP " + skipped["url"])
     for error in episode.errors:
         print("WARN " + error)
     if episode.verification.passed:

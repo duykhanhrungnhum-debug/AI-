@@ -40,6 +40,18 @@ and at least one external-driver category (macro, geopolitics, or weather).
 Failure is explicit: the workflow exits non-zero rather than pretending the
 cycle learned valid facts.
 
+## Failure/lesson memory
+
+The unattended worker now keeps bounded error memory in its persistent state.
+Errors are normalized by source/category so volatile URLs do not create fake
+"new" failures. When a direct source repeatedly returns 403, 429, or timeout,
+the Agent records a lesson and temporarily cools down that source for six
+cycles. During the cooldown it continues with other verified primary sources
+and current-news signals instead of repeating the same failed request.
+
+The state stores up to 100 recurring error signatures and 100 lessons, plus
+which sources are temporarily cooled down and when they may be retried.
+
 ## Background operation
 
 GitHub Actions runs the research cycle hourly on cloud infrastructure. State is
@@ -47,8 +59,8 @@ restored/saved through a bounded GitHub Actions cache and each run uploads its
 episode and state as an artifact. The phone is not part of the runtime.
 
 Persistent state records cycle count, verified-cycle count, category coverage,
-source-domain retrieval history, up to 150 recent news signals, and up to 200
-recent cycle summaries.
+source-domain retrieval history, up to 150 recent news signals, up to 200
+recent cycle summaries, recurring error memory, and bounded lessons.
 
 ## Current boundary
 
