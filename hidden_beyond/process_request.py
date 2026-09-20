@@ -32,13 +32,36 @@ def mask_names_for_translation(text: str) -> tuple[str, tuple[tuple[str, str], .
 
 
 def restore_masked_names(text: str, mapping: tuple[tuple[str, str], ...], *, field: str) -> str:
+    """Restore names even when the translation model slightly mutates numeric codes."""
     value = text
+    missing: list[str] = []
+
+    # Prefer exact codes when available.
     for token, name in mapping:
+        if name in value:
+            continue
         compact = re.sub(r"\D", "", token)
         pattern = r"\s*".join(re.escape(ch) for ch in compact)
         match = re.search(pattern, value)
-        if not match:
-            raise ValueError(f"{field} lost protected name code {token}: {value}")
+        if match:
+            value = value[:match.start()] + name + value[match.end():]
+        else:
+            missing.append(name)
+
+    if not missing:
+        return value
+
+    # Translation models usually keep a six-digit marker but may alter one digit.
+    # Remaining six-digit numbers are placeholders because dialogue numbers here are short.
+    candidates = list(re.finditer(r"(?<!\d)\d{6}(?!\d)", value))
+    if len(candidates) < len(missing):
+        raise ValueError(
+            f"{field} lost protected name markers for {missing}: {value}"
+        )
+
+    # Replace from right to left so indexes stay valid, pairing in source order.
+    chosen = candidates[:len(missing)]
+    for match, name in reversed(list(zip(chosen, missing, strict=True))):
         value = value[:match.start()] + name + value[match.end():]
     return value
 
