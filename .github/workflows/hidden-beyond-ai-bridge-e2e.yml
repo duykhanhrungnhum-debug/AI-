@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/hidden-beyond-ai-bridge-e2e.yml"
+      - ".github/hidden-beyond-ai-bridge.trigger"
 
 permissions:
   contents: read
