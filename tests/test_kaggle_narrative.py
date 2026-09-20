@@ -110,8 +110,9 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     assert "story-critical facts explicitly supported" in source
     assert "Write every extracted fact in" in source
     assert "exclude figures mentioned only in poems, cosmology, background history" in source
-    assert 'plot_fact_text = " ".join(' in source
-    assert "if character.casefold() in plot_fact_text" in source
+    assert 'brief["characters"] = []' in source
+    assert "def drop_event_duplicate_preserve" in source
+    assert "best_event_score >= float(CONFIG[\"semantic_threshold\"])" in source
     assert "torch.argsort(scores, descending=True)[:4]" in source
     assert 'candidate_evidence = "\\n".join(' in source
     assert "if not preserved and semantic_candidates:" in source
