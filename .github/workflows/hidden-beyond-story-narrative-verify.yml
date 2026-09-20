@@ -2,13 +2,6 @@ name: Hidden Beyond Story Narrative Verify
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/hidden-beyond-story-narrative-verify.yml"
-      - "scripts/hidden_beyond_story_narrative_verify.py"
-      - "src/ai_agent/core/kaggle_narrative.py"
-      - "src/ai_agent/core/kaggle_worker.py"
 
 permissions:
   contents: read
