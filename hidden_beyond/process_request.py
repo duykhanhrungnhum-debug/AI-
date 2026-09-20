@@ -16,13 +16,19 @@ CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 REPEAT_RE = re.compile(r"\b([\w\u00c0-\u1ef9]+)(?:\s+\1)+\b", re.IGNORECASE)
 REPEATED_BIGRAM_RE = re.compile(r"\b([\w\u00c0-\u1ef9]+\s+[\w\u00c0-\u1ef9]+)(?:\s+\1)+\b", re.IGNORECASE)
 PROPER_NAMES = ("Pepper", "Carrot", "Saffron", "Morevna", "Synfig", "RabbiDuck", "DragonCow")
+MASKED_NAMES = ("Morevna", "Synfig", "RabbiDuck", "DragonCow")
+NAME_ALIASES = {
+    "Pepper": ("Ớt", "Hạt tiêu"),
+    "Carrot": ("Cà rốt",),
+    "Saffron": ("Nghệ tây",),
+}
 
 
 def mask_names_for_translation(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
     """Protect names with stable six-digit codes that translation models copy verbatim."""
     masked = text
     mapping: list[tuple[str, str]] = []
-    for index, name in enumerate(PROPER_NAMES):
+    for index, name in enumerate(MASKED_NAMES):
         pattern = rf"\b{re.escape(name)}\b"
         if re.search(pattern, masked, re.IGNORECASE):
             token = f"8842{index:02d}"
@@ -107,8 +113,7 @@ def model_for(language: str) -> str:
 
 def clean_translation(text: str, *, field: str) -> str:
     value = text.strip().strip('\"“”').strip()
-    if value.lower().startswith("vi:"):
-        value = value[3:].strip()
+    value = re.sub(r"(?i)(?:^|\s)vi:\s*", " ", value).strip()
     previous = None
     while previous != value:
         previous = value
@@ -168,6 +173,35 @@ def assert_names(source: str, translated: str, *, field: str) -> None:
             raise ValueError(f"{field} lost exact proper name {name}: {translated}")
 
 
+def normalize_translated_names(source: str, translated: str) -> str:
+    value = translated
+    for name, aliases in NAME_ALIASES.items():
+        if not re.search(rf"\b{re.escape(name)}\b", source, re.IGNORECASE):
+            continue
+        if name in value:
+            continue
+        for alias in aliases:
+            if alias in value:
+                value = value.replace(alias, name, 1)
+                break
+    return value
+
+
+def assert_content_coverage(source: str, translated: str, *, field: str) -> None:
+    source_words = re.findall(r"[A-Za-z0-9]+", source)
+    translated_words = re.findall(r"[A-Za-zÀ-ỹ0-9]+", translated)
+    if len(source_words) >= 7 and len(translated_words) < max(3, int(len(source_words) * 0.42)):
+        raise ValueError(
+            f"{field} appears under-translated: source_words={len(source_words)} "
+            f"translated_words={len(translated_words)} text={translated}"
+        )
+    source_numbers = re.findall(r"\d+", source)
+    translated_numbers = re.findall(r"\d+", translated)
+    for number in source_numbers:
+        if number not in translated_numbers:
+            raise ValueError(f"{field} lost numeric content {number}: {translated}")
+
+
 def main() -> None:
     started = time.monotonic()
     request_path = Path(os.environ.get("HB_REQUEST", "request/request.json"))
@@ -203,13 +237,20 @@ def main() -> None:
         )
     ]
     cleaned = [
-        clean_translation(raw, field=f"segment {index}")
-        for index, raw in enumerate(restored[:-1], 1)
+        normalize_translated_names(
+            source,
+            clean_translation(raw, field=f"segment {index}")
+        )
+        for index, (source, raw) in enumerate(zip(source_texts[:-1], restored[:-1], strict=True), 1)
     ]
-    title = clean_translation(restored[-1], field="title")
+    title = normalize_translated_names(
+        source_texts[-1],
+        clean_translation(restored[-1], field="title")
+    )
 
     for index, (source, translated) in enumerate(zip(source_texts[:-1], cleaned, strict=True), 1):
         assert_names(source, translated, field=f"segment {index}")
+        assert_content_coverage(source, translated, field=f"segment {index}")
     assert_names(source_texts[-1], title, field="title")
 
     tts_started = time.monotonic()
@@ -243,7 +284,7 @@ def main() -> None:
         "llm_evidence": [
             *evidence,
             "translation_provider:envit5-for-en+opus-fallback-for-zh",
-            "quality_gate:no_cjk+no_immediate_word_or_bigram_repetition+numeric_name_protection",
+            "quality_gate:no_cjk+no_repeat+hybrid_name_preservation+coverage+number_preservation",
             "tts_mode:piper-python-api-single-model-load",
         ],
         "timing": {
