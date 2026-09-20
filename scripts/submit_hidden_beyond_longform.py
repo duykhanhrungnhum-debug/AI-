@@ -22,12 +22,28 @@ def stream_download(url: str, path: Path) -> None:
             dst.write(chunk)
 
 
+def write_failure(out_dir: Path, reason: str, detail: str) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ok": False,
+        "reason": reason,
+        "detail": detail,
+        "timestamp": int(time.time()),
+    }
+    (out_dir / "failure.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print("LONGFORM_FAIL", reason, detail, flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
+    out = Path(args.out)
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
     required = (
         "source_id", "series_id", "source_video_id", "source_url",
@@ -71,23 +87,45 @@ def main() -> None:
     # after Kaggle accepted them. Poll persisted output metadata instead.
     expected_names = {"processed.mp4", "metadata.json", "vi.srt"}
     meta = None
-    for attempt in range(1, 361):
+    transient_streak = 0
+    started = time.monotonic()
+    for attempt in range(1, 271):
+        elapsed = int(time.monotonic() - started)
         try:
             candidate = worker.output_metadata(slug)
+            transient_streak = 0
             files = candidate.get("files") if isinstance(candidate, dict) else None
             names = {
                 str(item.get("fileName", item.get("file_name")))
                 for item in (files or [])
                 if isinstance(item, dict)
             }
-            print(f"LONGFORM_OUTPUT_POLL {attempt} files={sorted(names)}", flush=True)
+            print(
+                f"LONGFORM_WATCHDOG attempt={attempt} elapsed={elapsed}s "
+                f"state=reachable files={sorted(names)}",
+                flush=True,
+            )
             if expected_names.issubset(names):
                 meta = candidate
                 break
         except HTTPError as exc:
             if exc.code not in (403, 404, 409):
+                write_failure(out, "kaggle_monitor_http_error", f"HTTP_{exc.code}")
                 raise
-            print(f"LONGFORM_OUTPUT_TRANSIENT {attempt} HTTP_{exc.code}", flush=True)
+            transient_streak += 1
+            print(
+                f"LONGFORM_WATCHDOG attempt={attempt} elapsed={elapsed}s "
+                f"state=unreachable http={exc.code} streak={transient_streak}",
+                flush=True,
+            )
+            if transient_streak >= 12:
+                reason = (
+                    f"Kaggle monitoring stayed unreachable for {transient_streak} checks "
+                    f"({transient_streak * 20}s). Aborting instead of hanging silently."
+                )
+                write_failure(out, "kaggle_monitor_stalled", reason)
+                raise SystemExit(reason)
+
         if attempt % 15 == 0:
             try:
                 logs = worker.logs(slug)
@@ -98,11 +136,9 @@ def main() -> None:
                 print("LONGFORM_LOG_TRANSIENT", repr(exc), flush=True)
         time.sleep(20)
     else:
-        try:
-            print(worker.logs(slug)[-12000:], flush=True)
-        except Exception as exc:
-            print("LOG_READ_FAILED", repr(exc), flush=True)
-        raise SystemExit("Timed out waiting for long-form Kaggle output")
+        reason = "Timed out after 90 minutes waiting for long-form Kaggle output"
+        write_failure(out, "kaggle_output_timeout", reason)
+        raise SystemExit(reason)
 
     files = meta.get("files")
     if not isinstance(files, list):
@@ -123,7 +159,6 @@ def main() -> None:
         print(worker.logs(slug)[-12000:], flush=True)
         raise SystemExit(f"Kaggle output missing expected files: {missing_files}")
 
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for name in ("metadata.json", "vi.srt", "processed.mp4"):
         print("DOWNLOADING", name, flush=True)
