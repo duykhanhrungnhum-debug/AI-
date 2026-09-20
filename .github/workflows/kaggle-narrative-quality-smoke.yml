@@ -2,12 +2,6 @@ name: Kaggle Narrative Quality Smoke
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/kaggle-narrative-quality-smoke.yml"
-      - "src/ai_agent/core/kaggle_narrative.py"
-      - "src/ai_agent/core/failure_report.py"
 
 permissions:
   contents: read
