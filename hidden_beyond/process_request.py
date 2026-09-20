@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-from ai_agent.core.tts_model import PiperTTSProvider
+from ai_agent.core.tts_model import ZeroTTSProvider
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 REPEAT_RE = re.compile(r"\b([\w\u00c0-\u1ef9]+)(?:\s+\1)+\b", re.IGNORECASE)
@@ -337,10 +337,14 @@ def main() -> None:
     assert_names(source_texts[-1], title, field="title")
 
     tts_started = time.monotonic()
-    voice = PiperTTSProvider(
-        model_path=f"piper-voices/{os.environ['PIPER_VOICE']}.onnx",
-        binary="piper",
-        timeout=300,
+    voice = ZeroTTSProvider(
+        model_path=os.environ.get("ZEROTTS_MODEL_DIR", "zeroweight-ai/ZeroTTS"),
+        voice=os.environ.get("ZEROTTS_VOICE", "hamy"),
+        cfg_scale=float(os.environ.get("ZEROTTS_CFG_SCALE", "1.0")),
+        audio_temperature=float(os.environ.get("ZEROTTS_AUDIO_TEMPERATURE", "0.78")),
+        audio_topk=int(os.environ.get("ZEROTTS_AUDIO_TOPK", "25")),
+        audio_topp=float(os.environ.get("ZEROTTS_AUDIO_TOPP", "0.95")),
+        audio_repetition_penalty=float(os.environ.get("ZEROTTS_AUDIO_REPETITION_PENALTY", "1.2")),
         min_duration_seconds=0.05,
     )
     audios = voice.synthesize_many(cleaned)
@@ -368,7 +372,8 @@ def main() -> None:
             *evidence,
             "translation_provider:envit5-for-en+opus-fallback-for-zh",
             "quality_gate:no_cjk+no_repeat+hybrid_name_preservation+coverage+number_preservation+spoken_style+fantasy_glossary",
-            "tts_mode:piper-python-api-single-model-load",
+            "tts_mode:zerotts-single-model-load",
+            f"tts_voice:{os.environ.get('ZEROTTS_VOICE', 'hamy')}",
         ],
         "timing": {
             "translation_seconds": round(translation_seconds, 3),
@@ -382,7 +387,7 @@ def main() -> None:
     )
     print(
         "HIDDEN_BEYOND_AI_OK "
-        f"segments={len(out)} model={model_name} piper_processes=1 "
+        f"segments={len(out)} model={model_name} zerotts_model_loads=1 "
         f"translation_seconds={translation_seconds:.2f} tts_seconds={tts_seconds:.2f} total_seconds={total_seconds:.2f}"
     )
 
