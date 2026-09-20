@@ -51,23 +51,8 @@ def main() -> None:
         submission_retry_delay_seconds=30,
     )
     slug = os.environ.get("KAGGLE_KERNEL_SLUG", "hidden-beyond-longform-first")
-    reuse_existing = False
-    current = None
-    for probe in range(1, 5):
-        try:
-            current = worker.status(slug)
-            print(f"LONGFORM_EXISTING_STATUS {probe} {current.status} {current.failure_message}", flush=True)
-            reuse_existing = (not current.terminal) or current.successful
-            break
-        except HTTPError as exc:
-            if exc.code not in (403, 404):
-                raise
-            print(f"LONGFORM_EXISTING_STATUS_TRANSIENT {probe} HTTP_{exc.code}", flush=True)
-            time.sleep(8)
-
-    if reuse_existing:
-        print("LONGFORM_KAGGLE_REUSE", slug, current.status if current else "unknown", flush=True)
-    else:
+    submitted = False
+    try:
         submission = worker.submit_script(
             slug=slug,
             title="Hidden Beyond Longform First Upload",
@@ -75,32 +60,50 @@ def main() -> None:
             enable_internet=True,
             is_private=True,
         )
+        submitted = True
         print("LONGFORM_KAGGLE_SUBMITTED", submission.ref, submission.version_number, flush=True)
-        time.sleep(15)
+    except HTTPError as exc:
+        if exc.code != 409:
+            raise
+        print("LONGFORM_KAGGLE_REUSE_ACTIVE HTTP_409", slug, flush=True)
 
+    # Private kernels can transiently return 403 from the status endpoint even
+    # after Kaggle accepted them. Poll persisted output metadata instead.
+    expected_names = {"processed.mp4", "metadata.json", "vi.srt"}
+    meta = None
     for attempt in range(1, 361):
         try:
-            status = worker.status(slug)
+            candidate = worker.output_metadata(slug)
+            files = candidate.get("files") if isinstance(candidate, dict) else None
+            names = {
+                str(item.get("fileName", item.get("file_name")))
+                for item in (files or [])
+                if isinstance(item, dict)
+            }
+            print(f"LONGFORM_OUTPUT_POLL {attempt} files={sorted(names)}", flush=True)
+            if expected_names.issubset(names):
+                meta = candidate
+                break
         except HTTPError as exc:
-            if exc.code in (403, 404) and attempt <= 12:
-                print(f"LONGFORM_KAGGLE_STATUS_TRANSIENT {attempt} HTTP_{exc.code}", flush=True)
-                time.sleep(10)
-                continue
-            raise
-        print(f"LONGFORM_KAGGLE_POLL {attempt} {status.status} {status.failure_message}", flush=True)
-        if status.terminal:
-            if not status.successful:
-                try:
-                    print(worker.logs(slug)[-12000:], flush=True)
-                except Exception as exc:
-                    print("LOG_READ_FAILED", repr(exc), flush=True)
-                raise SystemExit(f"Kaggle failed: {status.status} {status.failure_message}")
-            break
+            if exc.code not in (403, 404, 409):
+                raise
+            print(f"LONGFORM_OUTPUT_TRANSIENT {attempt} HTTP_{exc.code}", flush=True)
+        if attempt % 15 == 0:
+            try:
+                logs = worker.logs(slug)
+                tail = logs[-4000:]
+                if tail:
+                    print("LONGFORM_KAGGLE_LOG_TAIL", tail, flush=True)
+            except Exception as exc:
+                print("LONGFORM_LOG_TRANSIENT", repr(exc), flush=True)
         time.sleep(20)
     else:
-        raise SystemExit("Timed out waiting for long-form Kaggle job")
+        try:
+            print(worker.logs(slug)[-12000:], flush=True)
+        except Exception as exc:
+            print("LOG_READ_FAILED", repr(exc), flush=True)
+        raise SystemExit("Timed out waiting for long-form Kaggle output")
 
-    meta = worker.output_metadata(slug)
     files = meta.get("files")
     if not isinstance(files, list):
         raise SystemExit(f"Kaggle output missing files: {meta}")
