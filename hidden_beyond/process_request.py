@@ -18,24 +18,28 @@ REPEATED_BIGRAM_RE = re.compile(r"\b([\w\u00c0-\u1ef9]+\s+[\w\u00c0-\u1ef9]+)(?:
 PROPER_NAMES = ("Pepper", "Carrot", "Saffron", "Morevna", "Synfig", "RabbiDuck", "DragonCow")
 
 
-def mask_names_for_t5(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+def mask_names_for_translation(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """Protect names with stable six-digit codes that translation models copy verbatim."""
     masked = text
     mapping: list[tuple[str, str]] = []
     for index, name in enumerate(PROPER_NAMES):
         pattern = rf"\b{re.escape(name)}\b"
         if re.search(pattern, masked, re.IGNORECASE):
-            token = f"<extra_id_{index}>"
+            token = f"8842{index:02d}"
             masked = re.sub(pattern, token, masked, flags=re.IGNORECASE)
             mapping.append((token, name))
     return masked, tuple(mapping)
 
 
-def restore_t5_names(text: str, mapping: tuple[tuple[str, str], ...], *, field: str) -> str:
+def restore_masked_names(text: str, mapping: tuple[tuple[str, str], ...], *, field: str) -> str:
     value = text
     for token, name in mapping:
-        if token not in value:
-            raise ValueError(f"{field} lost protected name token {token}: {value}")
-        value = value.replace(token, name)
+        compact = re.sub(r"\D", "", token)
+        pattern = r"\s*".join(re.escape(ch) for ch in compact)
+        match = re.search(pattern, value)
+        if not match:
+            raise ValueError(f"{field} lost protected name code {token}: {value}")
+        value = value[:match.start()] + name + value[match.end():]
     return value
 
 
@@ -124,7 +128,7 @@ def main() -> None:
         masked_texts: list[str] = []
         name_maps: list[tuple[tuple[str, str], ...]] = []
         for source in source_texts:
-            masked, mapping = mask_names_for_t5(source)
+            masked, mapping = mask_names_for_translation(source)
             masked_texts.append(masked)
             name_maps.append(mapping)
         translate_inputs = masked_texts
@@ -137,7 +141,7 @@ def main() -> None:
     translation_seconds = time.monotonic() - translation_started
 
     restored = [
-        restore_t5_names(raw, mapping, field=f"item {index}")
+        restore_masked_names(raw, mapping, field=f"item {index}")
         if mapping else raw
         for index, (raw, mapping) in enumerate(zip(raw_translations, name_maps, strict=True), 1)
     ]
@@ -182,7 +186,7 @@ def main() -> None:
         "llm_evidence": [
             *evidence,
             "translation_provider:envit5-for-en+opus-fallback-for-zh",
-            "quality_gate:no_cjk+no_immediate_word_or_bigram_repetition+t5_sentinel_name_protection",
+            "quality_gate:no_cjk+no_immediate_word_or_bigram_repetition+numeric_name_protection",
             "tts_mode:piper-python-api-single-model-load",
         ],
         "timing": {
