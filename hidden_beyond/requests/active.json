@@ -184,5 +184,6 @@
       "end": 140.82,
       "text": "and make the best potion for tomorrow's challenge."
     }
-  ]
+  ],
+  "optimization_test": "quality-speed-v2"
 }
