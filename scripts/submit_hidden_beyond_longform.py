@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
@@ -50,17 +51,42 @@ def main() -> None:
         submission_retry_delay_seconds=30,
     )
     slug = os.environ.get("KAGGLE_KERNEL_SLUG", "hidden-beyond-longform-first")
-    submission = worker.submit_script(
-        slug=slug,
-        title="Hidden Beyond Longform First Upload",
-        source=source,
-        enable_internet=True,
-        is_private=True,
-    )
-    print("LONGFORM_KAGGLE_SUBMITTED", submission.ref, submission.version_number, flush=True)
+    reuse_existing = False
+    current = None
+    for probe in range(1, 5):
+        try:
+            current = worker.status(slug)
+            print(f"LONGFORM_EXISTING_STATUS {probe} {current.status} {current.failure_message}", flush=True)
+            reuse_existing = (not current.terminal) or current.successful
+            break
+        except HTTPError as exc:
+            if exc.code not in (403, 404):
+                raise
+            print(f"LONGFORM_EXISTING_STATUS_TRANSIENT {probe} HTTP_{exc.code}", flush=True)
+            time.sleep(8)
+
+    if reuse_existing:
+        print("LONGFORM_KAGGLE_REUSE", slug, current.status if current else "unknown", flush=True)
+    else:
+        submission = worker.submit_script(
+            slug=slug,
+            title="Hidden Beyond Longform First Upload",
+            source=source,
+            enable_internet=True,
+            is_private=True,
+        )
+        print("LONGFORM_KAGGLE_SUBMITTED", submission.ref, submission.version_number, flush=True)
+        time.sleep(15)
 
     for attempt in range(1, 361):
-        status = worker.status(slug)
+        try:
+            status = worker.status(slug)
+        except HTTPError as exc:
+            if exc.code in (403, 404) and attempt <= 12:
+                print(f"LONGFORM_KAGGLE_STATUS_TRANSIENT {attempt} HTTP_{exc.code}", flush=True)
+                time.sleep(10)
+                continue
+            raise
         print(f"LONGFORM_KAGGLE_POLL {attempt} {status.status} {status.failure_message}", flush=True)
         if status.terminal:
             if not status.successful:
