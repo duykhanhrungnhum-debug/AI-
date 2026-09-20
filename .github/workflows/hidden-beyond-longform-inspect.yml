@@ -1,0 +1,44 @@
+name: Hidden Beyond Longform Inspect
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-longform-inspect.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      KAGGLE_KERNEL_SLUG: hidden-beyond-longform-first
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Inspect current Kaggle output and logs
+        run: |
+          python - <<'PY'
+          import json, os, traceback
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"],timeout=120)
+          try:
+              print("OUTPUT_METADATA")
+              print(json.dumps(w.output_metadata(os.environ["KAGGLE_KERNEL_SLUG"]),ensure_ascii=False,indent=2))
+          except Exception as e:
+              print("OUTPUT_METADATA_ERROR",repr(e))
+          try:
+              print("LOGS")
+              logs=w.logs(os.environ["KAGGLE_KERNEL_SLUG"])
+              print(logs[-20000:])
+          except Exception as e:
+              print("LOGS_ERROR",repr(e))
+          PY
