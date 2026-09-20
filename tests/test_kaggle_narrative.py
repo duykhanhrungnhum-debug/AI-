@@ -59,6 +59,7 @@ def test_kaggle_narrative_runs_full_cycle_in_one_model_load():
     assert "NARRATIVE_FACT_REVIEW" in generated
     assert "NARRATIVE_FACT_ADJUDICATION" in generated
     assert "SentenceTransformer" in generated
+    assert 'device="cpu"' in generated
     assert "semantic_adjudicate_fact" in generated
     assert "semantic_threshold" in generated
     assert "exact contiguous substring copied from SCRIPT" in generated
