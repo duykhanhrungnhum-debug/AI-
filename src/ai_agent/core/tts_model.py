@@ -47,41 +47,32 @@ class PiperTTSProvider:
             raise ValueError("timeout must be positive and minimum duration non-negative")
 
     def synthesize_many(self, texts: list[str] | tuple[str, ...]) -> tuple[AudioArtifact, ...]:
-        """Synthesize multiple utterances with one Piper process/model load."""
+        """Synthesize multiple utterances while loading the Piper voice only once."""
         assert_core_invariants()
         items = tuple(text.strip() for text in texts)
         if not items or any(not text for text in items):
             raise ValueError("texts must contain non-empty strings")
 
+        try:
+            from piper import PiperVoice
+            from piper.config import SynthesisConfig
+        except ImportError as exc:
+            raise RuntimeError("piper-tts Python API is required for batch synthesis") from exc
+
         with tempfile.TemporaryDirectory(prefix="ai-agent-piper-batch-") as temp_dir:
             root = Path(temp_dir)
             paths = [root / f"speech-{index:05d}.wav" for index in range(len(items))]
-            command = [
-                self.binary,
-                "--model",
-                self.model_path,
-                "--json-input",
-            ]
-            if self.use_cuda:
-                command.append("--cuda")
+            voice = PiperVoice.load(self.model_path, use_cuda=self.use_cuda)
+            syn_config = SynthesisConfig(speaker_id=self.speaker)
 
-            requests = []
             for text, output in zip(items, paths, strict=True):
-                payload: dict[str, object] = {"text": text, "output_file": str(output)}
-                if self.speaker is not None:
-                    payload["speaker_id"] = self.speaker
-                requests.append(json.dumps(payload, ensure_ascii=False))
-            completed = subprocess.run(
-                command,
-                input="\n".join(requests) + "\n",
-                text=True,
-                capture_output=True,
-                timeout=self.timeout,
-                check=False,
-            )
-            if completed.returncode != 0:
-                detail = (completed.stderr or completed.stdout or "unknown Piper failure").strip()
-                raise RuntimeError(f"Piper batch synthesis failed: {detail}")
+                try:
+                    with wave.open(str(output), "wb") as wav_file:
+                        voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Piper Python batch synthesis failed for {output.name}: {exc}"
+                    ) from exc
 
             artifacts: list[AudioArtifact] = []
             for output in paths:
@@ -109,6 +100,7 @@ class PiperTTSProvider:
                         f"sample_rate:{sample_rate}",
                         f"channels:{channels}",
                         f"batch_size:{len(items)}",
+                        "runtime:piper-python-api-single-model-load",
                     ),
                 ))
         return tuple(artifacts)
