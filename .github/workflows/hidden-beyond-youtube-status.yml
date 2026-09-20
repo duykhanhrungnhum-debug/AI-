@@ -1,0 +1,30 @@
+name: Hidden Beyond YouTube Status
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-youtube-status.yml"
+      - "hidden_beyond/youtube-status.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect current YouTube video state
+        shell: bash
+        env:
+          LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          VIDEO_ID="$(jq -r '.youtube_video_id' hidden_beyond/youtube-status.json)"
+          jq -n --arg youtube_video_id "$VIDEO_ID" '{youtube_video_id:$youtube_video_id}' > body.json
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/video-status"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @body.json | tee youtube-status-result.json
+          echo
