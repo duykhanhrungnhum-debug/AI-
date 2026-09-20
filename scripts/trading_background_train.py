@@ -7,8 +7,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from ai_agent.core.news_rss import GoogleNewsRSSProvider
 from ai_agent.core.researcher import InternetResearcher
-from ai_agent.core.search import DuckDuckGoSearchProvider
 from ai_agent.core.trading_skill import (
     TradingEvidence,
     TradingEvidenceVerifier,
@@ -20,12 +20,12 @@ from ai_agent.core.trading_skill import (
 
 def load_state(path: Path) -> dict:
     if not path.exists():
-        return {"schema": 1, "cycles": 0, "verified_cycles": 0, "history": [], "source_success": {}, "coverage": {}}
+        return {"schema": 2, "cycles": 0, "verified_cycles": 0, "history": [], "source_success": {}, "coverage": {}, "news_headlines": []}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return payload if isinstance(payload, dict) else {}
     except Exception:
-        return {"schema": 1, "cycles": 0, "verified_cycles": 0, "history": [], "source_success": {}, "coverage": {}}
+        return {"schema": 2, "cycles": 0, "verified_cycles": 0, "history": [], "source_success": {}, "coverage": {}, "news_headlines": []}
 
 
 def save_state(path: Path, state: dict) -> None:
@@ -55,48 +55,45 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="trading_training_episode.json")
     parser.add_argument("--state", default=".agent_state/trading/state.json")
-    parser.add_argument("--results-per-query", type=int, default=2)
+    parser.add_argument("--news-per-query", type=int, default=3)
     args = parser.parse_args()
 
-    provider = DuckDuckGoSearchProvider(timeout=15.0)
+    news = GoogleNewsRSSProvider(timeout=15.0)
     researcher = InternetResearcher(timeout=15.0, max_bytes=750_000)
     episode = TradingResearchEpisode()
     seen_urls: set[str] = set()
+    news_signals: list[dict] = []
 
-    # First fetch stable primary-source hubs. This is the resilient baseline and
-    # makes the learning cycle independent of any single search engine layout.
+    # Authoritative baseline: official sources are retrieved and hashed.
     for category, title, url in source_hubs():
         add_retrieval(
             episode, researcher, category=category, title=title, url=url,
             seen_urls=seen_urls,
         )
 
-    # Then enrich with current discovered pages/news. Search failure is recorded
-    # but cannot erase successfully retrieved primary-source evidence.
+    # Current-events layer: keyless RSS search surfaces changing real-world
+    # drivers. These are context/discovery signals and NEVER replace the
+    # authoritative evidence gate above.
     for category, query in research_plan():
         try:
-            results = provider.search(query, limit=args.results_per_query)
-            if not results:
-                episode.errors.append(f"search-empty:{category}:{query}")
+            signals = news.search(query, category=category, limit=args.news_per_query)
+            if not signals:
+                episode.errors.append(f"news-empty:{category}:{query}")
+            news_signals.extend(signal.to_dict() for signal in signals)
         except Exception as exc:
-            episode.errors.append(f"search:{category}:{query}: {exc}")
-            continue
-
-        for result in results:
-            add_retrieval(
-                episode, researcher, category=category,
-                title=result.title or query, url=result.url, seen_urls=seen_urls,
-            )
+            episode.errors.append(f"news:{category}:{query}: {exc}")
 
     episode.verification = TradingEvidenceVerifier().verify(episode.evidence)
 
+    payload = episode.to_dict()
+    payload["news_signals"] = news_signals
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(episode.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     state_path = Path(args.state)
     state = load_state(state_path)
-    state["schema"] = 1
+    state["schema"] = 2
     state["cycles"] = int(state.get("cycles", 0)) + 1
     if episode.verification.passed:
         state["verified_cycles"] = int(state.get("verified_cycles", 0)) + 1
@@ -109,6 +106,11 @@ def main() -> int:
     state["source_success"] = dict(source_success.most_common(100))
     state["coverage"] = dict(coverage)
 
+    recent_headlines = list(state.get("news_headlines", []))
+    recent_headlines.extend(news_signals)
+    # Bounded memory prevents an unattended cloud job from growing forever.
+    state["news_headlines"] = recent_headlines[-150:]
+
     summary = {
         "created_at": episode.created_at,
         "verified": episode.verification.passed,
@@ -116,6 +118,7 @@ def main() -> int:
         "independent_domains": episode.verification.independent_domains,
         "primary_sources": episode.verification.primary_sources,
         "categories": list(episode.verification.categories),
+        "news_signal_count": len(news_signals),
         "error_count": len(episode.errors),
     }
     history = list(state.get("history", []))

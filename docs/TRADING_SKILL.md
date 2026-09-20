@@ -13,8 +13,14 @@ training only** and contains no broker-order execution.
 3. External events: sanctions, shipping, pipelines/refineries, Gulf weather.
 4. Macro: rates, USD/financial conditions, demand-sensitive macro releases.
 
-Search results are discovery only. A source is accepted into a learning episode
-only after the Agent retrieves it and records a content hash and timestamp.
+The worker has two independent discovery paths:
+
+- stable official source hubs are fetched directly and content-hashed;
+- a keyless current-news RSS layer searches changing events each cycle and
+  retains bounded headline/source/timestamp evidence.
+
+News/search signals are context and discovery only. They do not replace the
+official-source verification gate.
 
 ## Source hierarchy
 
@@ -41,11 +47,19 @@ restored/saved through a bounded GitHub Actions cache and each run uploads its
 episode and state as an artifact. The phone is not part of the runtime.
 
 Persistent state records cycle count, verified-cycle count, category coverage,
-source-domain retrieval history, and up to 200 recent cycle summaries.
+source-domain retrieval history, up to 150 recent news signals, and up to 200
+recent cycle summaries.
+
+## Current boundary
+
+A VERIFIED v1 cycle proves that the research/evidence collector operated and
+met the evidence gate. It does **not** prove a profitable trading strategy or a
+trained model. Strategy learning needs event extraction, price-reaction joins,
+backtests, and paper-trade evaluation.
 
 ## Next curriculum stages
 
-- Extract normalized facts/events from fetched documents.
+- Extract normalized facts/events from fetched documents and news signals.
 - Timestamp events and classify expected supply/demand direction and horizon.
 - Join those events to historical WTI/Brent price reactions.
 - Backtest hypotheses and keep rejected hypotheses as failure lessons.
