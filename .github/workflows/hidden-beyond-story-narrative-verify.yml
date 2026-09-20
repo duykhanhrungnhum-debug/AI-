@@ -2,6 +2,10 @@ name: Hidden Beyond Story Narrative Verify
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-story-narrative-verify.yml"
 
 permissions:
   contents: read
