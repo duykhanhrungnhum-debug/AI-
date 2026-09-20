@@ -1,6 +1,6 @@
 """Verification-first trading research skill.
 
-This module deliberately separates market research from trade execution.  It can
+This module deliberately separates market research from trade execution. It can
 collect and score evidence for training/paper-trading, but it never submits a
 broker order.
 """
@@ -28,6 +28,18 @@ PRIMARY_DOMAINS = {
     "nhc.noaa.gov", "treasury.gov",
 }
 NEWS_DOMAINS = {"reuters.com", "apnews.com", "bloomberg.com", "ft.com", "wsj.com"}
+
+# Stable public hubs are fetched every cycle so training does not depend on one
+# search engine's HTML layout. Search remains an enrichment layer.
+OIL_SOURCE_HUBS: tuple[tuple[str, str, str], ...] = (
+    ("supply_demand", "EIA Weekly Petroleum Status", "https://www.eia.gov/petroleum/weekly/"),
+    ("supply_demand", "OPEC", "https://www.opec.org/"),
+    ("supply_demand", "IEA Oil Market Report", "https://www.iea.org/reports/oil-market-report"),
+    ("market", "CFTC Commitments of Traders", "https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm"),
+    ("market", "CME WTI Crude Oil", "https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.html"),
+    ("macro", "Federal Reserve News", "https://www.federalreserve.gov/newsevents.htm"),
+    ("weather", "National Hurricane Center", "https://www.nhc.noaa.gov/"),
+)
 
 OIL_RESEARCH_QUERIES: dict[str, tuple[str, ...]] = {
     "supply_demand": (
@@ -159,6 +171,11 @@ class TradingEvidenceVerifier:
             primary_sources=primary,
             categories=tuple(sorted(categories)),
         )
+
+
+def source_hubs() -> list[tuple[str, str, str]]:
+    assert_core_invariants()
+    return list(OIL_SOURCE_HUBS)
 
 
 def research_plan() -> list[tuple[str, str]]:
