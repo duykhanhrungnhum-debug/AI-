@@ -2,13 +2,6 @@ name: Hidden Beyond Media E2E Smoke
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/hidden-beyond-media-e2e.yml"
-      - "src/ai_agent/core/audio_quality.py"
-      - "src/ai_agent/core/episode_pipeline.py"
-      - "src/ai_agent/core/kaggle_narrative.py"
 
 permissions:
   contents: read
