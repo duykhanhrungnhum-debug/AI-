@@ -1,6 +1,10 @@
 name: Hidden Beyond On-Demand AI Worker
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/requests/active.json"
   workflow_dispatch:
     inputs:
       request_artifact_run_id:
@@ -32,12 +36,18 @@ jobs:
           python-version: "3.11"
       - name: Require runtime credentials
         run: |
-          test -n "$GH_TOKEN" || { echo "HIDDEN_BEYOND_GITHUB_TOKEN missing"; exit 1; }
           test -n "$KAGGLE_API_TOKEN" || { echo "KAGGLE_API_TOKEN missing"; exit 1; }
-      - name: Download Bot request
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            test -n "$GH_TOKEN" || { echo "HIDDEN_BEYOND_GITHUB_TOKEN missing"; exit 1; }
+          fi
+      - name: Load Bot request
         run: |
           mkdir -p request result
-          gh run download "${{ inputs.request_artifact_run_id }}" --repo duykhanhrungnhum-debug/mystery-video --name hidden-beyond-ai-request --dir request
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            cp hidden_beyond/requests/active.json request/request.json
+          else
+            gh run download "${{ inputs.request_artifact_run_id }}" --repo duykhanhrungnhum-debug/mystery-video --name hidden-beyond-ai-request --dir request
+          fi
           test -s request/request.json
       - name: Install AI runtime
         run: |
@@ -79,7 +89,11 @@ jobs:
           path: result/
           if-no-files-found: error
           retention-days: 1
-      - name: Wake Bot to finish video
+      - name: Handoff result
         run: |
-          gh workflow run resume-ai-video.yml --repo duykhanhrungnhum-debug/mystery-video -f ai_run_id="$GITHUB_RUN_ID" -f request_run_id="${{ inputs.request_artifact_run_id }}"
-          echo "Bot resume dispatched from AI run $GITHUB_RUN_ID"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            echo "AI result artifact ready for external coordinator from run $GITHUB_RUN_ID"
+          else
+            gh workflow run resume-ai-video.yml --repo duykhanhrungnhum-debug/mystery-video -f ai_run_id="$GITHUB_RUN_ID" -f request_run_id="${{ inputs.request_artifact_run_id }}"
+            echo "Bot resume dispatched from AI run $GITHUB_RUN_ID"
+          fi
