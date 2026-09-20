@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+import json
 import subprocess
 import tempfile
 import wave
@@ -44,6 +45,73 @@ class PiperTTSProvider:
             raise ValueError("speaker must be non-negative")
         if self.timeout <= 0 or self.min_duration_seconds < 0:
             raise ValueError("timeout must be positive and minimum duration non-negative")
+
+    def synthesize_many(self, texts: list[str] | tuple[str, ...]) -> tuple[AudioArtifact, ...]:
+        """Synthesize multiple utterances with one Piper process/model load."""
+        assert_core_invariants()
+        items = tuple(text.strip() for text in texts)
+        if not items or any(not text for text in items):
+            raise ValueError("texts must contain non-empty strings")
+
+        with tempfile.TemporaryDirectory(prefix="ai-agent-piper-batch-") as temp_dir:
+            root = Path(temp_dir)
+            paths = [root / f"speech-{index:05d}.wav" for index in range(len(items))]
+            command = [
+                self.binary,
+                "--model",
+                self.model_path,
+                "--json-input",
+            ]
+            if self.use_cuda:
+                command.append("--cuda")
+
+            requests = []
+            for text, output in zip(items, paths, strict=True):
+                payload: dict[str, object] = {"text": text, "output_file": str(output)}
+                if self.speaker is not None:
+                    payload["speaker_id"] = self.speaker
+                requests.append(json.dumps(payload, ensure_ascii=False))
+            completed = subprocess.run(
+                command,
+                input="\n".join(requests) + "\n",
+                text=True,
+                capture_output=True,
+                timeout=self.timeout,
+                check=False,
+            )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "unknown Piper failure").strip()
+                raise RuntimeError(f"Piper batch synthesis failed: {detail}")
+
+            artifacts: list[AudioArtifact] = []
+            for output in paths:
+                if not output.exists():
+                    raise RuntimeError(f"Piper batch synthesis did not create {output.name}")
+                data = output.read_bytes()
+                duration, sample_rate, channels = self._inspect_wav(output)
+                if duration < self.min_duration_seconds:
+                    raise ValueError(
+                        f"Piper WAV duration {duration:.3f}s is below minimum "
+                        f"{self.min_duration_seconds:.3f}s"
+                    )
+                digest = sha256(data).hexdigest()
+                artifacts.append(AudioArtifact(
+                    data=data,
+                    mime_type="audio/wav",
+                    provider=self.provider,
+                    model=self.model_path,
+                    duration_seconds=duration,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    evidence=(
+                        f"audio_sha256:{digest}",
+                        f"duration_seconds:{duration:.3f}",
+                        f"sample_rate:{sample_rate}",
+                        f"channels:{channels}",
+                        f"batch_size:{len(items)}",
+                    ),
+                ))
+        return tuple(artifacts)
 
     def synthesize(self, text: str) -> AudioArtifact:
         assert_core_invariants()
