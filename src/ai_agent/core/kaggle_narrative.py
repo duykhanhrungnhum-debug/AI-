@@ -253,37 +253,47 @@ class KaggleNarrativeProcessor:
 
             from hashlib import sha256
             import json
+            import os
             import re
             import subprocess
             import sys
             from pathlib import Path
 
             CONFIG = json.loads({config_json!r})
+            os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
             try:
                 import torch
                 from sentence_transformers import SentenceTransformer
-                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
                     "transformers<5", "accelerate<2", "safetensors", "sentencepiece",
-                    "sentence-transformers>=3,<4",
+                    "sentence-transformers>=3,<4", "bitsandbytes>=0.45,<1",
                 ])
                 import torch
                 from sentence_transformers import SentenceTransformer
-                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
 
             gpu_name = torch.cuda.get_device_name(0)
             tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
+            quantization = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            )
             model = AutoModelForCausalLM.from_pretrained(
                 CONFIG["model"],
-                torch_dtype=torch.float16,
+                quantization_config=quantization,
                 device_map="auto",
+                low_cpu_mem_usage=True,
             )
+            model.eval()
             semantic_model = SentenceTransformer(
                 CONFIG["semantic_model"],
                 device="cpu",
@@ -458,15 +468,16 @@ class KaggleNarrativeProcessor:
             def review_script(current):
                 review_prompt = (
                     "NARRATIVE_FACT_REVIEW\n"
-                    "Audit SCRIPT only against FACT_CHECKLIST and SOURCE. For EVERY fact ID return exactly one check. "
-                    "A fact is preserved when SCRIPT expresses the same meaning in the target language; wording may differ. "
+                    "Audit SCRIPT against FACT_CHECKLIST, which was extracted from SOURCE and is the source-of-truth checklist. "
+                    "For EVERY fact ID return exactly one check. A fact is preserved when SCRIPT expresses the same meaning "
+                    "in the target language; wording may differ. "
                     "Never reinterpret surrounding translated words as a renamed character. "
                     "For contradictions, cite a valid fact_id and an exact short script_claim. "
                     "Return ONLY JSON with keys checks and contradictions. Each check has fact_id, preserved, script_evidence. "
                     "Each contradiction has fact_id, script_claim, reason. contradictions must be empty unless SCRIPT "
                     "directly conflicts with a checklist fact.\n"
                     f"EDITORIAL_LESSONS:\n{{lessons_text}}\nFACT_CHECKLIST:\n{{facts_json}}\n"
-                    f"SOURCE:\n{{source}}\nSCRIPT:\n{{current}}"
+                    f"SCRIPT:\n{{current}}"
                 )
                 data = parse_json(generate(review_prompt, 1100), "narrative fact review")
                 checks = data.get("checks")
