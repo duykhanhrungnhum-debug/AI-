@@ -185,5 +185,5 @@
       "text": "and make the best potion for tomorrow's challenge."
     }
   ],
-  "optimization_test": "quality-speed-v8-marian-race-cache"
+  "optimization_test": "quality-speed-v9-marian-unique-worker"
 }
