@@ -59,6 +59,8 @@ def clean_translation(text: str, *, field: str) -> str:
 
 
 def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -> tuple[list[str], tuple[str, ...]]:
+    run_suffix = re.sub(r"[^a-z0-9-]", "-", os.environ.get("GITHUB_RUN_ID", "local").casefold())
+    slug = f"hidden-beyond-marian-{run_suffix}"[:50].rstrip("-")
     config = {"model": model, "texts": texts}
     config_json = json.dumps(config, ensure_ascii=False)
     source = textwrap.dedent(
@@ -132,7 +134,7 @@ def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -
     ).strip() + "\n"
 
     submission = worker.submit_script(
-        slug="hidden-beyond-marian",
+        slug=slug,
         title="Hidden Beyond Marian Translation",
         source=source,
         enable_internet=True,
@@ -142,7 +144,7 @@ def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -
     transient_status_errors = 0
     for _ in range(180):
         try:
-            status = worker.status("hidden-beyond-marian")
+            status = worker.status(slug)
             transient_status_errors = 0
         except HTTPError as exc:
             if exc.code not in {403, 404, 429}:
@@ -154,14 +156,14 @@ def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -
             continue
         if status.terminal:
             if not status.successful:
-                logs = worker.logs("hidden-beyond-marian")
+                logs = worker.logs(slug)
                 raise RuntimeError(f"Marian Kaggle worker failed: {status.status} {status.failure_message}\n{logs[-5000:]}")
             break
         time.sleep(5)
     else:
         raise TimeoutError("Timed out waiting for Marian Kaggle worker")
 
-    raw = worker.download_output_file("hidden-beyond-marian", "translations.json")
+    raw = worker.download_output_file(slug, "translations.json")
     report = json.loads(raw.decode("utf-8"))
     responses = report.get("responses")
     if report.get("model") != model or not isinstance(responses, list) or len(responses) != len(texts):
