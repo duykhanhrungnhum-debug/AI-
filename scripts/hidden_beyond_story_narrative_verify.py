@@ -87,6 +87,12 @@ def classify_failure(error: BaseException) -> str:
         or "requires bitsandbytes" in text
     ):
         return "infrastructure"
+    if (
+        "not valid json" in text
+        or "local model returned empty text" in text
+        or "review checks and contradictions must be arrays" in text
+    ):
+        return "model_output"
     return "verification"
 
 
