@@ -286,7 +286,7 @@ class KaggleNarrativeProcessor:
             )
             semantic_model = SentenceTransformer(
                 CONFIG["semantic_model"],
-                device="cuda",
+                device="cpu",
             )
 
             def generate(prompt, max_new_tokens):
