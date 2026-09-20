@@ -107,6 +107,11 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     assert "decoder.raw_decode" in source
     assert "def split_source" in source
     assert "Analyze SOURCE_CHUNK" in source
+    assert "story-critical facts explicitly supported" in source
+    assert "Write every extracted fact in" in source
+    assert "exclude figures mentioned only in poems, cosmology, background history" in source
+    assert "torch.argsort(scores, descending=True)[:4]" in source
+    assert 'candidate_evidence = "\\n".join(' in source
     assert 'if CONFIG["review_only"]:' in source
     assert '"repetition_penalty": 1.08' in source
     assert 'def adjudicate_fact(fact_id, current, candidate_evidence="")' in source
