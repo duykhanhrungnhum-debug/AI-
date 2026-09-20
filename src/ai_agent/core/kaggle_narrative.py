@@ -449,6 +449,14 @@ class KaggleNarrativeProcessor:
                     "events": string_list(merged["events"], "events", 12),
                     "must_preserve": string_list(merged["must_preserve"], "must_preserve", 8),
                 }}
+                plot_fact_text = " ".join(
+                    [*brief["events"], *brief["must_preserve"]]
+                ).casefold()
+                brief["characters"] = [
+                    character
+                    for character in brief["characters"]
+                    if character.casefold() in plot_fact_text
+                ][:4]
             else:
                 analysis_prompt = (
                     "NARRATIVE_ANALYSIS\n"
@@ -580,6 +588,11 @@ class KaggleNarrativeProcessor:
                                 current,
                                 semantic_candidates,
                             )
+                            if not preserved and semantic_candidates:
+                                preserved, evidence = adjudicate_fact(
+                                    fact_id,
+                                    current,
+                                )
                         normalized_checks.append({{
                             "fact_id": fact_id,
                             "preserved": bool(preserved),
