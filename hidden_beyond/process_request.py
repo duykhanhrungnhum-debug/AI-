@@ -24,22 +24,53 @@ def model_for(language: str) -> str:
     return "Helsinki-NLP/opus-mt-en-vi"
 
 
-def protect_names(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
-    protected = text
-    used: list[tuple[str, str]] = []
-    for index, name in enumerate(PROPER_NAMES):
-        if re.search(rf"\b{re.escape(name)}\b", protected, re.IGNORECASE):
-            marker = f"ZXQNAME{index}QXZ"
-            protected = re.sub(rf"\b{re.escape(name)}\b", marker, protected, flags=re.IGNORECASE)
-            used.append((marker, name))
-    return protected, tuple(used)
+def split_names(text: str) -> list[tuple[str, bool]]:
+    """Split text into translatable chunks and exact proper-name literals."""
+    pattern = "(" + "|".join(rf"\b{re.escape(name)}\b" for name in PROPER_NAMES) + ")"
+    pieces = re.split(pattern, text, flags=re.IGNORECASE)
+    result: list[tuple[str, bool]] = []
+    for piece in pieces:
+        if not piece:
+            continue
+        canonical = next((name for name in PROPER_NAMES if piece.casefold() == name.casefold()), None)
+        if canonical is not None:
+            result.append((canonical, True))
+        else:
+            result.append((piece, False))
+    return result
 
 
-def restore_names(text: str, names: tuple[tuple[str, str], ...]) -> str:
-    value = text
-    for marker, name in names:
-        flexible = r"\s*".join(re.escape(ch) for ch in marker)
-        value = re.sub(flexible, name, value, flags=re.IGNORECASE)
+def build_translation_units(texts: list[str]) -> tuple[list[str], list[list[tuple[int | None, str | None]]]]:
+    """Create one flat batch of only non-name chunks; keep names outside the model."""
+    units: list[str] = []
+    layouts: list[list[tuple[int | None, str | None]]] = []
+    for text in texts:
+        layout: list[tuple[int | None, str | None]] = []
+        for piece, is_name in split_names(text):
+            if is_name:
+                layout.append((None, piece))
+                continue
+            if piece.strip():
+                idx = len(units)
+                units.append(piece)
+                layout.append((idx, None))
+            else:
+                layout.append((None, piece))
+        layouts.append(layout)
+    return units, layouts
+
+
+def rebuild_translation(
+    translated_units: list[str],
+    layout: list[tuple[int | None, str | None]],
+) -> str:
+    parts: list[str] = []
+    for idx, literal in layout:
+        parts.append(literal if idx is None else translated_units[idx])
+    value = "".join(parts)
+    value = re.sub(r"\s+([,.;:!?])", r"\1", value)
+    value = re.sub(r"([,.;:!?])(?=[A-Za-zÀ-ỹ])", r"\1 ", value)
+    value = re.sub(r"\s+", " ", value).strip()
     return value
 
 
@@ -94,33 +125,31 @@ def main() -> None:
     req = json.loads(request_path.read_text(encoding="utf-8"))
     segments = req["segments"]
 
-    protected_texts: list[str] = []
-    restore_maps: list[tuple[tuple[str, str], ...]] = []
-    for segment in segments:
-        protected, names = protect_names(str(segment["text"]))
-        protected_texts.append(protected)
-        restore_maps.append(names)
-    protected_title, title_names = protect_names(str(req["title"]))
-    protected_texts.append(protected_title)
-    restore_maps.append(title_names)
+    source_texts = [str(segment["text"]) for segment in segments] + [str(req["title"])]
+    translation_units, layouts = build_translation_units(source_texts)
 
     model_name = model_for(str(req.get("detected_language", "en")))
     translation_started = time.monotonic()
-    raw_translations, evidence = translate_local(model_name, protected_texts)
+    raw_units, evidence = translate_local(model_name, translation_units)
     translation_seconds = time.monotonic() - translation_started
 
-    translations: list[str] = []
-    for index, (raw, names) in enumerate(zip(raw_translations[:-1], restore_maps[:-1], strict=True), 1):
-        restored = restore_names(raw, names)
-        value = clean_translation(restored, field=f"segment {index}")
-        for _, name in names:
-            if name not in value:
-                raise ValueError(f"segment {index} lost protected proper name {name}: {value}")
-        translations.append(value)
-    title = clean_translation(restore_names(raw_translations[-1], restore_maps[-1]), field="title")
-    for _, name in title_names:
-        if name not in title:
-            raise ValueError(f"title lost protected proper name {name}: {title}")
+    rebuilt = [
+        rebuild_translation(raw_units, layout)
+        for layout in layouts
+    ]
+    translations = [
+        clean_translation(value, field=f"segment {index}")
+        for index, value in enumerate(rebuilt[:-1], 1)
+    ]
+    title = clean_translation(rebuilt[-1], field="title")
+
+    for index, (source, translated) in enumerate(zip(source_texts[:-1], translations, strict=True), 1):
+        for name in PROPER_NAMES:
+            if re.search(rf"\b{re.escape(name)}\b", source, re.IGNORECASE) and name not in translated:
+                raise ValueError(f"segment {index} lost exact proper name {name}: {translated}")
+    for name in PROPER_NAMES:
+        if re.search(rf"\b{re.escape(name)}\b", source_texts[-1], re.IGNORECASE) and name not in title:
+            raise ValueError(f"title lost exact proper name {name}: {title}")
 
     tts_started = time.monotonic()
     voice = PiperTTSProvider(
@@ -153,7 +182,7 @@ def main() -> None:
         "llm_evidence": [
             *evidence,
             "translation_provider:marian-direct-translation",
-            "quality_gate:no_cjk+collapse_immediate_repetition+protected_names",
+            "quality_gate:no_cjk+collapse_immediate_repetition+names_never_sent_to_model",
             "tts_mode:single_piper_batch_process",
         ],
         "timing": {
