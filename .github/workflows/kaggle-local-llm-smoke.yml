@@ -1,18 +1,14 @@
 name: Kaggle Local LLM Smoke
 
+
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/kaggle-local-llm-smoke.yml"
-      - "src/ai_agent/core/kaggle_model.py"
 
 permissions:
   contents: read
 
 concurrency:
-  group: kaggle-local-llm-smoke
+  group: kaggle-gpu-session
   cancel-in-progress: false
 
 jobs:
