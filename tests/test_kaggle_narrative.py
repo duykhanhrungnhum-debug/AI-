@@ -56,6 +56,10 @@ def test_kaggle_narrative_runs_full_cycle_in_one_model_load():
     assert f"editorial_lessons_applied:{len(DEFAULT_EDITORIAL_LESSONS)}" in result.evidence
     generated = worker.submitted["source"]
     assert generated.count("AutoModelForCausalLM.from_pretrained") == 1
+    assert "BitsAndBytesConfig" in generated
+    assert "load_in_4bit=True" in generated
+    assert 'bnb_4bit_quant_type="nf4"' in generated
+    assert "PYTORCH_CUDA_ALLOC_CONF" in generated
     assert "NARRATIVE_FACT_REVIEW" in generated
     assert "NARRATIVE_FACT_ADJUDICATION" in generated
     assert "SentenceTransformer" in generated
@@ -95,6 +99,9 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     assert "for fact_id in sorted(omitted)" in source
     assert '"preserved": False' in source
     assert 'normalized_checks.append({' in source
+    review_section = source.split("NARRATIVE_FACT_REVIEW", 1)[1].split("def review_script", 1)[0] if False else source
+    assert "FACT_CHECKLIST, which was extracted from SOURCE" in source
+    assert 'f"SOURCE:\\n{source}\\nSCRIPT:\\n{current}"' not in source
 
 
 def test_default_editorial_lessons_capture_known_failure_modes():
