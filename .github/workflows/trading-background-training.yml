@@ -5,8 +5,10 @@ on:
     branches: [main]
     paths:
       - 'src/ai_agent/core/trading_skill.py'
+      - 'src/ai_agent/core/news_rss.py'
       - 'scripts/trading_background_train.py'
       - 'tests/test_trading_skill.py'
+      - 'tests/test_news_rss.py'
       - '.github/workflows/trading-background-training.yml'
       - 'docs/TRADING_SKILL.md'
   schedule:
@@ -51,7 +53,7 @@ jobs:
           python scripts/trading_background_train.py
           --state .agent_state/trading/state.json
           --output trading_training_episode.json
-          --results-per-query 2
+          --news-per-query 3
 
       - name: Upload research evidence
         if: always()
