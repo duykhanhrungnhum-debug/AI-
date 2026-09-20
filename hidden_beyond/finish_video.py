@@ -44,7 +44,9 @@ def fit_segment(src: Path, dst: Path, target_seconds: float) -> dict:
     raw_speed=original/target
 
     # Keep speech natural. Only compress/expand moderately.
-    speed=max(0.88,min(1.28,raw_speed))
+    # Do not stretch short lines to fill silence; natural pauses sound better.
+    # Only accelerate long Vietnamese lines, with a small lower bound for micro-adjustment.
+    speed=max(0.97,min(1.28,raw_speed))
     filt=[
         atempo_chain(speed),
         "highpass=f=70",
