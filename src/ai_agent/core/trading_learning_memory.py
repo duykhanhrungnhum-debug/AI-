@@ -1,12 +1,15 @@
 """Bounded failure/lesson memory for unattended Trading Skill training."""
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 COOLDOWN_THRESHOLD = 2
 DEFAULT_COOLDOWN_CYCLES = 6
 MAX_ERROR_SIGNATURES = 100
 MAX_LESSONS = 100
+
+_FETCH_ERROR_RE = re.compile(r"^fetch:(https?://\S+):\s+(.*)$")
 
 
 def _host(url: str) -> str:
@@ -16,20 +19,20 @@ def _host(url: str) -> str:
 def normalize_error(error: str) -> tuple[str, str | None, str]:
     """Return (signature, host, kind) without retaining volatile URL details."""
     text = error.strip()
-    if text.startswith("fetch:"):
-        parts = text.split(":", 2)
-        if len(parts) == 3:
-            url, detail = parts[1], parts[2].strip()
-            host = _host(url)
-            if "HTTP Error 403" in detail:
-                kind = "http_403"
-            elif "HTTP Error 429" in detail:
-                kind = "http_429"
-            elif "timed out" in detail.lower():
-                kind = "timeout"
-            else:
-                kind = detail[:80].lower().replace(" ", "_")
-            return f"fetch:{host}:{kind}", host or None, kind
+    match = _FETCH_ERROR_RE.match(text)
+    if match:
+        url, detail = match.groups()
+        host = _host(url)
+        if "HTTP Error 403" in detail:
+            kind = "http_403"
+        elif "HTTP Error 429" in detail:
+            kind = "http_429"
+        elif "timed out" in detail.lower():
+            kind = "timeout"
+        else:
+            kind = detail[:80].lower().replace(" ", "_")
+        return f"fetch:{host}:{kind}", host or None, kind
+
     if text.startswith("news-empty:"):
         return "news-empty:" + text.split(":", 2)[1], None, "news_empty"
     if text.startswith("news:"):
@@ -91,7 +94,6 @@ def record_learning_memory(state: dict, errors: list[str], *, cycle: int) -> lis
                 new_lessons.append(lesson)
                 lesson_signatures.add(signature)
 
-    # Keep the most recently seen signatures and a bounded lesson history.
     ranked = sorted(
         memory.items(),
         key=lambda item: int(item[1].get("last_seen_cycle", 0)),
