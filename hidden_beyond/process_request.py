@@ -11,7 +11,7 @@ from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.tts_model import PiperTTSProvider
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
-REPEAT_RE = re.compile(r"\b([\wÀ-ỹ]+)(?:\s+\1){2,}\b", re.IGNORECASE)
+REPEAT_RE = re.compile(r"\b([\wÀ-ỹ]+)(?:\s+\1)+\b", re.IGNORECASE)
 
 
 def parse_lines(raw: str, expected_indexes: list[int]) -> tuple[str | None, dict[int, str]]:
@@ -67,30 +67,28 @@ def main() -> None:
     req = json.loads(request_path.read_text(encoding="utf-8"))
     segments = req["segments"]
 
-    compact = [
-        {
-            "index": int(s["index"]),
-            "start": round(float(s["start"]), 2),
-            "end": round(float(s["end"]), 2),
-            "seconds": round(float(s["end"]) - float(s["start"]), 2),
-            "text": str(s["text"]),
-        }
-        for s in segments
-    ]
-    prompt = (
-        "You are the Vietnamese dubbing editor for Hidden Beyond. "
-        "Translate the ENTIRE English dialogue below with full episode context, not line-by-line in isolation. "
-        "Return plain tab-separated lines only, no JSON, no markdown and no commentary. "
-        "Use this exact shape: first line TITLE: Vietnamese title; then lines 1: Vietnamese dialogue, 2: Vietnamese dialogue, and so on. "
-        "Rules: output natural spoken Vietnamese only; never output Chinese/Japanese/Korean characters; "
-        "do not repeat a word or filler unnecessarily; preserve meaning; keep each line concise enough for its seconds value; "
-        "preserve proper names exactly: Pepper, Carrot, Saffron, Morevna, Synfig, RabbiDuck, DragonCow; "
-        "translate 'Pepper & Carrot' as 'Pepper & Carrot', not as vegetables; "
-        "keep every input index exactly once and in order. "
-        "Silently review the full translation for consistency, names, Vietnamese-only output and repetition before returning final lines.\n"
-        f"TITLE: {req['title']}\n"
-        "SEGMENTS_JSON:\n"
-        + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    proper_names = ("Pepper", "Carrot", "Saffron", "Morevna", "Synfig", "RabbiDuck", "DragonCow")
+
+    def make_prompt(index: int) -> str:
+        current = segments[index]
+        before = str(segments[index - 1]["text"]) if index > 0 else "(none)"
+        after = str(segments[index + 1]["text"]) if index + 1 < len(segments) else "(none)"
+        seconds = max(0.1, float(current["end"]) - float(current["start"]))
+        return (
+            "Translate CURRENT into concise, natural spoken Vietnamese for dubbing. Return ONLY the Vietnamese translation. "
+            "Use BEFORE and AFTER only as context; do not translate them. Never output Chinese/Japanese/Korean characters. "
+            "Never repeat a word or filler unnecessarily. Preserve all proper names exactly, including Pepper, Carrot, Saffron, "
+            "Morevna, Synfig, RabbiDuck and DragonCow. Pepper and Carrot are character names, not vegetables. "
+            "For fantasy dialogue, potion means thuốc phép. Keep the line short enough for the time window. "
+            "Silently check Vietnamese fluency, names and repetition before answering.\n"
+            f"SECONDS: {seconds:.2f}\nBEFORE: {before}\nCURRENT: {current['text']}\nAFTER: {after}"
+        )
+
+    prompts = [make_prompt(i) for i in range(len(segments))]
+    prompts.append(
+        "Translate this video title naturally into Vietnamese. Return ONLY the title. "
+        "Preserve proper names exactly; Pepper & Carrot must remain Pepper & Carrot. "
+        "Never output Chinese/Japanese/Korean characters and do not add commentary.\n" + str(req["title"])
     )
 
     worker = KaggleGpuWorker(
@@ -105,17 +103,26 @@ def main() -> None:
         kernel_slug="hidden-beyond-on-demand",
         poll_interval=5,
         max_poll_attempts=360,
-        max_new_tokens=1400,
+        max_new_tokens=128,
         temperature=0.0,
     )
-    response = llm.generate(prompt)
-    expected = [int(s["index"]) for s in segments]
-    raw_title, raw_by_index = parse_lines(response.text, expected)
-    title = validate_translation(raw_title, field="title")
-    by_index = {
-        idx: validate_translation(text, field=f"segment {idx}")
-        for idx, text in raw_by_index.items()
-    }
+    batch = llm.generate_many(prompts)
+    responses = batch.responses
+    if len(responses) != len(segments) + 1:
+        raise ValueError("AI response count does not match request")
+
+    def keep_names(source: str, translated: str, *, field: str) -> None:
+        for name in proper_names:
+            if name.casefold() in source.casefold() and name not in translated:
+                raise ValueError(f"{field} did not preserve proper name {name}: {translated}")
+
+    texts = []
+    for src, response in zip(segments, responses[:-1], strict=True):
+        vi = validate_translation(response.text, field=f"segment {src['index']}")
+        keep_names(str(src["text"]), vi, field=f"segment {src['index']}")
+        texts.append(vi)
+    title = validate_translation(responses[-1].text, field="title")
+    keep_names(str(req["title"]), title, field="title")
 
     texts = [by_index[int(s["index"])] for s in segments]
     voice = PiperTTSProvider(
@@ -155,7 +162,7 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"HIDDEN_BEYOND_AI_OK segments={len(out)} translation_calls=1 piper_processes=1")
+    print(f"HIDDEN_BEYOND_AI_OK segments={len(out)} kaggle_sessions=1 prompts={len(prompts)} piper_processes=1")
 
 
 if __name__ == "__main__":
