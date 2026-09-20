@@ -48,7 +48,13 @@ class KaggleNarrativeProcessor:
         if any(not lesson.strip() for lesson in self.lessons):
             raise ValueError("editorial lessons must be non-empty")
 
-    def process(self, source_text: str, *, target_language: str = "Vietnamese") -> NarrativeResult:
+    def process(
+        self,
+        source_text: str,
+        *,
+        target_language: str = "Vietnamese",
+        existing_script: str | None = None,
+    ) -> NarrativeResult:
         assert_core_invariants()
         source_text = source_text.strip()
         target_language = target_language.strip()
@@ -56,8 +62,16 @@ class KaggleNarrativeProcessor:
             raise ValueError("source_text must not be empty")
         if not target_language:
             raise ValueError("target_language must not be empty")
+        if existing_script is not None:
+            existing_script = existing_script.strip()
+            if not existing_script:
+                raise ValueError("existing_script must not be empty when provided")
 
-        source = self._build_worker_source(source_text, target_language)
+        source = self._build_worker_source(
+            source_text,
+            target_language,
+            existing_script=existing_script,
+        )
         compile(source, "<kaggle-narrative-worker>", "exec")
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
@@ -213,11 +227,19 @@ class KaggleNarrativeProcessor:
             issues.append("placeholder marker detected")
         return tuple(issues)
 
-    def _build_worker_source(self, source_text: str, target_language: str) -> str:
+    def _build_worker_source(
+        self,
+        source_text: str,
+        target_language: str,
+        *,
+        existing_script: str | None = None,
+    ) -> str:
         config = {
             "model": self.model,
             "source": source_text,
             "target_language": target_language,
+            "existing_script": existing_script,
+            "review_only": existing_script is not None,
             "max_revisions": self.max_revisions,
             "temperature": self.temperature,
             "semantic_model": self.semantic_model,
@@ -366,7 +388,10 @@ class KaggleNarrativeProcessor:
                 "Preserve event order. Do not add a new major plot event. Return only the rewritten script.\n"
                 f"EDITORIAL_LESSONS:\n{{lessons_text}}\nFACT_CHECKLIST:\n{{facts_json}}\nSOURCE:\n{{source}}"
             )
-            script = generate(draft_prompt, 1400).strip()
+            if CONFIG["review_only"]:
+                script = str(CONFIG["existing_script"]).strip()
+            else:
+                script = generate(draft_prompt, 1400).strip()
 
             def semantic_adjudicate_fact(fact_id, current):
                 fact = fact_by_id[fact_id]
@@ -557,7 +582,11 @@ class KaggleNarrativeProcessor:
             seen = {{fingerprint(script)}}
             strategy_history = []
 
-            while not review["passed"] and revisions < int(CONFIG["max_revisions"]):
+            while (
+                not CONFIG["review_only"]
+                and not review["passed"]
+                and revisions < int(CONFIG["max_revisions"])
+            ):
                 fact_by_id = {{item["id"]: item for item in facts}}
                 repair_payload = json.dumps({{
                     "missing_or_unpreserved": [
