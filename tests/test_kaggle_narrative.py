@@ -113,6 +113,9 @@ def test_kaggle_narrative_generated_worker_source_compiles():
     assert 'brief["characters"] = []' in source
     assert "def drop_event_duplicate_preserve" in source
     assert "best_event_score >= float(CONFIG[\"semantic_threshold\"])" in source
+    assert "def self_contained_preserve" in source
+    assert '"这些"' in source
+    assert '"những tồn tại này"' in source
     assert "torch.argsort(scores, descending=True)[:4]" in source
     assert 'candidate_evidence = "\\n".join(' in source
     assert "if not preserved and semantic_candidates:" in source
