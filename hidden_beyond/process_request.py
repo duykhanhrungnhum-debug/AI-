@@ -247,6 +247,18 @@ def adapt_fantasy_dubbing(source: str, translated: str) -> str:
         value = "Đúng thứ mình cần rồi!"
     if "two dozen of everything" in src:
         value = re.sub(r"(?i)2 tá tất cả", "mỗi thứ hai tá", value)
+    if "business is booming" in src:
+        value = "Ở quê làm ăn khấm khá lắm nhỉ?"
+    if "a potion challenge? tomorrow?" in src:
+        value = "Cuộc thi pha chế? Ngày mai à?"
+    if src.strip() == "oh... i know...":
+        value = "À... biết rồi..."
+    if "work all night long" in src:
+        value = "Thế là đủ để mình thức làm việc cả đêm rồi,"
+    if "make the best potion for tomorrow's challenge" in src:
+        value = "và pha ra loại thuốc phép tốt nhất cho cuộc thi ngày mai."
+    if "best coffee ever" in src:
+        value = "Mmm... cà phê ngon nhất từ trước đến giờ."
 
     value = re.sub(r"\s+", " ", value).strip()
     return value
