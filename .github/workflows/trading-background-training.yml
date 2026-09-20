@@ -1,6 +1,14 @@
 name: Trading Background Training
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/ai_agent/core/trading_skill.py'
+      - 'scripts/trading_background_train.py'
+      - 'tests/test_trading_skill.py'
+      - '.github/workflows/trading-background-training.yml'
+      - 'docs/TRADING_SKILL.md'
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
