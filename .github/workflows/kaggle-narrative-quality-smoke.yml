@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: kaggle-narrative-quality-smoke
+  group: kaggle-gpu-session
   cancel-in-progress: false
 
 jobs:
