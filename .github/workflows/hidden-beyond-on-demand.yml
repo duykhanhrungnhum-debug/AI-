@@ -26,7 +26,13 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.HIDDEN_BEYOND_GITHUB_TOKEN }}
-      PIPER_VOICE: vi_VN-vais1000-medium
+      ZEROTTS_VOICE: hamy
+      ZEROTTS_MODEL_DIR: ${{ github.workspace }}/zerotts-model
+      ZEROTTS_CFG_SCALE: "1.0"
+      ZEROTTS_AUDIO_TEMPERATURE: "0.78"
+      ZEROTTS_AUDIO_TOPK: "25"
+      ZEROTTS_AUDIO_TOPP: "0.95"
+      ZEROTTS_AUDIO_REPETITION_PENALTY: "1.2"
       HF_HOME: ${{ github.workspace }}/.cache/huggingface
     steps:
       - uses: actions/checkout@v4
@@ -64,12 +70,12 @@ jobs:
           echo "MARIAN_MODEL=$MODEL" >> "$GITHUB_ENV"
           echo "MARIAN_CACHE_KEY=hf-${MODEL//\//-}-v1" >> "$GITHUB_ENV"
 
-      - name: Restore Piper voice cache
-        id: piper-cache
+      - name: Restore ZeroTTS model cache
+        id: zerotts-cache
         uses: actions/cache/restore@v4
         with:
-          path: piper-voices
-          key: piper-${{ runner.os }}-${{ env.PIPER_VOICE }}-v1
+          path: ${{ env.ZEROTTS_MODEL_DIR }}
+          key: zerotts-${{ runner.os }}-mit-v1
 
       - name: Restore Marian model cache
         id: marian-cache
@@ -83,21 +89,21 @@ jobs:
         run: |
           set -Eeuo pipefail
           python -m pip install -e .
-          python -m pip install "piper-tts>=1.3,<2"
+          python -m pip install "zerotts>=0.1.5,<0.2"
           python -c "import torch" 2>/dev/null || python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3"
-          python -m pip install "transformers<5" sentencepiece sacremoses
-          mkdir -p piper-voices
-          if [ ! -s "piper-voices/$PIPER_VOICE.onnx" ] || [ ! -s "piper-voices/$PIPER_VOICE.onnx.json" ]; then
-            for attempt in 1 2 3 4; do
-              python -m piper.download_voices "$PIPER_VOICE" --download-dir piper-voices && break
-              if [ "$attempt" = "4" ]; then
-                echo "Piper voice download failed after bounded retries."
-                exit 1
-              fi
-              sleep $((attempt * 8))
-            done
+          python -m pip install "transformers<5" sentencepiece sacremoses huggingface_hub
+          if [ ! -s "$ZEROTTS_MODEL_DIR/config.json" ]; then
+            python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          path=snapshot_download(
+              repo_id="zeroweight-ai/ZeroTTS",
+              local_dir=os.environ["ZEROTTS_MODEL_DIR"],
+          )
+          print("ZEROTTS_MODEL_CACHED", path)
+          PY
           else
-            echo "Piper voice restored from cache."
+            echo "ZeroTTS model restored from cache."
           fi
 
       - name: Prefetch Marian model
@@ -112,12 +118,12 @@ jobs:
           print("MARIAN_MODEL_CACHED", model)
           PY
 
-      - name: Save Piper voice cache
-        if: ${{ steps.piper-cache.outputs.cache-hit != 'true' }}
+      - name: Save ZeroTTS model cache
+        if: ${{ steps.zerotts-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          path: piper-voices
-          key: piper-${{ runner.os }}-${{ env.PIPER_VOICE }}-v1
+          path: ${{ env.ZEROTTS_MODEL_DIR }}
+          key: zerotts-${{ runner.os }}-mit-v1
 
       - name: Save Marian model cache
         if: ${{ steps.marian-cache.outputs.cache-hit != 'true' }}
