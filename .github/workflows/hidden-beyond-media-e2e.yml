@@ -8,6 +8,7 @@ on:
       - ".github/workflows/hidden-beyond-media-e2e.yml"
       - "src/ai_agent/core/audio_quality.py"
       - "src/ai_agent/core/episode_pipeline.py"
+      - "src/ai_agent/core/kaggle_narrative.py"
 
 permissions:
   contents: read
@@ -69,15 +70,17 @@ jobs:
           from ai_agent.core.episode_pipeline import MediaProductionPipeline
           from ai_agent.core.kaggle_image_batch import KaggleBatchImageProvider
           from ai_agent.core.kaggle_model import KaggleModelProvider
+          from ai_agent.core.kaggle_narrative import KaggleNarrativeProcessor
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
           from ai_agent.core.scene_planner import ScenePlanner
           from ai_agent.core.tts_model import PiperTTSProvider
           from ai_agent.core.video_builder import FFmpegVideoBuilder
 
-          script = (
-              "Vào một đêm mưa, Lan nhận được một bức thư cũ không có tên người gửi. "
-              "Trong thư chỉ có một câu: Đừng mở cánh cửa cuối hành lang. "
-              "Cô ngẩng lên và nghe thấy ba tiếng gõ vọng ra từ chính cánh cửa ấy."
+          source = (
+              "On a stormy night, Lan found an old letter pushed beneath her apartment door. "
+              "There was no sender's name. The letter contained only one warning: "
+              "'Do not open the last door at the end of the corridor.' "
+              "As Lan finished reading, three knocks sounded from that very door."
           )
 
           worker = KaggleGpuWorker(
@@ -85,6 +88,27 @@ jobs:
               username=os.environ["KAGGLE_USERNAME"],
               timeout=120,
           )
+          narrative = KaggleNarrativeProcessor(
+              worker=worker,
+              model="Qwen/Qwen2.5-3B-Instruct",
+              kernel_slug="ai-agent-e2e-narrative",
+              poll_interval=15,
+              max_poll_attempts=120,
+              max_revisions=2,
+              temperature=0.0,
+          ).process(source, target_language="Vietnamese")
+          if not narrative.review.passed:
+              raise SystemExit(
+                  f"Narrative verification failed: {narrative.review.issues}"
+              )
+          script = narrative.script
+          if not script.strip():
+              raise SystemExit("Narrative processor returned an empty script")
+          Path("media-e2e-output/script.txt").write_text(
+              script + "\n",
+              encoding="utf-8",
+          )
+
           llm = KaggleModelProvider(
               worker=worker,
               model="Qwen/Qwen2.5-3B-Instruct",
@@ -147,6 +171,16 @@ jobs:
               raise SystemExit("Final video resolution is not 1280x720")
 
           manifest = {
+              "source": source,
+              "script": script,
+              "narrative": {
+                  "review_passed": narrative.review.passed,
+                  "issues": narrative.review.issues,
+                  "checks": narrative.review.checks,
+                  "reviewer": narrative.review.reviewer,
+                  "revision_count": narrative.revision_count,
+                  "evidence": narrative.evidence,
+              },
               "media_ready": result.media_ready,
               "scene_count": len(result.scene_plan.scenes),
               "audio": {
@@ -190,6 +224,9 @@ jobs:
           )
 
           print("HIDDEN_BEYOND_MEDIA_E2E_OK")
+          print(f"Narrative review passed: {narrative.review.passed}")
+          print(f"Narrative revisions: {narrative.revision_count}")
+          print("Verified script:", script)
           print(f"Scenes: {len(result.scene_plan.scenes)}")
           print(f"Piper seconds: {result.audio.duration_seconds:.3f}")
           print(f"Audio RMS ratio: {result.audio_quality.rms_ratio:.6f}")
