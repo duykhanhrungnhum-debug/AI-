@@ -1,0 +1,61 @@
+name: Hidden Beyond Story Narrative Verify
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-story-narrative-verify.yml"
+      - "scripts/hidden_beyond_story_narrative_verify.py"
+      - "src/ai_agent/core/kaggle_narrative.py"
+      - "src/ai_agent/core/kaggle_worker.py"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hidden-beyond-story-narrative-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      STORY_PROCESSOR_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/story-processor-api
+      OUTPUT_DIR: hidden-beyond-story-narrative-output
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install AI package
+        run: python -m pip install -e .
+
+      - name: Preflight compile worker
+        run: |
+          python -m py_compile scripts/hidden_beyond_story_narrative_verify.py
+          python -m py_compile src/ai_agent/core/kaggle_narrative.py
+
+      - name: Verify one production story narrative
+        run: python scripts/hidden_beyond_story_narrative_verify.py
+
+      - name: Upload narrative verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-story-narrative-output
+          path: hidden-beyond-story-narrative-output/
+          if-no-files-found: warn
+          retention-days: 7
