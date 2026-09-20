@@ -36,8 +36,9 @@ jobs:
           python-version: "3.11"
           cache: "pip"
           cache-dependency-path: pyproject.toml
-      - name: Cache Piper voice
-        uses: actions/cache@v4
+      - name: Restore Piper voice cache
+        id: piper-cache
+        uses: actions/cache/restore@v4
         with:
           path: piper-voices
           key: piper-${{ runner.os }}-${{ env.PIPER_VOICE }}-v1
@@ -73,6 +74,12 @@ jobs:
           else
             echo "Piper voice restored from cache."
           fi
+      - name: Save Piper voice cache
+        if: ${{ steps.piper-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: piper-voices
+          key: piper-${{ runner.os }}-${{ env.PIPER_VOICE }}-v1
       - name: Translate and synthesize on demand
         run: |
           python hidden_beyond/process_request.py
