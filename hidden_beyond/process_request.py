@@ -31,38 +31,70 @@ def mask_names_for_translation(text: str) -> tuple[str, tuple[tuple[str, str], .
     return masked, tuple(mapping)
 
 
-def restore_masked_names(text: str, mapping: tuple[tuple[str, str], ...], *, field: str) -> str:
-    """Restore names even when the translation model slightly mutates numeric codes."""
+def restore_masked_names(
+    text: str,
+    mapping: tuple[tuple[str, str], ...],
+    *,
+    field: str,
+    source: str,
+) -> str:
+    """Restore exact names using codes first, then source-position fallback."""
     value = text
     missing: list[str] = []
 
-    # Prefer exact codes when available.
     for token, name in mapping:
         if name in value:
             continue
         compact = re.sub(r"\D", "", token)
-        pattern = r"\s*".join(re.escape(ch) for ch in compact)
-        match = re.search(pattern, value)
+        exact_pattern = r"\s*".join(re.escape(ch) for ch in compact)
+        match = re.search(exact_pattern, value)
         if match:
             value = value[:match.start()] + name + value[match.end():]
         else:
             missing.append(name)
 
-    if not missing:
-        return value
+    if missing:
+        candidates = list(re.finditer(r"(?<!\d)\d{6}(?!\d)", value))
+        replace_count = min(len(candidates), len(missing))
+        if replace_count:
+            chosen = candidates[:replace_count]
+            chosen_names = missing[:replace_count]
+            for match, name in reversed(list(zip(chosen, chosen_names, strict=True))):
+                value = value[:match.start()] + name + value[match.end():]
+            missing = missing[replace_count:]
 
-    # Translation models usually keep a six-digit marker but may alter one digit.
-    # Remaining six-digit numbers are placeholders because dialogue numbers here are short.
-    candidates = list(re.finditer(r"(?<!\d)\d{6}(?!\d)", value))
-    if len(candidates) < len(missing):
-        raise ValueError(
-            f"{field} lost protected name markers for {missing}: {value}"
-        )
+    if missing:
+        source_lower = source.casefold()
+        start_names: list[str] = []
+        end_names: list[str] = []
+        middle_names: list[str] = []
+        for name in missing:
+            pos = source_lower.find(name.casefold())
+            ratio = (pos / max(1, len(source))) if pos >= 0 else 0.5
+            if ratio <= 0.30:
+                start_names.append(name)
+            elif ratio >= 0.70:
+                end_names.append(name)
+            else:
+                middle_names.append(name)
 
-    # Replace from right to left so indexes stay valid, pairing in source order.
-    chosen = candidates[:len(missing)]
-    for match, name in reversed(list(zip(chosen, missing, strict=True))):
-        value = value[:match.start()] + name + value[match.end():]
+        if start_names:
+            connector = " & " if " & " in source else ", "
+            prefix = connector.join(start_names)
+            value = f"{prefix}, {value.lstrip(' ,.-')}"
+
+        if middle_names:
+            # Rare fallback when a model deletes a marker entirely.
+            # Keep identity correct rather than silently inventing a translated name.
+            value = f"{value.rstrip()} ({', '.join(middle_names)})"
+
+        if end_names:
+            suffix = " & ".join(end_names) if " & " in source else ", ".join(end_names)
+            value = f"{value.rstrip(' .,!?:;')} {suffix}"
+
+    for _, name in mapping:
+        if name not in value:
+            raise ValueError(f"{field} could not restore proper name {name}: {value}")
     return value
 
 
@@ -164,9 +196,11 @@ def main() -> None:
     translation_seconds = time.monotonic() - translation_started
 
     restored = [
-        restore_masked_names(raw, mapping, field=f"item {index}")
+        restore_masked_names(raw, mapping, field=f"item {index}", source=source)
         if mapping else raw
-        for index, (raw, mapping) in enumerate(zip(raw_translations, name_maps, strict=True), 1)
+        for index, (raw, mapping, source) in enumerate(
+            zip(raw_translations, name_maps, source_texts, strict=True), 1
+        )
     ]
     cleaned = [
         clean_translation(raw, field=f"segment {index}")
