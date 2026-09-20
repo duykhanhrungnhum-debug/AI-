@@ -129,6 +129,17 @@ def media_duration(path: Path) -> float:
         raise RuntimeError("ffprobe did not return media duration") from exc
 
 
+def classify_failure(error: BaseException) -> str:
+    text = str(error).casefold()
+    if (
+        "maximum batch gpu session count" in text
+        or "cuda out of memory" in text
+        or "torch.outofmemoryerror" in text
+    ):
+        return "resource_capacity"
+    return "visual"
+
+
 def record_failure(episode_id: int, error: BaseException) -> None:
     try:
         response = api_post(
@@ -136,6 +147,7 @@ def record_failure(episode_id: int, error: BaseException) -> None:
             {
                 "episode_id": episode_id,
                 "error": str(error)[:2000],
+                "failure_kind": classify_failure(error),
                 "repair_signature": REPAIR_SIGNATURE,
             },
         )
