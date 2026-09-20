@@ -71,6 +71,8 @@ def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -
         CONFIG = json.loads({config_json!r})
         try:
             import torch
+            import sentencepiece
+            import sacremoses
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
         except ImportError:
             subprocess.check_call([
@@ -78,6 +80,8 @@ def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -
                 "transformers<5", "sentencepiece", "sacremoses",
             ])
             import torch
+            import sentencepiece
+            import sacremoses
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
