@@ -1,0 +1,90 @@
+name: Hidden Beyond Retrieve Full Source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-source-retrieve.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      KAGGLE_KERNEL_SLUG: hidden-beyond-source-download-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e .
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Wait for full source output
+        run: |
+          mkdir -p source-output
+          python - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import Request,urlopen
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"],timeout=120)
+          slug=os.environ["KAGGLE_KERNEL_SLUG"]
+          meta=None
+          urls={}
+          for i in range(1,181):
+              try:
+                  m=w.output_metadata(slug)
+                  files=m.get("files") if isinstance(m,dict) else None
+                  found={}
+                  for x in files or []:
+                      if isinstance(x,dict):
+                          n=x.get("fileName",x.get("file_name"))
+                          u=x.get("url")
+                          if n in {"source.mp4","source-meta.json"} and isinstance(u,str):
+                              found[n]=u
+                  print("OUTPUT_POLL",i,sorted(found),flush=True)
+                  if set(found)=={"source.mp4","source-meta.json"}:
+                      meta=m; urls=found; break
+              except HTTPError as e:
+                  if e.code not in (403,404,409):
+                      raise
+                  print("OUTPUT_TRANSIENT",i,e.code,flush=True)
+              time.sleep(15)
+          else:
+              raise SystemExit("Timed out waiting for full source output")
+
+          for name in ("source-meta.json","source.mp4"):
+              print("DOWNLOADING",name,flush=True)
+              req=Request(urls[name],headers={"User-Agent":"Hidden-Beyond-Source/1.0"})
+              with urlopen(req,timeout=180) as src, open("source-output/"+name,"wb") as dst:
+                  while True:
+                      chunk=src.read(1024*1024)
+                      if not chunk: break
+                      dst.write(chunk)
+          d=json.load(open("source-output/source-meta.json",encoding="utf-8"))
+          if d.get("id")!="vaY4URFw0cg":
+              raise SystemExit("Unexpected source id: "+repr(d))
+          print("FULL_SOURCE_RETRIEVED",json.dumps(d,ensure_ascii=False),flush=True)
+          PY
+          test -s source-output/source.mp4
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 source-output/source.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 source-output/source.mp4 | grep -q audio
+          echo "FULL_SOURCE_VERIFIED bytes=$(stat -c%s source-output/source.mp4)"
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-full-source
+          path: source-output/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
