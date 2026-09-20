@@ -1,0 +1,97 @@
+name: Hidden Beyond AI Bridge E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-ai-bridge-e2e.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  bridge-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      PIPER_VOICE: vi_VN-vais1000-medium
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Require AI runtime credential
+        run: |
+          test -n "$KAGGLE_API_TOKEN" || { echo "KAGGLE_API_TOKEN missing"; exit 1; }
+      - name: Install AI- and Vietnamese voice runtime
+        run: |
+          python -m pip install -e .
+          python -m pip install "piper-tts>=1.3,<2"
+          mkdir -p piper-voices bridge-output
+          python -m piper.download_voices "$PIPER_VOICE" --download-dir piper-voices
+      - name: Run real Bot-style request through AI- Qwen and Piper
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ai_agent.core.kaggle_model import KaggleModelProvider
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          from ai_agent.core.tts_model import PiperTTSProvider
+
+          source = "The young cultivator refused to surrender and stepped into the ancient formation."
+          worker = KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"], username=os.environ["KAGGLE_USERNAME"])
+          llm = KaggleModelProvider(
+              worker=worker,
+              model="Qwen/Qwen2.5-3B-Instruct",
+              kernel_slug="hidden-beyond-ai-bridge",
+              poll_interval=15,
+              max_poll_attempts=120,
+              max_new_tokens=128,
+              temperature=0.0,
+          )
+          prompt = (
+              "You are the AI- service for the Hidden Beyond bot. Translate this dialogue into natural "
+              "Vietnamese suitable for dubbing. Return only Vietnamese text:\n" + source
+          )
+          translated = llm.generate(prompt)
+          if not translated.text.strip():
+              raise SystemExit("AI- translation is empty")
+          voice = os.environ["PIPER_VOICE"]
+          tts = PiperTTSProvider(
+              model_path=f"piper-voices/{voice}.onnx",
+              binary="piper",
+              timeout=300,
+              min_duration_seconds=0.5,
+          )
+          audio = tts.synthesize(translated.text)
+          Path("bridge-output/vi.txt").write_text(translated.text + "\n", encoding="utf-8")
+          Path("bridge-output/vi.wav").write_bytes(audio.data)
+          report = {
+              "source": source,
+              "translation": translated.text,
+              "llm_provider": translated.provider,
+              "llm_model": translated.model,
+              "tts_provider": audio.provider,
+              "duration_seconds": audio.duration_seconds,
+              "sample_rate": audio.sample_rate,
+              "channels": audio.channels,
+              "tts_evidence": audio.evidence,
+          }
+          Path("bridge-output/report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
+          print("HIDDEN_BEYOND_AI_BRIDGE_E2E_OK")
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+      - name: Upload verified bridge evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-ai-bridge-e2e
+          path: bridge-output/
+          if-no-files-found: warn
