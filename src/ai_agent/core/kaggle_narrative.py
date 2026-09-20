@@ -343,12 +343,35 @@ class KaggleNarrativeProcessor:
                 ) from last_error
 
             def string_list(value, label, limit=None):
-                if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                    raise RuntimeError(f"{{label}} must be an array of strings")
+                if value is None:
+                    return []
+                if isinstance(value, str):
+                    value = [value]
+                elif isinstance(value, dict):
+                    nested = None
+                    for key in ("items", "values", label):
+                        candidate = value.get(key)
+                        if isinstance(candidate, list):
+                            nested = candidate
+                            break
+                    value = nested or []
+                elif not isinstance(value, list):
+                    return []
+
                 result = []
                 seen = set()
                 for item in value:
-                    item = re.sub(r"\\s+", " ", item).strip()
+                    if isinstance(item, dict):
+                        text_value = ""
+                        for key in ("name", "fact", "text", "value", "label"):
+                            candidate = item.get(key)
+                            if isinstance(candidate, str) and candidate.strip():
+                                text_value = candidate
+                                break
+                        item = text_value
+                    elif not isinstance(item, str):
+                        continue
+                    item = re.sub(r"\s+", " ", item).strip()
                     key = item.casefold()
                     if not item or key in seen:
                         continue
@@ -418,10 +441,9 @@ class KaggleNarrativeProcessor:
                 for index, piece in enumerate(chunks, 1):
                     piece_brief = analyze_piece(piece, index, len(chunks))
                     for key in merged:
-                        values = piece_brief.get(key, [])
-                        if not isinstance(values, list):
-                            raise RuntimeError(f"narrative analysis chunk {{index}} field {{key}} must be an array")
-                        merged[key].extend(values)
+                        merged[key].extend(
+                            string_list(piece_brief.get(key, []), key)
+                        )
                 brief = {{
                     "characters": string_list(merged["characters"], "characters", 6),
                     "events": string_list(merged["events"], "events", 12),
