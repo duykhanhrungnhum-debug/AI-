@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from time import sleep
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -230,8 +231,16 @@ class KaggleGpuWorker:
                 "User-Agent": self.user_agent,
             },
         )
-        with urlopen(request, timeout=self.timeout) as response:
-            raw = response.read().decode("utf-8")
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                raw = response.read().decode("utf-8")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            if len(detail) > 4000:
+                detail = detail[:4000] + "...[truncated]"
+            raise RuntimeError(
+                f"Kaggle HTTP {exc.code} for {method} {path}: {detail or exc.reason}"
+            ) from exc
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
