@@ -124,11 +124,11 @@ def mux_with_original(input_path: Path, voice: Path, output: Path) -> str:
             "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,"
             "highpass=f=35[orig];"
             "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,"
-            "volume=1.20[voice];"
-            "[orig][voice]sidechaincompress="
+            "volume=1.20,asplit=2[voice_sc][voice_mix];"
+            "[orig][voice_sc]sidechaincompress="
             "threshold=0.012:ratio=9:attack=12:release=280:makeup=1[ducked];"
             "[ducked]volume=0.72[bed];"
-            "[bed][voice]amix=inputs=2:weights='1 1':normalize=0,"
+            "[bed][voice_mix]amix=inputs=2:weights='1 1':normalize=0,"
             "alimiter=limit=0.95[outa]"
         )
         cmd=[
