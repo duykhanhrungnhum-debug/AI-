@@ -58,7 +58,7 @@ jobs:
           import json
           d=json.load(open("request/request.json",encoding="utf-8"))
           lang=str(d.get("detected_language","en")).lower()
-          print("Helsinki-NLP/opus-mt-zh-vi" if lang.startswith(("zh","cmn","yue")) else "Helsinki-NLP/opus-mt-en-vi")
+          print("Helsinki-NLP/opus-mt-zh-vi" if lang.startswith(("zh","cmn","yue")) else "VietAI/envit5-translation")
           PY
           )"
           echo "MARIAN_MODEL=$MODEL" >> "$GITHUB_ENV"
