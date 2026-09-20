@@ -1,0 +1,234 @@
+name: Hidden Beyond Longform Auto
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/longform/auto.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: hidden-beyond-longform-auto
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install coordinator tools
+        run: |
+          set -Eeuo pipefail
+          echo "bootstrap" > orchestrator-stage.txt
+          test -n "$KAGGLE_API_TOKEN"
+          python -m pip install -e .
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
+          jq . hidden_beyond/longform/auto.json
+
+      - name: Retrieve source video once
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "retrieve_source_artifact" > orchestrator-stage.txt
+          SOURCE_RUN_ID="$(jq -r '.source_run_id' hidden_beyond/longform/auto.json)"
+          test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != "null"
+          mkdir -p source-input
+          gh run download "$SOURCE_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name hidden-beyond-full-source             --dir source-input
+          test -s source-input/source.mp4
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 source-input/source.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 source-input/source.mp4 | grep -q audio
+          echo "SOURCE_ARTIFACT_READY bytes=$(stat -c%s source-input/source.mp4)"
+
+      - name: Extract compact AI input audio
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "extract_input_audio" > orchestrator-stage.txt
+          ffmpeg -y -v error -i source-input/source.mp4             -vn -ac 1 -ar 16000 -c:a libmp3lame -b:a 48k source-audio.mp3
+          test -s source-audio.mp3
+          SIZE="$(stat -c%s source-audio.mp3)"
+          test "$SIZE" -lt 41943040
+          echo "AI_INPUT_AUDIO_READY bytes=$SIZE"
+
+      - name: Create tracked processing job
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "create_supabase_job" > orchestrator-stage.txt
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          SERIES_ID="$(jq -r '.series_id' hidden_beyond/longform/auto.json)"
+          SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/longform/auto.json)"
+          jq -n --argjson series_id "$SERIES_ID" --arg source_video_id "$SOURCE_VIDEO_ID"             '{series_id:$series_id,source_video_id:$source_video_id}' > start-body.json
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/start"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @start-body.json > start.json
+          cat start.json
+          test "$(jq -r '.stage' start.json)" = "job_created"
+          jq -r '.job_id' start.json > job-id.txt
+          echo "TRACKED_JOB_CREATED id=$(cat job-id.txt)"
+
+      - name: Upload compact audio for AI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "upload_input_audio" > orchestrator-stage.txt
+          URL="$(jq -r '.input_audio_upload_url' start.json)"
+          test -n "$URL" && test "$URL" != "null"
+          curl --fail-with-body -sS -X PUT "$URL"             -H "content-type: audio/mpeg"             -H "x-upsert: true"             --data-binary @source-audio.mp3 > input-upload.json
+          echo "AI_INPUT_UPLOADED"
+
+      - name: Submit GPU AI worker
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "submit_gpu_worker" > orchestrator-stage.txt
+          python scripts/submit_hidden_beyond_audio_worker.py --start start.json
+          test -s gpu-submission.json
+          cat gpu-submission.json
+
+      - name: Follow AI progress through Supabase heartbeat
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "follow_ai_heartbeat" > orchestrator-stage.txt
+          JOB_ID="$(cat job-id.txt)"
+          for i in $(seq 1 180); do
+            OIDC="$(curl -fsSL               -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > status-body.json
+            curl --fail-with-body -sS -X POST "$LONGFORM_API/status"               -H "Authorization: Bearer $OIDC"               -H "content-type: application/json"               --data-binary @status-body.json > status.json
+            STATE="$(jq -r '.job.state' status.json)"
+            STAGE="$(jq -r '.job.stage' status.json)"
+            MSG="$(jq -r '.job.message // ""' status.json)"
+            AGE="$(jq -r '.job.heartbeat_age_seconds // 0' status.json)"
+            echo "AI_PROGRESS poll=$i state=$STATE stage=$STAGE heartbeat_age=${AGE}s message=$MSG"
+            if [ "$STAGE" = "ai_ready" ]; then
+              echo "AI_READY"
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ] || [ "$STATE" = "stalled" ]; then
+              echo "::error title=Hidden Beyond AI stopped::$STATE / $STAGE / $MSG"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error title=Hidden Beyond AI timeout::No ai_ready state within 90 minutes."
+          exit 1
+
+      - name: Fetch AI outputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "fetch_ai_outputs" > orchestrator-stage.txt
+          JOB_ID="$(cat job-id.txt)"
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > result-body.json
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/result"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @result-body.json > result.json
+          test "$(jq -r '.stage' result.json)" = "ai_ready"
+          mkdir -p ai-output
+          curl -fL --retry 3 "$(jq -r '.voice_audio_url' result.json)" -o ai-output/voice.mp3
+          curl -fL --retry 3 "$(jq -r '.subtitle_url' result.json)" -o ai-output/vi.srt
+          curl -fL --retry 3 "$(jq -r '.metadata_url' result.json)" -o ai-output/metadata.json
+          test -s ai-output/voice.mp3
+          test -s ai-output/vi.srt
+          test -s ai-output/metadata.json
+          jq . ai-output/metadata.json
+
+      - name: Mux Vietnamese voice with original video
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "mux_final_video" > orchestrator-stage.txt
+          FILTER="[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35[orig];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.18,asplit=2[sc][voice];[orig][sc]sidechaincompress=threshold=0.010:ratio=14:attack=8:release=260:makeup=1[duck];[duck]volume=0.48[bed];[bed][voice]amix=inputs=2:weights='1 1':normalize=0,alimiter=limit=0.95[outa]"
+          ffmpeg -y -v error             -i source-input/source.mp4             -i ai-output/voice.mp3             -filter_complex "$FILTER"             -map 0:v:0 -map "[outa]"             -c:v copy -c:a aac -b:a 160k             -movflags +faststart -shortest final.mp4
+          test -s final.mp4
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 final.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 final.mp4 | grep -q audio
+          SRC_DUR="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 source-input/source.mp4)"
+          OUT_DUR="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final.mp4)"
+          python - "$SRC_DUR" "$OUT_DUR" <<'PY'
+          import sys
+          a,b=map(float,sys.argv[1:])
+          if abs(a-b)>3.0:
+              raise SystemExit(f"duration mismatch source={a} output={b}")
+          print(f"FINAL_MEDIA_VERIFIED source={a:.3f}s output={b:.3f}s")
+          PY
+
+      - name: Upload exactly this episode to YouTube
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "youtube_upload" > orchestrator-stage.txt
+          URL="$(jq -r '.youtube_upload_url' result.json)"
+          test -n "$URL" && test "$URL" != "null"
+          curl --fail-with-body -sS -X PUT "$URL"             -H "content-type: video/mp4"             --data-binary @final.mp4 > youtube-upload.json
+          cat youtube-upload.json
+          VIDEO_ID="$(jq -r '.id' youtube-upload.json)"
+          test -n "$VIDEO_ID" && test "$VIDEO_ID" != "null"
+          echo "$VIDEO_ID" > youtube-video-id.txt
+          echo "YOUTUBE_UPLOAD_DONE id=$VIDEO_ID"
+
+      - name: Attach playlist and complete tracked job
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "complete_job" > orchestrator-stage.txt
+          JOB_ID="$(cat job-id.txt)"
+          JOB_TOKEN="$(jq -r '.job_token' start.json)"
+          VIDEO_ID="$(cat youtube-video-id.txt)"
+          jq -n --arg job_id "$JOB_ID" --arg youtube_video_id "$VIDEO_ID"             '{job_id:$job_id,youtube_video_id:$youtube_video_id}' > complete-body.json
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/complete"             -H "x-job-token: $JOB_TOKEN"             -H "content-type: application/json"             --data-binary @complete-body.json > complete.json
+          cat complete.json
+          test "$(jq -r '.stage' complete.json)" = "uploaded"
+          echo "HIDDEN_BEYOND_FIRST_EPISODE_UPLOADED https://www.youtube.com/watch?v=$VIDEO_ID"
+
+      - name: Report orchestrator failure
+        if: failure() || cancelled()
+        shell: bash
+        run: |
+          set +e
+          STAGE="$(cat orchestrator-stage.txt 2>/dev/null || echo unknown)"
+          echo "::error title=Hidden Beyond pipeline stopped::Stopped at stage $STAGE"
+          echo "## Hidden Beyond pipeline stopped" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Stage:** $STAGE" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s start.json ]; then
+            JOB_ID="$(jq -r '.job_id // empty' start.json)"
+            JOB_TOKEN="$(jq -r '.job_token // empty' start.json)"
+            if [ -n "$JOB_ID" ] && [ -n "$JOB_TOKEN" ]; then
+              jq -n --arg job_id "$JOB_ID" --arg error "Orchestrator failed at stage $STAGE"                 '{job_id:$job_id,error:$error}' > orchestrator-fail.json
+              curl -sS -X POST "$LONGFORM_API/fail"                 -H "x-job-token: $JOB_TOKEN"                 -H "content-type: application/json"                 --data-binary @orchestrator-fail.json || true
+            fi
+          fi
+
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-longform-auto-evidence
+          path: |
+            start.json
+            gpu-submission.json
+            status.json
+            result.json
+            ai-output/metadata.json
+            ai-output/vi.srt
+            youtube-upload.json
+            complete.json
+            orchestrator-stage.txt
+          if-no-files-found: warn
+          retention-days: 7
