@@ -91,6 +91,8 @@ def classify_failure(error: BaseException) -> str:
         "not valid json" in text
         or "local model returned empty text" in text
         or "review checks and contradictions must be arrays" in text
+        or "must be an array of strings" in text
+        or "narrative analysis chunk" in text
     ):
         return "model_output"
     return "verification"
