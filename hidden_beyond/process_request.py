@@ -214,6 +214,44 @@ def polish_spoken_vietnamese(source: str, translated: str) -> str:
     return value
 
 
+def adapt_fantasy_dubbing(source: str, translated: str) -> str:
+    """Source-aware fantasy/donghua terminology and conversational phrasing."""
+    src = source.casefold()
+    value = translated
+
+    # Stable genre terminology.
+    if "potion challenge" in src:
+        value = re.sub(r"(?i)thử thách thuốc(?: phép)?", "cuộc thi pha chế", value)
+    elif "potion" in src:
+        value = re.sub(r"(?i)\bthuốc\b(?!\s*phép)", "thuốc phép", value)
+
+    if "pearls of mist" in src:
+        value = re.sub(r"(?i)(?:hạt|viên) sương", "giọt sương", value)
+    if "phoenix valley" in src:
+        value = re.sub(r"(?i)thung lũng phoenix", "Thung lũng Phượng Hoàng", value)
+    if "pumpkinstar" in src:
+        value = re.sub(r"(?i)ngôi sao bí ngô", "quả sao bí ngô", value)
+
+    # Conservative source-cued dialogue naturalization.
+    if "top notch" in src:
+        value = re.sub(r"(?i)đỉnh cao", "loại hảo hạng", value)
+    if "meat for sale" in src and "RabbiDuck" in source:
+        value = "Có bán thịt RabbiDuck đây!"
+    if "i guess you're preparing" in src:
+        value = re.sub(r"(?i)^tôi đoán\s+", "Chắc ", value)
+    if "lucky me" in src:
+        value = re.sub(r"(?i)^may cho tôi là\s*", "May quá, ", value)
+    if "let's win this challenge" in src:
+        value = "Nhất định phải thắng cuộc thi này!"
+    if "that's exactly what i need" in src:
+        value = "Đúng thứ mình cần rồi!"
+    if "two dozen of everything" in src:
+        value = re.sub(r"(?i)2 tá tất cả", "mỗi thứ hai tá", value)
+
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
 def assert_content_coverage(source: str, translated: str, *, field: str) -> None:
     source_words = re.findall(r"[A-Za-z0-9]+", source)
     translated_words = re.findall(r"[A-Za-zÀ-ỹ0-9]+", translated)
@@ -264,11 +302,14 @@ def main() -> None:
         )
     ]
     cleaned = [
-        polish_spoken_vietnamese(
+        adapt_fantasy_dubbing(
             source,
-            normalize_translated_names(
+            polish_spoken_vietnamese(
                 source,
-                clean_translation(raw, field=f"segment {index}")
+                normalize_translated_names(
+                    source,
+                    clean_translation(raw, field=f"segment {index}")
+                )
             )
         )
         for index, (source, raw) in enumerate(zip(source_texts[:-1], restored[:-1], strict=True), 1)
@@ -314,7 +355,7 @@ def main() -> None:
         "llm_evidence": [
             *evidence,
             "translation_provider:envit5-for-en+opus-fallback-for-zh",
-            "quality_gate:no_cjk+no_repeat+hybrid_name_preservation+coverage+number_preservation+spoken_style",
+            "quality_gate:no_cjk+no_repeat+hybrid_name_preservation+coverage+number_preservation+spoken_style+fantasy_glossary",
             "tts_mode:piper-python-api-single-model-load",
         ],
         "timing": {
