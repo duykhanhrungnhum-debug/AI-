@@ -75,8 +75,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          curl --fail-with-body -sS -X PUT "$(jq -r '.processed.signedUrl' prepare.json)" -H "content-type: video/mp4" -H "cache-control: max-age=3600" -H "x-upsert: true" --data-binary @processed.mp4
-          curl --fail-with-body -sS -X PUT "$(jq -r '.subtitle.signedUrl' prepare.json)" -H "content-type: text/plain" -H "cache-control: max-age=3600" -H "x-upsert: true" --data-binary @vi.srt
+          curl --fail-with-body -sS --retry 4 --retry-all-errors --retry-delay 2 -X PUT "$(jq -r '.processed.signedUrl' prepare.json)" -H "content-type: video/mp4" -H "cache-control: max-age=3600" -H "x-upsert: true" --data-binary @processed.mp4
+          curl --fail-with-body -sS --retry 4 --retry-all-errors --retry-delay 2 -X PUT "$(jq -r '.subtitle.signedUrl' prepare.json)" -H "content-type: text/plain" -H "cache-control: max-age=3600" -H "x-upsert: true" --data-binary @vi.srt
 
       - name: Mark processed
         shell: bash
