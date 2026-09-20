@@ -4,12 +4,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import textwrap
 import time
 from pathlib import Path
-from urllib.error import HTTPError
 
-from ai_agent.core.kaggle_worker import KaggleGpuWorker
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
 from ai_agent.core.tts_model import PiperTTSProvider
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -58,123 +58,30 @@ def clean_translation(text: str, *, field: str) -> str:
     return value
 
 
-def translate_on_kaggle(worker: KaggleGpuWorker, model: str, texts: list[str]) -> tuple[list[str], tuple[str, ...]]:
-    run_suffix = re.sub(r"[^a-z0-9-]", "-", os.environ.get("GITHUB_RUN_ID", "local").casefold())
-    slug = f"hidden-beyond-marian-{run_suffix}"[:50].rstrip("-")
-    config = {"model": model, "texts": texts}
-    config_json = json.dumps(config, ensure_ascii=False)
-    source = textwrap.dedent(
-        f"""
-        from __future__ import annotations
-        import json
-        import subprocess
-        import sys
-        from pathlib import Path
-
-        CONFIG = json.loads({config_json!r})
-        try:
-            import torch
-            import sentencepiece
-            import sacremoses
-            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        except ImportError:
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", "--quiet",
-                "transformers<5", "sentencepiece", "sacremoses",
-            ])
-            import torch
-            import sentencepiece
-            import sacremoses
-            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
-        tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
-        kwargs = {{"device_map": "auto"}} if torch.cuda.is_available() else {{}}
-        model = AutoModelForSeq2SeqLM.from_pretrained(CONFIG["model"], **kwargs)
-        model.eval()
-
-        responses = []
-        batch_size = 16
-        for start in range(0, len(CONFIG["texts"]), batch_size):
-            batch = CONFIG["texts"][start:start + batch_size]
-            inputs = tokenizer(
-                batch,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=256,
+def translate_local(model_name: str, texts: list[str]) -> tuple[list[str], tuple[str, ...]]:
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to("cpu")
+    model.eval()
+    responses: list[str] = []
+    batch_size = 16
+    with torch.inference_mode():
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=256)
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=128,
+                num_beams=4,
+                repetition_penalty=1.05,
+                no_repeat_ngram_size=3,
+                early_stopping=True,
             )
-            if not kwargs:
-                inputs = {{key: value.to(device) for key, value in inputs.items()}}
-                model = model.to(device)
-            else:
-                inputs = {{key: value.to(model.device) for key, value in inputs.items()}}
-            with torch.inference_mode():
-                generated = model.generate(
-                    **inputs,
-                    max_new_tokens=128,
-                    num_beams=4,
-                    repetition_penalty=1.05,
-                    no_repeat_ngram_size=3,
-                    early_stopping=True,
-                )
             responses.extend(tokenizer.batch_decode(generated, skip_special_tokens=True))
-
-        Path("/kaggle/working/translations.json").write_text(
-            json.dumps({{
-                "model": CONFIG["model"],
-                "gpu_name": gpu_name,
-                "responses": responses,
-            }}, ensure_ascii=False, indent=2) + "\\n",
-            encoding="utf-8",
-        )
-        print("HIDDEN_BEYOND_MARIAN_OK", len(responses), CONFIG["model"], gpu_name)
-        """
-    ).strip() + "\n"
-
-    submission = worker.submit_script(
-        slug=slug,
-        title="Hidden Beyond Marian Translation",
-        source=source,
-        enable_internet=True,
-        is_private=True,
-    )
-    time.sleep(5)
-    transient_status_errors = 0
-    for _ in range(180):
-        try:
-            status = worker.status(slug)
-            transient_status_errors = 0
-        except HTTPError as exc:
-            if exc.code not in {403, 404, 429}:
-                raise
-            transient_status_errors += 1
-            if transient_status_errors > 12:
-                raise RuntimeError(f"Kaggle status stayed unavailable with HTTP {exc.code}") from exc
-            time.sleep(min(5 * transient_status_errors, 30))
-            continue
-        if status.terminal:
-            if not status.successful:
-                logs = worker.logs(slug)
-                raise RuntimeError(f"Marian Kaggle worker failed: {status.status} {status.failure_message}\n{logs[-5000:]}")
-            break
-        time.sleep(5)
-    else:
-        raise TimeoutError("Timed out waiting for Marian Kaggle worker")
-
-    raw = worker.download_output_file(slug, "translations.json")
-    report = json.loads(raw.decode("utf-8"))
-    responses = report.get("responses")
-    if report.get("model") != model or not isinstance(responses, list) or len(responses) != len(texts):
-        raise ValueError("Marian translation report does not match request")
-    gpu_name = str(report.get("gpu_name", "")).strip()
-    if not gpu_name:
-        raise ValueError("Marian translation report lacks runtime evidence")
-    return [str(item) for item in responses], (
-        f"kaggle_kernel:{submission.ref}",
-        f"gpu:{gpu_name}",
-        f"model:{model}",
+    if len(responses) != len(texts):
+        raise ValueError("Marian translation response count does not match request")
+    return responses, (
+        "runtime:github-actions-cpu",
+        f"model:{model_name}",
         f"response_count:{len(responses)}",
     )
 
@@ -197,15 +104,9 @@ def main() -> None:
     protected_texts.append(protected_title)
     restore_maps.append(title_names)
 
-    worker = KaggleGpuWorker(
-        api_token=os.environ["KAGGLE_API_TOKEN"],
-        username=os.environ["KAGGLE_USERNAME"],
-        submission_retry_attempts=3,
-        submission_retry_delay_seconds=10.0,
-    )
-    model = model_for(str(req.get("detected_language", "en")))
+    model_name = model_for(str(req.get("detected_language", "en")))
     translation_started = time.monotonic()
-    raw_translations, evidence = translate_on_kaggle(worker, model, protected_texts)
+    raw_translations, evidence = translate_local(model_name, protected_texts)
     translation_seconds = time.monotonic() - translation_started
 
     translations: list[str] = []
@@ -261,13 +162,10 @@ def main() -> None:
             "processor_seconds": round(total_seconds, 3),
         },
     }
-    (result_dir / "result.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    (result_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
         "HIDDEN_BEYOND_AI_OK "
-        f"segments={len(out)} marian_sessions=1 piper_processes=1 "
+        f"segments={len(out)} marian_runtime=github_cpu piper_processes=1 "
         f"translation_seconds={translation_seconds:.2f} tts_seconds={tts_seconds:.2f} total_seconds={total_seconds:.2f}"
     )
 
