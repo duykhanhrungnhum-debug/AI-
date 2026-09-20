@@ -449,14 +449,33 @@ class KaggleNarrativeProcessor:
                     "events": string_list(merged["events"], "events", 12),
                     "must_preserve": string_list(merged["must_preserve"], "must_preserve", 8),
                 }}
-                plot_fact_text = " ".join(
-                    [*brief["events"], *brief["must_preserve"]]
-                ).casefold()
-                brief["characters"] = [
-                    character
-                    for character in brief["characters"]
-                    if character.casefold() in plot_fact_text
-                ][:4]
+                brief["characters"] = []
+
+                def drop_event_duplicate_preserve(events, preserves):
+                    if not events or not preserves:
+                        return preserves
+                    embeddings = semantic_model.encode(
+                        [*events, *preserves],
+                        convert_to_tensor=True,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    )
+                    event_vectors = embeddings[:len(events)]
+                    preserve_vectors = embeddings[len(events):]
+                    kept = []
+                    for item, vector in zip(preserves, preserve_vectors):
+                        best_event_score = float(
+                            torch.max(torch.matmul(event_vectors, vector)).item()
+                        )
+                        if best_event_score >= float(CONFIG["semantic_threshold"]):
+                            continue
+                        kept.append(item)
+                    return kept
+
+                brief["must_preserve"] = drop_event_duplicate_preserve(
+                    brief["events"],
+                    brief["must_preserve"],
+                )
             else:
                 analysis_prompt = (
                     "NARRATIVE_ANALYSIS\n"
