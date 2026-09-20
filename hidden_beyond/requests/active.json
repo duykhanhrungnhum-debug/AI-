@@ -185,5 +185,5 @@
       "text": "and make the best potion for tomorrow's challenge."
     }
   ],
-  "optimization_test": "quality-speed-v10-envit5-name-sentinels"
+  "optimization_test": "quality-speed-v11-envit5-numeric-names"
 }
