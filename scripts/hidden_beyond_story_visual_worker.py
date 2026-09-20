@@ -137,6 +137,12 @@ def classify_failure(error: BaseException) -> str:
         or "torch.outofmemoryerror" in text
     ):
         return "resource_capacity"
+    if (
+        "importerror" in text
+        or "modulenotfounderror" in text
+        or "requires bitsandbytes" in text
+    ):
+        return "infrastructure"
     return "visual"
 
 
