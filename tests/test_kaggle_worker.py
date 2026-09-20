@@ -167,3 +167,59 @@ def test_kaggle_worker_reads_kernel_logs(monkeypatch):
     worker = KaggleGpuWorker(api_token=" KGAT_secret\n", username="testuser")
 
     assert worker.logs("gpu-smoke") == "line one\nline two"
+
+def test_kaggle_worker_retries_transient_gpu_capacity_limit(monkeypatch):
+    responses = [
+        {"error": "Maximum batch GPU session count of 2 reached."},
+        {"error": "Maximum batch GPU session count of 2 reached."},
+        {"versionNumber": 7, "kernelId": 77},
+    ]
+    sleeps = []
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.urlopen", fake_urlopen)
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.sleep", sleeps.append)
+    worker = KaggleGpuWorker(
+        api_token="KGAT_secret",
+        username="testuser",
+        submission_retry_attempts=3,
+        submission_retry_delay_seconds=2,
+    )
+
+    submission = worker.submit_script(
+        slug="gpu-smoke",
+        title="GPU Smoke",
+        source="print('ok')",
+    )
+
+    assert submission.version_number == 7
+    assert sleeps == [2, 4]
+
+
+def test_kaggle_worker_does_not_retry_non_capacity_submission_error(monkeypatch):
+    calls = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        return FakeResponse({"error": "invalid kernel configuration"})
+
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.urlopen", fake_urlopen)
+    worker = KaggleGpuWorker(
+        api_token="KGAT_secret",
+        username="testuser",
+        submission_retry_attempts=5,
+        submission_retry_delay_seconds=0,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid kernel configuration"):
+        worker.submit_script(
+            slug="gpu-smoke",
+            title="GPU Smoke",
+            source="print('ok')",
+        )
+
+    assert calls == 1
+
