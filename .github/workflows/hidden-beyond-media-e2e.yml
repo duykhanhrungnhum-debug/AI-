@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: hidden-beyond-media-e2e-smoke
+  group: kaggle-gpu-session
   cancel-in-progress: false
 
 jobs:
