@@ -25,6 +25,110 @@ class AudioArtifact:
 
 
 @dataclass
+class ZeroTTSProvider:
+    """Vietnamese TTS using ZeroTTS preset voices with one model load."""
+
+    model_path: str = "zeroweight-ai/ZeroTTS"
+    voice: str = "hamy"
+    cfg_scale: float = 1.0
+    audio_temperature: float = 0.78
+    audio_topk: int = 25
+    audio_topp: float = 0.95
+    audio_repetition_penalty: float = 1.2
+    min_duration_seconds: float = 0.05
+    provider: str = "zerotts-local"
+
+    def __post_init__(self) -> None:
+        if not self.model_path.strip():
+            raise ValueError("model_path is required")
+        if not self.voice.strip():
+            raise ValueError("voice is required")
+        if self.min_duration_seconds < 0:
+            raise ValueError("minimum duration must be non-negative")
+
+    def synthesize_many(self, texts: list[str] | tuple[str, ...]) -> tuple[AudioArtifact, ...]:
+        assert_core_invariants()
+        items = tuple(text.strip() for text in texts)
+        if not items or any(not text for text in items):
+            raise ValueError("texts must contain non-empty strings")
+
+        try:
+            from zerotts import ZeroTTS
+        except ImportError as exc:
+            raise RuntimeError("zerotts package is required for ZeroTTS synthesis") from exc
+
+        tts = ZeroTTS.from_pretrained(self.model_path)
+        voices = set(tts.list_voices())
+        if self.voice not in voices:
+            raise ValueError(f"ZeroTTS voice {self.voice!r} is unavailable; found {sorted(voices)}")
+
+        with tempfile.TemporaryDirectory(prefix="ai-agent-zerotts-batch-") as temp_dir:
+            root = Path(temp_dir)
+            paths = [root / f"speech-{index:05d}.wav" for index in range(len(items))]
+            artifacts: list[AudioArtifact] = []
+
+            for text, output in zip(items, paths, strict=True):
+                try:
+                    audio = tts.synthesize(
+                        text,
+                        voice=self.voice,
+                        cfg_scale=self.cfg_scale,
+                        audio_temperature=self.audio_temperature,
+                        audio_topk=self.audio_topk,
+                        audio_topp=self.audio_topp,
+                        audio_repetition_penalty=self.audio_repetition_penalty,
+                    )
+                    tts.save_audio(audio, str(output))
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"ZeroTTS synthesis failed for {output.name}: {exc}"
+                    ) from exc
+
+                if not output.exists():
+                    raise RuntimeError(f"ZeroTTS did not create {output.name}")
+                data = output.read_bytes()
+                duration, sample_rate, channels = self._inspect_wav(output)
+                if duration < self.min_duration_seconds:
+                    raise ValueError(
+                        f"ZeroTTS WAV duration {duration:.3f}s is below minimum "
+                        f"{self.min_duration_seconds:.3f}s"
+                    )
+                digest = sha256(data).hexdigest()
+                artifacts.append(AudioArtifact(
+                    data=data,
+                    mime_type="audio/wav",
+                    provider=self.provider,
+                    model=self.model_path,
+                    duration_seconds=duration,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    evidence=(
+                        f"audio_sha256:{digest}",
+                        f"duration_seconds:{duration:.3f}",
+                        f"sample_rate:{sample_rate}",
+                        f"channels:{channels}",
+                        f"voice:{self.voice}",
+                        f"batch_size:{len(items)}",
+                        "runtime:zerotts-single-model-load",
+                    ),
+                ))
+        return tuple(artifacts)
+
+    @staticmethod
+    def _inspect_wav(path: Path) -> tuple[float, int, int]:
+        try:
+            with wave.open(str(path), "rb") as wav:
+                frames = wav.getnframes()
+                sample_rate = wav.getframerate()
+                channels = wav.getnchannels()
+        except (wave.Error, EOFError) as exc:
+            raise ValueError("ZeroTTS output is not a valid WAV file") from exc
+        if sample_rate <= 0 or channels <= 0 or frames <= 0:
+            raise ValueError("ZeroTTS WAV has invalid audio metadata")
+        return frames / sample_rate, sample_rate, channels
+
+
+@dataclass
 class PiperTTSProvider:
     """Synthesize speech through a local Piper executable."""
 
