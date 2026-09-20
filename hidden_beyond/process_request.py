@@ -18,6 +18,27 @@ REPEATED_BIGRAM_RE = re.compile(r"\b([\w\u00c0-\u1ef9]+\s+[\w\u00c0-\u1ef9]+)(?:
 PROPER_NAMES = ("Pepper", "Carrot", "Saffron", "Morevna", "Synfig", "RabbiDuck", "DragonCow")
 
 
+def mask_names_for_t5(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    masked = text
+    mapping: list[tuple[str, str]] = []
+    for index, name in enumerate(PROPER_NAMES):
+        pattern = rf"\b{re.escape(name)}\b"
+        if re.search(pattern, masked, re.IGNORECASE):
+            token = f"<extra_id_{index}>"
+            masked = re.sub(pattern, token, masked, flags=re.IGNORECASE)
+            mapping.append((token, name))
+    return masked, tuple(mapping)
+
+
+def restore_t5_names(text: str, mapping: tuple[tuple[str, str], ...], *, field: str) -> str:
+    value = text
+    for token, name in mapping:
+        if token not in value:
+            raise ValueError(f"{field} lost protected name token {token}: {value}")
+        value = value.replace(token, name)
+    return value
+
+
 def model_for(language: str) -> str:
     lang = language.strip().casefold()
     if lang.startswith(("zh", "cmn", "yue")):
@@ -99,15 +120,32 @@ def main() -> None:
     source_texts = [str(segment["text"]) for segment in segments] + [str(req["title"])]
     model_name = model_for(str(req.get("detected_language", "en")))
 
+    if model_name == "VietAI/envit5-translation":
+        masked_texts: list[str] = []
+        name_maps: list[tuple[tuple[str, str], ...]] = []
+        for source in source_texts:
+            masked, mapping = mask_names_for_t5(source)
+            masked_texts.append(masked)
+            name_maps.append(mapping)
+        translate_inputs = masked_texts
+    else:
+        translate_inputs = source_texts
+        name_maps = [tuple() for _ in source_texts]
+
     translation_started = time.monotonic()
-    raw_translations, evidence = translate_local(model_name, source_texts)
+    raw_translations, evidence = translate_local(model_name, translate_inputs)
     translation_seconds = time.monotonic() - translation_started
 
+    restored = [
+        restore_t5_names(raw, mapping, field=f"item {index}")
+        if mapping else raw
+        for index, (raw, mapping) in enumerate(zip(raw_translations, name_maps, strict=True), 1)
+    ]
     cleaned = [
         clean_translation(raw, field=f"segment {index}")
-        for index, raw in enumerate(raw_translations[:-1], 1)
+        for index, raw in enumerate(restored[:-1], 1)
     ]
-    title = clean_translation(raw_translations[-1], field="title")
+    title = clean_translation(restored[-1], field="title")
 
     for index, (source, translated) in enumerate(zip(source_texts[:-1], cleaned, strict=True), 1):
         assert_names(source, translated, field=f"segment {index}")
@@ -144,7 +182,7 @@ def main() -> None:
         "llm_evidence": [
             *evidence,
             "translation_provider:envit5-for-en+opus-fallback-for-zh",
-            "quality_gate:no_cjk+no_immediate_word_or_bigram_repetition+exact_proper_names",
+            "quality_gate:no_cjk+no_immediate_word_or_bigram_repetition+t5_sentinel_name_protection",
             "tts_mode:piper-python-api-single-model-load",
         ],
         "timing": {
