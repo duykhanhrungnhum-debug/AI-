@@ -17,7 +17,7 @@ concurrency:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
@@ -28,9 +28,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install AI package
-        run: python -m pip install -e .
-      - name: Submit Kaggle download probe
+      - name: Install AI package and verifier
+        run: |
+          python -m pip install -e .
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Submit CPU Kaggle full-source download
         run: |
           python - <<'PY'
           import json, os, textwrap
@@ -56,19 +60,20 @@ jobs:
               "extractor": d.get("extractor"),
               "webpage_url": d.get("webpage_url"),
           }}
-          Path("/kaggle/working/probe.json").write_text(
+          Path("/kaggle/working/source-meta.json").write_text(
               json.dumps(report,ensure_ascii=False,indent=2)+"\\n",encoding="utf-8"
           )
           subprocess.check_call([
               sys.executable,"-m","yt_dlp",
               "--no-playlist",
-              "--download-sections","*0-20",
-              "-f","bv*[height<=360]+ba/b[height<=360]",
+              "--retries","5",
+              "--fragment-retries","5",
+              "-f","bv*[height<=480]+ba/b[height<=480]/b",
               "--merge-output-format","mp4",
-              "-o","/kaggle/working/sample.%(ext)s",
+              "-o","/kaggle/working/source.mp4",
               URL
           ])
-          print("HIDDEN_BEYOND_SOURCE_DOWNLOAD_OK")
+          print("HIDDEN_BEYOND_FULL_SOURCE_OK")
           print(json.dumps(report,ensure_ascii=False))
           """)
           worker=KaggleGpuWorker(
@@ -77,21 +82,31 @@ jobs:
           )
           s=worker.submit_script(
               slug=os.environ["KAGGLE_KERNEL_SLUG"],
-              title="Hidden Beyond Source Download Smoke",
+              title="Hidden Beyond Full Source Download",
               source=source,
               enable_internet=True,
+              enable_gpu=False,
               is_private=True,
           )
-          print("submitted",s.ref,s.version_number)
+          print("FULL_SOURCE_SUBMITTED",s.ref,s.version_number)
           PY
-      - name: Wait for Kaggle
+
+      - name: Wait for Kaggle source download
         run: |
           python - <<'PY'
           import os,time
+          from urllib.error import HTTPError
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
           w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"])
-          for i in range(1,81):
-              s=w.status(os.environ["KAGGLE_KERNEL_SLUG"])
+          for i in range(1,161):
+              try:
+                  s=w.status(os.environ["KAGGLE_KERNEL_SLUG"])
+              except HTTPError as e:
+                  if e.code in (403,404) and i <= 12:
+                      print("STATUS_TRANSIENT",i,e.code)
+                      time.sleep(10)
+                      continue
+                  raise
               print(i,s.status,s.failure_message)
               if s.terminal:
                   if not s.successful:
@@ -101,16 +116,50 @@ jobs:
           else:
               raise SystemExit("Timed out")
           PY
-      - name: Verify probe
+
+      - name: Download full source from Kaggle
         run: |
+          mkdir -p source-output
           python - <<'PY'
-          import json,os
+          import json, os
+          from pathlib import Path
+          from urllib.request import Request,urlopen
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
-          w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"])
-          data=w.download_output_file(os.environ["KAGGLE_KERNEL_SLUG"],"probe.json")
-          d=json.loads(data)
-          print(json.dumps(d,ensure_ascii=False,indent=2))
-          if d.get("id")!="vaY4URFw0cg" or not d.get("duration"):
-              raise SystemExit("Unexpected probe")
-          print("SOURCE_DOWNLOAD_PROBE_VERIFIED")
+
+          w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"],timeout=120)
+          meta=w.output_metadata(os.environ["KAGGLE_KERNEL_SLUG"])
+          files=meta.get("files") or []
+          urls={}
+          for x in files:
+              if isinstance(x,dict):
+                  n=x.get("fileName",x.get("file_name"))
+                  u=x.get("url")
+                  if n in {"source.mp4","source-meta.json"} and isinstance(u,str):
+                      urls[n]=u
+          if set(urls)!={"source.mp4","source-meta.json"}:
+              raise SystemExit("Expected source outputs missing: "+repr(sorted(urls)))
+          for name in ("source-meta.json","source.mp4"):
+              req=Request(urls[name],headers={"User-Agent":"Hidden-Beyond-Source/1.0"})
+              with urlopen(req,timeout=180) as src, open("source-output/"+name,"wb") as dst:
+                  while True:
+                      chunk=src.read(1024*1024)
+                      if not chunk: break
+                      dst.write(chunk)
+          d=json.load(open("source-output/source-meta.json",encoding="utf-8"))
+          if d.get("id")!="vaY4URFw0cg":
+              raise SystemExit("Unexpected source id")
+          print("FULL_SOURCE_DOWNLOADED",json.dumps(d,ensure_ascii=False))
           PY
+          test -s source-output/source.mp4
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 source-output/source.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 source-output/source.mp4 | grep -q audio
+          echo "FULL_SOURCE_VERIFIED bytes=$(stat -c%s source-output/source.mp4)"
+
+      - name: Upload full source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-full-source
+          path: source-output/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
