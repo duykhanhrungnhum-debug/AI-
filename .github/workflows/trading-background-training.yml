@@ -1,0 +1,64 @@
+name: Trading Background Training
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: trading-background-training
+  cancel-in-progress: false
+
+jobs:
+  oil-research-learning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install project
+        run: python -m pip install -e .
+
+      - name: Restore persistent trading learning state
+        uses: actions/cache/restore@v4
+        with:
+          path: .agent_state/trading
+          key: trading-state-${{ github.run_id }}
+          restore-keys: |
+            trading-state-
+
+      - name: Run oil research learning cycle
+        id: train
+        run: >-
+          python scripts/trading_background_train.py
+          --state .agent_state/trading/state.json
+          --output trading_training_episode.json
+          --results-per-query 2
+
+      - name: Upload research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-training-${{ github.run_id }}
+          path: |
+            trading_training_episode.json
+            .agent_state/trading/state.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Save persistent trading learning state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .agent_state/trading
+          key: trading-state-${{ github.run_id }}
