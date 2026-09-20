@@ -57,6 +57,8 @@ def test_kaggle_narrative_runs_full_cycle_in_one_model_load():
     generated = worker.submitted["source"]
     assert generated.count("AutoModelForCausalLM.from_pretrained") == 1
     assert "BitsAndBytesConfig" in generated
+    assert "import bitsandbytes" in generated
+    assert "bitsandbytes>=0.46.1,<1" in generated
     assert "load_in_4bit=True" in generated
     assert 'bnb_4bit_quant_type="nf4"' in generated
     assert "PYTORCH_CUDA_ALLOC_CONF" in generated
