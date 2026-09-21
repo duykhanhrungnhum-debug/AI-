@@ -100,6 +100,7 @@ def main() -> int:
 
     news = GoogleNewsRSSProvider(timeout=15.0)
     researcher = InternetResearcher(timeout=15.0, max_bytes=750_000)
+    price_researcher = InternetResearcher(timeout=45.0, max_bytes=2_000_000)
     episode = TradingResearchEpisode()
     seen_urls: set[str] = set()
     news_signals: list[dict] = []
@@ -133,7 +134,7 @@ def main() -> int:
 
     price_history = {}
     try:
-        price_history = fetch_oil_price_history(researcher)
+        price_history = fetch_oil_price_history(price_researcher)
     except Exception as exc:
         episode.errors.append(f"price-history:{exc}")
     price_summary = price_history_summary(price_history)
