@@ -1,0 +1,187 @@
+name: Hidden Beyond Resume After AI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/longform/resume.json"
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: hidden-beyond-resume-after-ai
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install resume tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "resume_bootstrap" > resume-stage.txt
+          python -m pip install -e .
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg jq
+          jq . hidden_beyond/longform/resume.json
+
+      - name: Restore source video
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "restore_source" > resume-stage.txt
+          SOURCE_RUN_ID="$(jq -r '.source_run_id' hidden_beyond/longform/resume.json)"
+          mkdir -p source-input
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name hidden-beyond-full-source --dir source-input
+          test -s source-input/source.mp4
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 source-input/source.mp4 | grep -q video
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 source-input/source.mp4 | grep -q audio
+
+      - name: Fetch AI checkpoint outputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "fetch_ai_checkpoint" > resume-stage.txt
+          JOB_ID="$(jq -r '.job_id' hidden_beyond/longform/resume.json)"
+          OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > result-body.json
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/result" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @result-body.json > result.json
+          test "$(jq -r '.stage' result.json)" = "ai_ready"
+          mkdir -p ai-output
+          jq -n --arg job_id "$JOB_ID" --arg kind "subtitle" '{job_id:$job_id,kind:$kind}' > artifact-subtitle.json
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS -X POST "$LONGFORM_API/artifact" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @artifact-subtitle.json -o ai-output/vi.srt
+          jq -n --arg job_id "$JOB_ID" --arg kind "metadata" '{job_id:$job_id,kind:$kind}' > artifact-metadata.json
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS -X POST "$LONGFORM_API/artifact" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @artifact-metadata.json -o ai-output/metadata.json
+          test -s ai-output/vi.srt
+          test -s ai-output/metadata.json
+          echo "AI_CHECKPOINT_RESTORED segments=$(jq -r '.segments' ai-output/metadata.json)"
+
+      - name: Render Vietnamese voice on CPU
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "render_voice_cpu" > resume-stage.txt
+          python -m pip install --quiet "piper-tts>=1.3,<2" numpy
+          python scripts/render_hidden_beyond_voice_cpu.py --metadata ai-output/metadata.json --output ai-output/voice.mp3
+          test -s ai-output/voice.mp3
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 ai-output/voice.mp3 | grep -q audio
+          echo "CPU_VOICE_READY bytes=$(stat -c%s ai-output/voice.mp3)"
+
+      - name: Verify voice quality
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "voice_quality_gate" > resume-stage.txt
+          SEGMENTS="$(jq -r '.segments' ai-output/metadata.json)"
+          DENSITY="$(jq -r '.segments_per_minute' ai-output/metadata.json)"
+          MAX_SEG="$(jq -r '.max_segment_seconds' ai-output/metadata.json)"
+          HARD_TRIM="$(jq -r '.hard_trim_segments // 0' ai-output/metadata.json)"
+          python - "$SEGMENTS" "$DENSITY" "$MAX_SEG" "$HARD_TRIM" <<'PY'
+          import sys, math
+          segments=int(sys.argv[1]); density=float(sys.argv[2]); max_seg=float(sys.argv[3]); hard_trim=int(sys.argv[4])
+          trim_limit=max(3,math.ceil(segments*0.01))
+          if density<3.0: raise SystemExit(f"dialogue cadence too coarse: {density:.2f}/min")
+          if max_seg>6.2: raise SystemExit(f"dialogue cue too long: {max_seg:.2f}s")
+          if hard_trim>trim_limit: raise SystemExit(f"too many hard-trimmed TTS cues: {hard_trim}>{trim_limit}")
+          print(f"VOICE_QUALITY_GATE_OK segments={segments} density={density:.2f}/min max_seg={max_seg:.2f}s hard_trim={hard_trim}")
+          PY
+
+      - name: Mux final video
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "mux_final_video" > resume-stage.txt
+          FILTER="[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35,volume=0.92[orig];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.00,asplit=2[sc][voice];[orig][sc]sidechaincompress=threshold=0.010:ratio=14:attack=8:release=240:makeup=1[duck];[duck][voice]amix=inputs=2:weights='0.74 1':normalize=0,loudnorm=I=-18.5:TP=-2.5:LRA=6,alimiter=limit=0.94[outa]"
+          ffmpeg -y -v error -i source-input/source.mp4 -i ai-output/voice.mp3 -filter_complex "$FILTER" -map 0:v:0 -map "[outa]" -c:v copy -c:a aac -b:a 160k -movflags +faststart -shortest final.mp4
+          test -s final.mp4
+          SRC_DUR="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 source-input/source.mp4)"
+          OUT_DUR="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final.mp4)"
+          python - "$SRC_DUR" "$OUT_DUR" <<'PY'
+          import sys
+          a,b=map(float,sys.argv[1:])
+          if abs(a-b)>3.0: raise SystemExit(f"duration mismatch source={a} output={b}")
+          print(f"FINAL_MEDIA_VERIFIED source={a:.3f}s output={b:.3f}s")
+          PY
+
+      - name: Upload episode 1 to YouTube
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "youtube_upload" > resume-stage.txt
+          URL="$(jq -r '.youtube_upload_url' result.json)"
+          test -n "$URL" && test "$URL" != "null"
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 3 -sS -X PUT "$URL" -H "content-type: video/mp4" --data-binary @final.mp4 > youtube-upload.json
+          VIDEO_ID="$(jq -r '.id' youtube-upload.json)"
+          test -n "$VIDEO_ID" && test "$VIDEO_ID" != "null"
+          echo "$VIDEO_ID" > youtube-video-id.txt
+          echo "YOUTUBE_UPLOAD_DONE id=$VIDEO_ID"
+
+      - name: Verify YouTube public processing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "youtube_verify" > resume-stage.txt
+          VIDEO_ID="$(cat youtube-video-id.txt)"
+          for i in $(seq 1 40); do
+            OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg youtube_video_id "$VIDEO_ID" '{youtube_video_id:$youtube_video_id}' > video-status-body.json
+            curl --fail-with-body -sS -X POST "$LONGFORM_API/video-status" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @video-status-body.json > video-status.json
+            EXISTS="$(jq -r '.exists' video-status.json)"
+            UPLOAD="$(jq -r '.upload_status // ""' video-status.json)"
+            PROCESSING="$(jq -r '.processing_status // ""' video-status.json)"
+            PRIVACY="$(jq -r '.privacy_status // ""' video-status.json)"
+            echo "YT_VERIFY poll=$i exists=$EXISTS upload=$UPLOAD processing=$PROCESSING privacy=$PRIVACY"
+            if [ "$EXISTS" != "true" ]; then exit 1; fi
+            if [ "$UPLOAD" = "rejected" ] || [ "$UPLOAD" = "failed" ] || [ "$UPLOAD" = "deleted" ]; then cat video-status.json; exit 1; fi
+            if [ "$PROCESSING" = "failed" ]; then cat video-status.json; exit 1; fi
+            if [ "$PROCESSING" = "succeeded" ] && [ "$PRIVACY" = "public" ]; then
+              echo "YOUTUBE_POST_UPLOAD_VERIFIED id=$VIDEO_ID"
+              exit 0
+            fi
+            sleep 30
+          done
+          exit 1
+
+      - name: Complete tracked job
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "complete_job" > resume-stage.txt
+          JOB_ID="$(jq -r '.job_id' hidden_beyond/longform/resume.json)"
+          VIDEO_ID="$(cat youtube-video-id.txt)"
+          OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          jq -n --arg job_id "$JOB_ID" --arg youtube_video_id "$VIDEO_ID" '{job_id:$job_id,youtube_video_id:$youtube_video_id}' > complete-body.json
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/complete" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @complete-body.json > complete.json
+          test "$(jq -r '.stage' complete.json)" = "uploaded"
+          echo "HIDDEN_BEYOND_EPISODE_1_COMPLETE https://www.youtube.com/watch?v=$VIDEO_ID"
+
+      - name: Preserve resume evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-resume-evidence
+          path: |
+            result.json
+            ai-output/metadata.json
+            ai-output/vi.srt
+            youtube-upload.json
+            video-status.json
+            complete.json
+            resume-stage.txt
+          if-no-files-found: warn
+          retention-days: 7
