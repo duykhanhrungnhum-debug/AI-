@@ -1,6 +1,7 @@
 {
-  "nonce": "2026-09-21-translation-skill-v1",
-  "purpose": "verify_chinese_vietnamese_accuracy_before_episode1_rerun",
+  "nonce": "2026-09-21-translation-skill-v2-callback",
+  "purpose": "verify_upgraded_chinese_vietnamese_accuracy_before_episode1_rerun",
   "model": "tencent/Hy-MT2-7B",
-  "cases": 15
+  "cases": 15,
+  "source_video_id": "vaY4URFw0cg"
 }
