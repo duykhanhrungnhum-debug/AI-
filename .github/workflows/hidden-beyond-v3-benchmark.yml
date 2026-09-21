@@ -1,0 +1,200 @@
+name: Hidden Beyond V3 Benchmark
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/benchmark/request.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hidden-beyond-v3-benchmark
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      KAGGLE_API_TOKEN: \${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install coordinator
+        run: |
+          set -Eeuo pipefail
+          python -m pip install -e .
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg jq
+          test -n "$KAGGLE_API_TOKEN"
+          jq . hidden_beyond/benchmark/request.json
+
+      - name: Submit full-episode GPU benchmark
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          req=json.loads(Path("hidden_beyond/benchmark/request.json").read_text(encoding="utf-8"))
+          source=Path("hidden_beyond/benchmark_v3_worker.py").read_text(encoding="utf-8")
+          marker="# __BENCH_CONFIG_INJECT__"
+          if marker not in source:
+              raise SystemExit("benchmark marker missing")
+          source=source.replace(marker,"BENCH = "+repr(req),1)
+          nonce=re.sub(r"[^a-z0-9]+","-",str(req["nonce"]).lower()).strip("-")[-32:]
+          slug=f"hidden-beyond-v3-bench-{nonce}"
+          worker=KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+              submission_retry_attempts=3,
+              submission_retry_delay_seconds=20,
+          )
+          s=worker.submit_script(
+              slug=slug,
+              title="Hidden Beyond V3 Benchmark",
+              source=source,
+              enable_internet=True,
+              enable_gpu=True,
+              is_private=True,
+          )
+          Path("gpu-submission.json").write_text(
+              json.dumps({"ref":s.ref,"version":s.version_number,"slug":slug},indent=2)+"\n",
+              encoding="utf-8",
+          )
+          print("V3_BENCH_SUBMITTED",s.ref,s.version_number)
+          PY
+          cat gpu-submission.json
+
+      - name: Wait for benchmark evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p bench-output
+          python - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import Request,urlopen
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          sub=json.loads(Path("gpu-submission.json").read_text())
+          slug=sub["slug"]
+          w=KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+          )
+          urls={}
+          for i in range(1,61):
+              try:
+                  meta=w.output_metadata(slug)
+                  files=meta.get("files") if isinstance(meta,dict) else None
+                  found={}
+                  for x in files or []:
+                      if isinstance(x,dict):
+                          n=x.get("fileName",x.get("file_name"))
+                          u=x.get("url")
+                          if n in {"benchmark.json","translated-metadata.json"} and isinstance(u,str):
+                              found[n]=u
+                  print("BENCH_OUTPUT_POLL",i,sorted(found),flush=True)
+                  if set(found)=={"benchmark.json","translated-metadata.json"}:
+                      urls=found
+                      break
+              except HTTPError as exc:
+                  if exc.code not in (403,404,409):
+                      raise
+                  print("BENCH_OUTPUT_TRANSIENT",i,exc.code,flush=True)
+              time.sleep(20)
+          else:
+              raise SystemExit("Benchmark outputs not ready within 20 minutes")
+
+          for name,url in urls.items():
+              req=Request(url,headers={"User-Agent":"Hidden-Beyond-Benchmark/1.0"})
+              with urlopen(req,timeout=180) as src, open("bench-output/"+name,"wb") as dst:
+                  while True:
+                      chunk=src.read(1024*1024)
+                      if not chunk:
+                          break
+                      dst.write(chunk)
+          PY
+          jq . bench-output/benchmark.json
+          test -s bench-output/translated-metadata.json
+
+      - name: Measure CPU TTS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install --quiet "piper-tts>=1.3,<2" numpy
+          python scripts/render_hidden_beyond_voice_cpu.py \
+            --metadata bench-output/translated-metadata.json \
+            --output bench-output/voice.mp3
+          test -s bench-output/voice.mp3
+          jq '{
+            translation_model,
+            transcript_source,
+            gpu_translation_seconds,
+            voice_render_seconds,
+            retimed_segments,
+            timing_overflow_segments,
+            voice_efficiency_mode
+          }' bench-output/translated-metadata.json
+
+      - name: Verify performance target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TRANSLATE="$(jq -r '.translation_seconds' bench-output/benchmark.json)"
+          INVALID="$(jq -r '.invalid_segments' bench-output/benchmark.json)"
+          TTS="$(jq -r '.voice_render_seconds' bench-output/translated-metadata.json)"
+          python - "$TRANSLATE" "$INVALID" "$TTS" <<'PY'
+          import sys
+          trans=float(sys.argv[1]); invalid=int(sys.argv[2]); tts=float(sys.argv[3])
+          print(f"V3_PERF translation={trans:.1f}s tts={tts:.1f}s invalid={invalid}")
+          if trans>300:
+              raise SystemExit(f"Translation target missed: {trans:.1f}s > 300s")
+          if invalid>0:
+              raise SystemExit(f"Primary translation quality gate missed: invalid={invalid}")
+          if trans+tts>900:
+              raise SystemExit(f"Translation+TTS target missed: {trans+tts:.1f}s > 900s")
+          print("V3_PERFORMANCE_TARGET_VERIFIED")
+          PY
+
+      - name: Cleanup Kaggle benchmark
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ ! -s gpu-submission.json ]; then exit 0; fi
+          REF="$(jq -r '.ref // empty' gpu-submission.json)"
+          [ -n "$REF" ] || exit 0
+          python -m pip install --quiet --upgrade kaggle
+          mkdir -p "$HOME/.kaggle"
+          python -c 'import os; from pathlib import Path; t=os.environ.get("KAGGLE_API_TOKEN","").strip(); p=Path.home()/".kaggle"/"access_token"; p.write_text(t,encoding="utf-8") if t else None; p.chmod(0o600) if t else None'
+          env -u KAGGLE_API_TOKEN kaggle kernels delete "$REF" --yes || true
+          echo "V3_BENCH_KERNEL_CLEANUP $REF"
+
+      - name: Preserve benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-v3-benchmark-evidence
+          path: |
+            gpu-submission.json
+            bench-output/benchmark.json
+            bench-output/translated-metadata.json
+            bench-output/voice.mp3
+          if-no-files-found: warn
+          retention-days: 7
