@@ -6,6 +6,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -16,218 +17,390 @@ import wave
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-WORK=Path("/kaggle/working")
-AUDIO=WORK/"source-audio.mp3"
-VOICE_WAV=WORK/"vietnamese-voice.wav"
-VOICE_MP3=WORK/"voice.mp3"
-SRT=WORK/"vi.srt"
-META=WORK/"metadata.json"
-SEGDIR=WORK/"tts"
+WORK=Path('/kaggle/working')
+AUDIO=WORK/'source-audio.mp3'
+VOICE_WAV=WORK/'vietnamese-voice.wav'
+VOICE_MP3=WORK/'voice.mp3'
+SRT=WORK/'vi.srt'
+META=WORK/'metadata.json'
+SEGDIR=WORK/'tts'
 SEGDIR.mkdir(parents=True,exist_ok=True)
 
-API=JOB["callback_base"].rstrip("/")
-JOB_ID=JOB["job_id"]
-JOB_TOKEN=JOB["job_token"]
-_stage={"name":"starting","message":"GPU worker starting"}
+API=JOB['callback_base'].rstrip('/')
+JOB_ID=JOB['job_id']
+JOB_TOKEN=JOB['job_token']
+_stage={'name':'starting','message':'GPU worker starting'}
 _stop=threading.Event()
+
+CJK_RE=re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
+REPEAT_RE=re.compile(r'\b([\wÀ-ỹ]+)(?:\s+\1)+\b',re.IGNORECASE)
+FANTASY_GLOSSARY={
+    '修仙':'tu tiên','修士':'tu sĩ','灵气':'linh khí','靈氣':'linh khí','灵力':'linh lực','靈力':'linh lực',
+    '灵根':'linh căn','靈根':'linh căn','炼气':'Luyện Khí','練氣':'Luyện Khí','筑基':'Trúc Cơ','築基':'Trúc Cơ',
+    '金丹':'Kim Đan','元婴':'Nguyên Anh','元嬰':'Nguyên Anh','渡劫':'Độ Kiếp','宗门':'tông môn','宗門':'tông môn',
+    '师尊':'sư tôn','師尊':'sư tôn','师兄':'sư huynh','師兄':'sư huynh','师姐':'sư tỷ','師姐':'sư tỷ',
+    '师弟':'sư đệ','師弟':'sư đệ','师妹':'sư muội','師妹':'sư muội','掌门':'chưởng môn','掌門':'chưởng môn',
+    '长老':'trưởng lão','長老':'trưởng lão','道友':'đạo hữu','法宝':'pháp bảo','法寶':'pháp bảo',
+    '丹药':'đan dược','丹藥':'đan dược','功法':'công pháp','秘境':'bí cảnh','洞府':'động phủ',
+    '魔修':'ma tu','正道':'chính đạo','天道':'thiên đạo','飞升':'phi thăng','飛升':'phi thăng','境界':'cảnh giới',
+}
+
+# Style profile extracted from the user's reference clip: short dialogue bursts,
+# clear pauses, moderate pace, slightly bright tone. This is a style match,
+# not speaker-identity cloning.
+STYLE={
+    'max_tempo':1.22,
+    'min_tempo':0.90,
+    'pitch_ratio':1.025,
+    'max_extra_gap':0.24,
+    'words_per_second':3.25,
+}
 
 def post(path:str,payload:dict,*,token:bool=True)->dict:
     data=json.dumps(payload,ensure_ascii=False).encode()
-    headers={"content-type":"application/json"}
+    headers={'content-type':'application/json'}
     if token:
-        headers["x-job-token"]=JOB_TOKEN
-    req=Request(API+path,data=data,headers=headers,method="POST")
+        headers['x-job-token']=JOB_TOKEN
+    req=Request(API+path,data=data,headers=headers,method='POST')
     with urlopen(req,timeout=120) as r:
         return json.loads(r.read().decode())
 
 def heartbeat(stage:str,message:str):
-    _stage["name"]=stage; _stage["message"]=message
+    _stage['name']=stage; _stage['message']=message
     try:
-        post("/heartbeat",{"job_id":JOB_ID,"stage":stage,"message":message})
-        print("HB_HEARTBEAT",stage,message,flush=True)
+        post('/heartbeat',{'job_id':JOB_ID,'stage':stage,'message':message})
+        print('HB_HEARTBEAT',stage,message,flush=True)
     except Exception as exc:
-        print("HB_HEARTBEAT_ERROR",stage,repr(exc),flush=True)
+        print('HB_HEARTBEAT_ERROR',stage,repr(exc),flush=True)
 
 def heartbeat_loop():
     while not _stop.wait(60):
-        heartbeat(_stage["name"],_stage["message"])
+        heartbeat(_stage['name'],_stage['message'])
 
 def download(url:str,path:Path):
-    req=Request(url,headers={"User-Agent":"Hidden-Beyond-AI/2.0"})
-    with urlopen(req,timeout=180) as src,path.open("wb") as dst:
+    req=Request(url,headers={'User-Agent':'Hidden-Beyond-AI/3.0'})
+    with urlopen(req,timeout=180) as src,path.open('wb') as dst:
         while True:
             chunk=src.read(1024*1024)
             if not chunk: break
             dst.write(chunk)
 
 def upload(url:str,path:Path,mime:str):
-    with path.open("rb") as f:
+    with path.open('rb') as f:
         data=f.read()
-    req=Request(url,data=data,headers={"content-type":mime,"x-upsert":"true"},method="PUT")
+    req=Request(url,data=data,headers={'content-type':mime,'x-upsert':'true'},method='PUT')
     with urlopen(req,timeout=300) as r:
         if r.status not in (200,201):
-            raise RuntimeError(f"upload failed {r.status}")
+            raise RuntimeError(f'upload failed {r.status}')
 
 def run(cmd):
-    print("+"," ".join(map(str,cmd)),flush=True)
+    print('+',' '.join(map(str,cmd)),flush=True)
     subprocess.run(cmd,check=True)
 
 def clean(s:str)->str:
-    return re.sub(r"\s+"," ",s).strip()
+    value=re.sub(r'\s+',' ',str(s)).strip().strip('“”"')
+    previous=None
+    while previous!=value:
+        previous=value
+        value=REPEAT_RE.sub(r'\1',value)
+    value=re.sub(r'\s+([,.;:!?])',r'\1',value)
+    return value.strip()
 
 def wav_duration(path:Path)->float:
-    with wave.open(str(path),"rb") as w:
+    with wave.open(str(path),'rb') as w:
         return w.getnframes()/w.getframerate()
 
 def ts(sec:float)->str:
     ms=max(0,int(round(sec*1000)))
     h,r=divmod(ms,3600000); m,r=divmod(r,60000); s,ms=divmod(r,1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
+
+def json_object(raw:str)->dict:
+    text=raw.strip()
+    text=re.sub(r'^\`\`\`(?:json)?\s*','',text,flags=re.I)
+    text=re.sub(r'\s*\`\`\`$','',text)
+    start=text.find('{')
+    if start<0: raise ValueError('no JSON object in model response')
+    obj,_=json.JSONDecoder().raw_decode(text[start:])
+    if not isinstance(obj,dict): raise ValueError('model response is not an object')
+    return obj
+
+def glossary_hint(text:str)->str:
+    terms=[]
+    for zh,vi in FANTASY_GLOSSARY.items():
+        if zh in text and vi not in terms:
+            terms.append(vi)
+    return ', '.join(terms[:10])
+
+def validate_vi(text:str,source:str,*,field:str)->str:
+    value=clean(text)
+    if not value: raise ValueError(f'{field} empty')
+    if CJK_RE.search(value): raise ValueError(f'{field} still contains CJK: {value}')
+    if REPEAT_RE.search(value): raise ValueError(f'{field} has repeated words: {value}')
+    for number in re.findall(r'\d+',source):
+        if number not in value:
+            raise ValueError(f'{field} lost number {number}: {value}')
+    return value
 
 def main():
-    heartbeat("installing","Installing local AI runtime")
-    run([sys.executable,"-m","pip","install","--quiet",
-         "faster-whisper>=1.1,<2","transformers<5","accelerate<2",
-         "sentencepiece","sacremoses","piper-tts>=1.3,<2"])
+    heartbeat('installing','Installing local AI runtime')
+    run([sys.executable,'-m','pip','install','--quiet',
+         'faster-whisper>=1.1,<2','transformers<5','accelerate<2',
+         'sentencepiece','sacremoses','piper-tts>=1.3,<2'])
 
+    import numpy as np
     import torch
     from faster_whisper import WhisperModel
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
-    heartbeat("fetching_input","Fetching compressed source audio")
-    cfg=post("/worker-config",{"job_id":JOB_ID})
-    download(cfg["input_audio_url"],AUDIO)
+    heartbeat('fetching_input','Fetching compressed source audio')
+    cfg=post('/worker-config',{'job_id':JOB_ID})
+    download(cfg['input_audio_url'],AUDIO)
     if AUDIO.stat().st_size<100000:
-        raise RuntimeError("input audio is unexpectedly small")
+        raise RuntimeError('input audio is unexpectedly small')
 
-    device="cuda" if torch.cuda.is_available() else "cpu"
-    compute="float16" if device=="cuda" else "int8"
-    whisper_name="large-v3-turbo" if device=="cuda" else "small"
-    beam_size=5 if device=="cuda" else 3
-    heartbeat("transcribing",f"Speech recognition on {device} with {whisper_name}")
+    device='cuda' if torch.cuda.is_available() else 'cpu'
+    compute='float16' if device=='cuda' else 'int8'
+    whisper_name='large-v3-turbo' if device=='cuda' else 'small'
+    beam_size=5 if device=='cuda' else 3
+    heartbeat('transcribing',f'Speech recognition on {device} with {whisper_name}')
     whisper=WhisperModel(whisper_name,device=device,compute_type=compute)
-    seg_iter,info=whisper.transcribe(str(AUDIO),language="zh",vad_filter=True,beam_size=beam_size,condition_on_previous_text=True)
-    raw=[{"start":float(s.start),"end":float(s.end),"text":clean(s.text)} for s in seg_iter if clean(s.text)]
-    if len(raw)<10: raise RuntimeError(f"too few transcript segments: {len(raw)}")
+    seg_iter,info=whisper.transcribe(
+        str(AUDIO),language='zh',vad_filter=True,beam_size=beam_size,
+        condition_on_previous_text=True,word_timestamps=True,
+        vad_parameters={'min_silence_duration_ms':220,'speech_pad_ms':80},
+    )
+    raw=[{'start':float(s.start),'end':float(s.end),'text':clean(s.text)} for s in seg_iter if clean(s.text)]
+    if len(raw)<10: raise RuntimeError(f'too few transcript segments: {len(raw)}')
 
+    # Preserve scene/dialogue pauses. Merge only fragments that are almost contiguous.
     merged=[]
     for s in raw:
         if not merged:
             merged.append(dict(s)); continue
         cur=merged[-1]
-        candidate=(cur["text"]+" "+s["text"]).strip()
-        if s["start"]-cur["end"]<=0.45 and s["end"]-cur["start"]<=7.0 and len(candidate)<=72:
-            cur["end"]=s["end"]; cur["text"]=candidate
+        candidate=(cur['text']+' '+s['text']).strip()
+        if s['start']-cur['end']<=0.12 and s['end']-cur['start']<=4.5 and len(candidate)<=52:
+            cur['end']=s['end']; cur['text']=candidate
         else:
             merged.append(dict(s))
     segments=merged
-    heartbeat("transcribed",f"Transcript ready: {len(segments)} segments")
+    for i,s in enumerate(segments):
+        s['index']=i+1
+        s['slot']=max(0.30,float(s['end'])-float(s['start']))
+        s['max_words']=max(2,int(math.floor(s['slot']*STYLE['words_per_second']+0.5)))
+    heartbeat('transcribed',f'Transcript ready: {len(segments)} timed dialogue segments')
     del whisper; gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
 
-    heartbeat("translating",f"Translating {len(segments)} segments to Vietnamese")
-    model_name="facebook/nllb-200-distilled-600M"
-    tok=AutoTokenizer.from_pretrained(model_name,src_lang="zho_Hans")
-    model=AutoModelForSeq2SeqLM.from_pretrained(model_name,torch_dtype=torch.float16 if device=="cuda" else torch.float32).to(device)
-    model.eval()
-    target_id=tok.convert_tokens_to_ids("vie_Latn")
-    texts=[s["text"] for s in segments]+[str(cfg.get("title") or "")]
-    translations=[]
-    bs=18 if device=="cuda" else 4
-    with torch.inference_mode():
-        for i in range(0,len(texts),bs):
-            inp=tok(texts[i:i+bs],return_tensors="pt",padding=True,truncation=True,max_length=256)
-            inp={k:v.to(device) for k,v in inp.items()}
-            out=model.generate(**inp,forced_bos_token_id=target_id,max_new_tokens=180,num_beams=4,repetition_penalty=1.08,no_repeat_ngram_size=3)
-            translations.extend(tok.batch_decode(out,skip_special_tokens=True))
-            if i and i%(bs*8)==0:
-                heartbeat("translating",f"Translated {min(i+bs,len(texts))}/{len(texts)}")
-    translations=[clean(x) for x in translations]
-    if len(translations)!=len(texts) or any(not x for x in translations): raise RuntimeError("translation output mismatch")
-    for s,vi in zip(segments,translations[:-1],strict=True): s["vi"]=vi
-    translated_title=translations[-1]
-    del model,tok; gc.collect()
-    if torch.cuda.is_available(): torch.cuda.empty_cache()
+    heartbeat('translating',f'Contextual cultivation translation for {len(segments)} segments')
+    translated_title=''
+    translation_model=''
 
-    heartbeat("tts","Starting fast Piper Vietnamese TTS")
-    voice_mode="piper-vais1000-fast"
-    voice_name="vi_VN-vais1000-medium"
-    voices=WORK/"piper-voices"
-    voices.mkdir(exist_ok=True)
-    run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
+    if device=='cuda':
+        translation_model='Qwen/Qwen2.5-3B-Instruct'
+        tok=AutoTokenizer.from_pretrained(translation_model)
+        model=AutoModelForCausalLM.from_pretrained(
+            translation_model,torch_dtype=torch.float16,low_cpu_mem_usage=True
+        ).to(device)
+        model.eval()
+
+        system=(
+            'Bạn là biên tập viên lồng tiếng Việt cho phim hoạt hình tiên hiệp Trung Quốc. '
+            'Dịch đúng nghĩa theo ngữ cảnh, dùng tiếng Việt tự nhiên để đọc thành lời, không dịch máy từng chữ. '
+            'Ưu tiên thuật ngữ Hán-Việt quen thuộc của thể loại tu tiên/tiên hiệp; giữ nhất quán tên người, môn phái, cảnh giới và xưng hô. '
+            'Không tự thêm nội dung, không lặp từ, không để lại chữ Hán. Câu phải ngắn đủ để đọc trong thời lượng được cấp. '
+            'Chỉ trả về JSON đúng schema được yêu cầu, không markdown, không giải thích.'
+        )
+
+        def qwen(prompt:str,max_new:int=900)->str:
+            messages=[{'role':'system','content':system},{'role':'user','content':prompt}]
+            text=tok.apply_chat_template(messages,tokenize=False,add_generation_prompt=True)
+            inputs=tok([text],return_tensors='pt').to(device)
+            with torch.inference_mode():
+                out=model.generate(
+                    **inputs,max_new_tokens=max_new,do_sample=False,
+                    repetition_penalty=1.08,no_repeat_ngram_size=3,
+                    eos_token_id=tok.eos_token_id,pad_token_id=tok.eos_token_id,
+                )
+            generated=out[0][inputs.input_ids.shape[1]:]
+            return tok.decode(generated,skip_special_tokens=True)
+
+        translated={}
+        chunk_size=10
+        for start in range(0,len(segments),chunk_size):
+            block=segments[start:start+chunk_size]
+            context_before=segments[start-1]['text'] if start>0 else ''
+            context_after=segments[start+chunk_size]['text'] if start+chunk_size<len(segments) else ''
+            payload=[{
+                'id':s['index'],'seconds':round(s['slot'],2),'max_words':s['max_words'],
+                'zh':s['text'],'glossary':glossary_hint(s['text'])
+            } for s in block]
+            prompt=(
+                'Dịch các câu sau. BEFORE/AFTER chỉ dùng để hiểu ngữ cảnh, không được dịch vào kết quả. '
+                'Nếu có glossary thì ưu tiên đúng thuật ngữ đó. Giữ đúng từng id. '
+                'Schema bắt buộc: {"segments":[{"id":1,"vi":"..."}]}.\n'
+                f'BEFORE: {context_before}\nAFTER: {context_after}\nINPUT: '
+                +json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+            )
+            data=json_object(qwen(prompt,max_new=max(500,len(block)*90)))
+            items=data.get('segments')
+            if not isinstance(items,list): raise ValueError('Qwen translation missing segments list')
+            for item in items:
+                idx=int(item.get('id',0)); vi=str(item.get('vi',''))
+                src=next((x for x in block if x['index']==idx),None)
+                if src is None: continue
+                translated[idx]=validate_vi(vi,src['text'],field=f'segment {idx}')
+            if any(s['index'] not in translated for s in block):
+                missing=[s['index'] for s in block if s['index'] not in translated]
+                raise ValueError(f'Qwen translation missing ids {missing}')
+            heartbeat('translating',f'Translated {min(start+chunk_size,len(segments))}/{len(segments)} with context')
+
+        # Tighten only lines that would force unnatural speed. Rewrite rather than chop audio.
+        for s in segments:
+            vi=translated[s['index']]
+            words=len(re.findall(r'[A-Za-zÀ-ỹ0-9]+',vi))
+            if words>max(s['max_words']+2,int(s['max_words']*1.30)):
+                prompt=(
+                    'Rút gọn câu tiếng Việt sau để lồng tiếng nhưng phải giữ nguyên ý chính, phủ định, số liệu, tên riêng và xưng hô. '
+                    f'Tối đa {s["max_words"]} từ, chỉ trả về JSON {{"vi":"..."}}. '
+                    f'Nguyên văn Trung: {s["text"]}\nBản hiện tại: {vi}'
+                )
+                try:
+                    shorter=json_object(qwen(prompt,max_new=120)).get('vi','')
+                    translated[s['index']]=validate_vi(str(shorter),s['text'],field=f'short segment {s["index"]}')
+                except Exception as exc:
+                    print('HB_SHORTEN_FALLBACK',s['index'],repr(exc),flush=True)
+
+        title_prompt=(
+            'Dịch tiêu đề phim sau sang tiếng Việt tự nhiên theo phong cách tiên hiệp. '
+            'Giữ tên riêng và không thêm quảng cáo. Chỉ trả JSON {"title":"..."}.\n'
+            +str(cfg.get('title') or '')
+        )
+        translated_title=clean(str(json_object(qwen(title_prompt,max_new=100)).get('title','')))
+        for s in segments: s['vi']=translated[s['index']]
+        del model,tok; gc.collect(); torch.cuda.empty_cache()
+    else:
+        # CPU fallback keeps the worker usable, but GPU/Qwen is the quality path.
+        translation_model='Helsinki-NLP/opus-mt-zh-vi'
+        tok=AutoTokenizer.from_pretrained(translation_model)
+        model=AutoModelForSeq2SeqLM.from_pretrained(translation_model).to('cpu')
+        model.eval()
+        texts=[s['text'] for s in segments]+[str(cfg.get('title') or '')]
+        out_text=[]
+        with torch.inference_mode():
+            for i in range(0,len(texts),4):
+                inp=tok(texts[i:i+4],return_tensors='pt',padding=True,truncation=True,max_length=256)
+                out=model.generate(**inp,max_new_tokens=128,num_beams=4,repetition_penalty=1.08,no_repeat_ngram_size=3)
+                out_text.extend(tok.batch_decode(out,skip_special_tokens=True))
+        for s,vi in zip(segments,out_text[:-1],strict=True): s['vi']=validate_vi(vi,s['text'],field=f'segment {s["index"]}')
+        translated_title=clean(out_text[-1])
+        del model,tok; gc.collect()
+
+    heartbeat('tts','Synthesizing sample-style Vietnamese voice with timing-safe fitting')
+    voice_mode='piper-vais1000-sample-style-v2'
+    voice_name='vi_VN-vais1000-medium'
+    voices=WORK/'piper-voices'; voices.mkdir(exist_ok=True)
+    run([sys.executable,'-m','piper.download_voices',voice_name,'--download-dir',str(voices)])
     from piper import PiperVoice
-    piper_voice=PiperVoice.load(str(voices/(voice_name+".onnx")),use_cuda=False)
+    piper_voice=PiperVoice.load(str(voices/(voice_name+'.onnx')),use_cuda=False)
 
     def synth(text:str,path:Path):
-        with wave.open(str(path),"wb") as w:
+        with wave.open(str(path),'wb') as w:
             piper_voice.synthesize_wav(clean(text),w)
 
     fitted=[]
     tts_started=time.monotonic()
+    overflow_count=0
+    speed_values=[]
     for i,s in enumerate(segments,1):
-        rawwav=SEGDIR/f"raw-{i:05d}.wav"
-        fitwav=SEGDIR/f"fit-{i:05d}.wav"
-        synth(s["vi"],rawwav)
+        rawwav=SEGDIR/f'raw-{i:05d}.wav'; fitwav=SEGDIR/f'fit-{i:05d}.wav'
+        synth(s['vi'],rawwav)
         original=max(0.01,wav_duration(rawwav))
-        slot=max(0.25,float(s["end"])-float(s["start"])-0.04)
-        speed=max(0.80,min(1.60,original/slot))
-        run(["ffmpeg","-y","-v","error","-i",str(rawwav),"-af",
-             f"atempo={speed:.6f},atrim=duration={slot:.3f},highpass=f=70,lowpass=f=11500",
-             "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fitwav)])
-        s["audio"]=fitwav
+        next_start=float(segments[i]['start']) if i<len(segments) else float(s['end'])+STYLE['max_extra_gap']
+        available_end=min(next_start-0.04,float(s['end'])+STYLE['max_extra_gap'])
+        slot=max(0.25,available_end-float(s['start']))
+        required=original/slot
+        tempo=max(STYLE['min_tempo'],min(STYLE['max_tempo'],required))
+        speed_values.append(tempo)
+        filter_chain=(
+            f'rubberband=tempo={tempo:.6f}:pitch={STYLE["pitch_ratio"]:.6f}:formant=preserved,'
+            'highpass=f=70,lowpass=f=11500,'
+            'acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120:makeup=1.4'
+        )
+        run(['ffmpeg','-y','-v','error','-i',str(rawwav),'-af',filter_chain,
+             '-ar','22050','-ac','1','-c:a','pcm_s16le',str(fitwav)])
+        fitted_duration=wav_duration(fitwav)
+        if fitted_duration>slot+0.08:
+            overflow_count+=1
+            trimmed=SEGDIR/f'trim-{i:05d}.wav'
+            run(['ffmpeg','-y','-v','error','-i',str(fitwav),'-af',f'atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06',
+                 '-ar','22050','-ac','1','-c:a','pcm_s16le',str(trimmed)])
+            fitwav=trimmed
+        s['audio']=fitwav
+        s['voice_end']=float(s['start'])+wav_duration(fitwav)
         fitted.append((s,fitwav))
         if i%50==0 or i==len(segments):
             elapsed=max(0.001,time.monotonic()-tts_started)
             rate=i/elapsed
             remaining=(len(segments)-i)/rate if rate>0 else 0
-            heartbeat("tts",f"Piper {i}/{len(segments)} segments; eta≈{remaining/60:.1f} min")
+            heartbeat('tts',f'Voice {i}/{len(segments)}; eta≈{remaining/60:.1f} min; overflow={overflow_count}')
 
-    duration=max(float(s["end"]) for s in segments)+1.0
-    with wave.open(str(fitted[0][1]),"rb") as w:
+    duration=max(float(s['end']) for s in segments)+1.0
+    with wave.open(str(fitted[0][1]),'rb') as w:
         rate=w.getframerate(); width=w.getsampwidth(); channels=w.getnchannels()
-    frames=max(1,int(duration*rate)); canvas=bytearray(b"\0"*(frames*width*channels))
+    if width!=2 or channels!=1: raise RuntimeError('unexpected fitted WAV format')
+    frames=max(1,int(math.ceil(duration*rate)))
+    canvas=np.zeros(frames,dtype=np.float32)
     for s,path in fitted:
-        with wave.open(str(path),"rb") as w:
-            data=w.readframes(w.getnframes())
-        pos=int(float(s["start"])*rate)*width*channels
+        with wave.open(str(path),'rb') as w:
+            data=np.frombuffer(w.readframes(w.getnframes()),dtype='<i2').astype(np.float32)
+        pos=max(0,int(round(float(s['start'])*rate)))
         end=min(len(canvas),pos+len(data))
-        if pos<len(canvas): canvas[pos:end]=data[:end-pos]
-    with wave.open(str(VOICE_WAV),"wb") as w:
-        w.setnchannels(channels); w.setsampwidth(width); w.setframerate(rate); w.writeframes(bytes(canvas))
-    run(["ffmpeg","-y","-v","error","-i",str(VOICE_WAV),"-c:a","libmp3lame","-b:a","64k","-ac","1",str(VOICE_MP3)])
+        if pos<len(canvas): canvas[pos:end]+=data[:end-pos]
+    canvas=np.clip(canvas,-32768,32767).astype('<i2')
+    with wave.open(str(VOICE_WAV),'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(canvas.tobytes())
+    run(['ffmpeg','-y','-v','error','-i',str(VOICE_WAV),'-af','loudnorm=I=-17.5:TP=-2.0:LRA=7',
+         '-c:a','libmp3lame','-b:a','96k','-ac','1',str(VOICE_MP3)])
 
     lines=[]
     for i,s in enumerate(segments,1):
-        lines += [str(i),f"{ts(s['start'])} --> {ts(s['end'])}",s["vi"],""]
-    SRT.write_text("\n".join(lines),encoding="utf-8")
+        lines += [str(i),f"{ts(s['start'])} --> {ts(s['end'])}",s['vi'],'']
+    SRT.write_text('\n'.join(lines),encoding='utf-8')
 
     sha=hashlib.sha256(VOICE_MP3.read_bytes()).hexdigest()
     meta={
-        "ok":True,"job_id":JOB_ID,"source_video_id":cfg["source_video_id"],
-        "series_id":cfg["series_id"],"episode_number":cfg["episode_number"],
-        "translated_title":translated_title,"segments":len(segments),
-        "translation_model":model_name,"whisper_model":whisper_name,"tts_voice":voice_mode,
-        "voice_bytes":VOICE_MP3.stat().st_size,"voice_sha256":sha,
-        "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+        'ok':True,'job_id':JOB_ID,'source_video_id':cfg['source_video_id'],
+        'series_id':cfg['series_id'],'episode_number':cfg['episode_number'],
+        'translated_title':translated_title,'segments':len(segments),
+        'translation_model':translation_model,'whisper_model':whisper_name,'tts_voice':voice_mode,
+        'translation_mode':'contextual_cultivation_dubbing','timing_mode':'speech-segment-sync-no-hard-speedup',
+        'style_profile':'reference-inspired-short-bursts-pauses-moderate-bright',
+        'style_pitch_ratio':STYLE['pitch_ratio'],'style_max_tempo':STYLE['max_tempo'],
+        'timing_overflow_segments':overflow_count,
+        'mean_tempo':round(sum(speed_values)/max(1,len(speed_values)),4),
+        'voice_bytes':VOICE_MP3.stat().st_size,'voice_sha256':sha,
+        'gpu':torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu'
     }
-    META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 
-    heartbeat("uploading_ai_output","Uploading Vietnamese voice and subtitles")
-    upload(cfg["voice_upload_url"],VOICE_MP3,"audio/mpeg")
-    upload(cfg["subtitle_upload_url"],SRT,"text/plain")
-    upload(cfg["metadata_upload_url"],META,"application/json")
-    result=post("/ai-complete",{"job_id":JOB_ID,"translated_title":translated_title,"output_sha256":sha,"output_bytes":VOICE_MP3.stat().st_size})
-    print("HB_AI_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
+    heartbeat('uploading_ai_output','Uploading corrected Vietnamese voice and subtitles')
+    upload(cfg['voice_upload_url'],VOICE_MP3,'audio/mpeg')
+    upload(cfg['subtitle_upload_url'],SRT,'text/plain')
+    upload(cfg['metadata_upload_url'],META,'application/json')
+    result=post('/ai-complete',{'job_id':JOB_ID,'translated_title':translated_title,'output_sha256':sha,'output_bytes':VOICE_MP3.stat().st_size})
+    print('HB_AI_COMPLETE',json.dumps(result,ensure_ascii=False),flush=True)
 
-if __name__=="__main__":
+if __name__=='__main__':
     thread=threading.Thread(target=heartbeat_loop,daemon=True)
     thread.start()
     try:
         main()
     except Exception as exc:
-        print("HB_AI_FAIL",repr(exc),flush=True)
-        try: post("/fail",{"job_id":JOB_ID,"error":repr(exc)})
-        except Exception as fail_exc: print("HB_FAIL_REPORT_ERROR",repr(fail_exc),flush=True)
+        print('HB_AI_FAIL',repr(exc),flush=True)
+        try: post('/fail',{'job_id':JOB_ID,'error':repr(exc)})
+        except Exception as fail_exc: print('HB_FAIL_REPORT_ERROR',repr(fail_exc),flush=True)
         raise
     finally:
         _stop.set()
