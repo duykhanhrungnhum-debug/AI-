@@ -75,6 +75,7 @@ jobs:
           source=source.replace(marker,"BENCH = "+repr(req),1)
           nonce=re.sub(r"[^a-z0-9]+","-",str(req["nonce"]).lower()).strip("-")[-32:]
           slug=f"hidden-beyond-v3-bench-{nonce}"
+          title=f"Hidden Beyond V3 Benchmark {nonce}"
           worker=KaggleGpuWorker(
               api_token=os.environ["KAGGLE_API_TOKEN"],
               username=os.environ["KAGGLE_USERNAME"],
@@ -84,7 +85,7 @@ jobs:
           )
           s=worker.submit_script(
               slug=slug,
-              title="Hidden Beyond V3 Benchmark",
+              title=title,
               source=source,
               enable_internet=True,
               enable_gpu=True,
