@@ -277,7 +277,7 @@ def main()->None:
             ]
             try:
                 inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
-                inp={k:v.to("cuda") for k,v in inp.items()}
+                inp={k:v.to("cuda") for k,v in inp.items() if k!="token_type_ids"}
                 out=model.generate(
                     **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.05,
                     use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
