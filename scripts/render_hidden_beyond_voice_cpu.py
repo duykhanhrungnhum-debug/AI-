@@ -97,8 +97,11 @@ def main()->None:
             rawwav=normalized
 
         original=max(0.01,wav_duration(rawwav))
-        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max_extra_gap+min_pause_between_cues
-        available_end=min(next_start-min_pause_between_cues,float(s["end"])+max_extra_gap)
+        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max(1.2,max_extra_gap)+min_pause_between_cues
+        # Use the real silence until the next cue. Artificially capping this to
+        # ~0.18s caused valid Vietnamese lines to be hard-trimmed even when the
+        # scene had several seconds of free audio space.
+        available_end=next_start-min_pause_between_cues
         slot=max(0.25,available_end-float(s["start"]))
 
         # Fast path: most Piper lines already fit their cue. Do not spawn ffmpeg
