@@ -27,10 +27,11 @@ def main()->None:
         submission_retry_attempts=3,
         submission_retry_delay_seconds=20,
     )
-    slug="hidden-beyond-translation-skill-v2"
+    suffix=str(start["run_id"]).replace("-","")[:10]
+    slug=f"hidden-beyond-translation-skill-{suffix}"
     sub=worker.submit_script(
         slug=slug,
-        title="HB Translation Skill V2",
+        title=f"HB Translation {suffix}",
         source=source,
         enable_internet=True,
         enable_gpu=True,
