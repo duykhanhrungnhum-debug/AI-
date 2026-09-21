@@ -88,7 +88,7 @@ def main():
     heartbeat("installing","Installing local AI runtime")
     run([sys.executable,"-m","pip","install","--quiet",
          "faster-whisper>=1.1,<2","transformers<5","accelerate<2",
-         "sentencepiece","sacremoses","zerotts>=0.1.5,<0.2","piper-tts>=1.3,<2"])
+         "sentencepiece","sacremoses","piper-tts>=1.3,<2"])
 
     import torch
     from faster_whisper import WhisperModel
@@ -147,70 +147,38 @@ def main():
     del model,tok; gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
 
-    # Keep subtitle/translation granularity, but synthesize fewer, longer utterances.
-    # ZeroTTS recommends segmenting long-form input to about 15 seconds.
-    tts_chunks=[]
-    for s in segments:
-        if not tts_chunks:
-            tts_chunks.append({"start":s["start"],"end":s["end"],"vi":s["vi"]})
-            continue
-        cur=tts_chunks[-1]
-        candidate=(cur["vi"]+" "+s["vi"]).strip()
-        gap=float(s["start"])-float(cur["end"])
-        span=float(s["end"])-float(cur["start"])
-        if gap<=0.80 and span<=15.0 and len(candidate)<=220:
-            cur["end"]=s["end"]
-            cur["vi"]=candidate
-        else:
-            tts_chunks.append({"start":s["start"],"end":s["end"],"vi":s["vi"]})
-
-    heartbeat("tts",f"Synthesizing Vietnamese voice: {len(tts_chunks)} chunks from {len(segments)} subtitle segments")
-    voice_mode="zerotts-hamy"
-    zerotts=None
-    piper_voice=None
-    normalize_vi_text=None
-    try:
-        from zerotts import ZeroTTS, normalize_vi_text as _normalize_vi_text
-        normalize_vi_text=_normalize_vi_text
-        zerotts=ZeroTTS.from_pretrained("zeroweight-ai/ZeroTTS")
-        probe=zerotts.synthesize("Xin chào.",voice="hamy",cfg_scale=1.0,audio_temperature=0.78,audio_topk=25,audio_topp=0.95,audio_repetition_penalty=1.2)
-        zerotts.save_audio(probe,str(SEGDIR/"probe.wav"))
-        if wav_duration(SEGDIR/"probe.wav")<0.1: raise RuntimeError("ZeroTTS probe too short")
-    except Exception as exc:
-        print("ZEROTTS_FALLBACK",repr(exc),flush=True)
-        voice_mode="piper-vais1000"
-        voice_name="vi_VN-vais1000-medium"
-        voices=WORK/"piper-voices"; voices.mkdir(exist_ok=True)
-        run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
-        from piper import PiperVoice
-        piper_voice=PiperVoice.load(str(voices/(voice_name+".onnx")),use_cuda=False)
+    heartbeat("tts","Starting fast Piper Vietnamese TTS")
+    voice_mode="piper-vais1000-fast"
+    voice_name="vi_VN-vais1000-medium"
+    voices=WORK/"piper-voices"
+    voices.mkdir(exist_ok=True)
+    run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
+    from piper import PiperVoice
+    piper_voice=PiperVoice.load(str(voices/(voice_name+".onnx")),use_cuda=False)
 
     def synth(text:str,path:Path):
-        spoken=normalize_vi_text(text) if normalize_vi_text is not None else text
-        if voice_mode=="zerotts-hamy":
-            a=zerotts.synthesize(spoken,voice="hamy",cfg_scale=1.0,audio_temperature=0.78,audio_topk=25,audio_topp=0.95,audio_repetition_penalty=1.2)
-            zerotts.save_audio(a,str(path))
-        else:
-            with wave.open(str(path),"wb") as w: piper_voice.synthesize_wav(spoken,w)
+        with wave.open(str(path),"wb") as w:
+            piper_voice.synthesize_wav(clean(text),w)
 
     fitted=[]
     tts_started=time.monotonic()
-    for i,s in enumerate(tts_chunks,1):
-        rawwav=SEGDIR/f"raw-{i:05d}.wav"; fitwav=SEGDIR/f"fit-{i:05d}.wav"
+    for i,s in enumerate(segments,1):
+        rawwav=SEGDIR/f"raw-{i:05d}.wav"
+        fitwav=SEGDIR/f"fit-{i:05d}.wav"
         synth(s["vi"],rawwav)
         original=max(0.01,wav_duration(rawwav))
         slot=max(0.25,float(s["end"])-float(s["start"])-0.04)
-        speed=max(0.92,min(1.48,original/slot))
+        speed=max(0.80,min(1.60,original/slot))
         run(["ffmpeg","-y","-v","error","-i",str(rawwav),"-af",
              f"atempo={speed:.6f},atrim=duration={slot:.3f},highpass=f=70,lowpass=f=11500",
              "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fitwav)])
         s["audio"]=fitwav
         fitted.append((s,fitwav))
-        if i%10==0 or i==len(tts_chunks):
+        if i%50==0 or i==len(segments):
             elapsed=max(0.001,time.monotonic()-tts_started)
             rate=i/elapsed
-            remaining=(len(tts_chunks)-i)/rate if rate>0 else 0
-            heartbeat("tts",f"Synthesized {i}/{len(tts_chunks)} chunks; eta≈{remaining/60:.1f} min")
+            remaining=(len(segments)-i)/rate if rate>0 else 0
+            heartbeat("tts",f"Piper {i}/{len(segments)} segments; eta≈{remaining/60:.1f} min")
 
     duration=max(float(s["end"]) for s in segments)+1.0
     with wave.open(str(fitted[0][1]),"rb") as w:
@@ -235,7 +203,7 @@ def main():
     meta={
         "ok":True,"job_id":JOB_ID,"source_video_id":cfg["source_video_id"],
         "series_id":cfg["series_id"],"episode_number":cfg["episode_number"],
-        "translated_title":translated_title,"segments":len(segments),"tts_chunks":len(tts_chunks),
+        "translated_title":translated_title,"segments":len(segments),
         "translation_model":model_name,"tts_voice":voice_mode,
         "voice_bytes":VOICE_MP3.stat().st_size,"voice_sha256":sha,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
