@@ -8,6 +8,7 @@ import html
 import json
 import math
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -33,6 +34,27 @@ GLOSSARY={
     "魔修":"ma tu","正道":"chính đạo","天道":"thiên đạo","飞升":"phi thăng","飛升":"phi thăng","境界":"cảnh giới",
 }
 STYLE={"max_tempo":1.22,"min_tempo":0.90,"pitch_ratio":1.025,"max_extra_gap":0.24,"words_per_second":3.25}
+
+def callback_post(path:str,payload:dict)->dict:
+    data=json.dumps(payload,ensure_ascii=False).encode()
+    req=Request(
+        BENCH["callback_base"].rstrip("/")+path,
+        data=data,
+        headers={"content-type":"application/json","x-benchmark-token":BENCH["run_token"]},
+        method="POST",
+    )
+    with urlopen(req,timeout=120) as r:
+        return json.loads(r.read().decode())
+
+def beat(stage:str,message:str)->None:
+    try:
+        callback_post("/heartbeat",{"run_id":BENCH["run_id"],"stage":stage,"message":message})
+        print("BENCH_HEARTBEAT",stage,message,flush=True)
+    except Exception as exc:
+        print("BENCH_HEARTBEAT_ERROR",stage,repr(exc),flush=True)
+
+def _alarm(_signum,_frame):
+    raise TimeoutError("benchmark hard deadline exceeded")
 
 def run(cmd:list[str])->None:
     print("+"," ".join(map(str,cmd)),flush=True)
@@ -153,18 +175,23 @@ def get_caption(meta:dict):
     return segs,kind,lang
 
 def main()->None:
+    signal.signal(signal.SIGALRM,_alarm)
+    signal.alarm(18*60)
     total_started=time.monotonic()
+    beat("starting","Benchmark worker started")
     run([
         sys.executable,"-m","pip","install","--quiet",
         "yt-dlp>=2026.1","faster-whisper>=1.1,<2",
         "transformers==4.56.0","accelerate<2","sentencepiece","sacremoses",
     ])
+    beat("installed","Optimized translation runtime installed")
 
     import torch
     from faster_whisper import BatchedInferencePipeline, WhisperModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     url=BENCH["source_url"]
+    beat("source_probe","Checking source captions before ASR")
     probe_started=time.monotonic()
     meta=json.loads(subprocess.check_output(
         [sys.executable,"-m","yt_dlp","--no-playlist","--skip-download","--dump-single-json",url],
@@ -209,6 +236,7 @@ def main()->None:
         s["slot"]=max(0.3,s["end"]-s["start"])
         s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
     transcript_seconds=time.monotonic()-transcript_started
+    beat("transcribed",f"{transcript_source}: {len(segments)} segments in {transcript_seconds:.1f}s")
 
     translation_started=time.monotonic()
     model_name="tencent/Hy-MT2-1.8B"
@@ -222,6 +250,7 @@ def main()->None:
     ).to("cuda")
     model.eval()
     model_load_seconds=time.monotonic()-load_started
+    beat("translating",f"Hy-MT2 loaded in {model_load_seconds:.1f}s; translating {len(segments)} segments")
 
     def prompt(s:dict)->str:
         pairs=glossary_pairs(s["text"])
@@ -275,6 +304,11 @@ def main()->None:
                 f"pct={cursor*100/len(segments):.1f} rate={cursor/elapsed:.2f} invalid={len(invalid)}",
                 flush=True
             )
+            beat(
+                "translating",
+                f"Hy-MT2 {cursor}/{len(segments)} ({cursor*100/len(segments):.1f}%); "
+                f"{cursor/elapsed:.2f} seg/s; invalid={len(invalid)}"
+            )
 
     inference_seconds=time.monotonic()-inference_started
     translation_seconds=time.monotonic()-translation_started
@@ -318,7 +352,23 @@ def main()->None:
     }
     REPORT.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     META.write_text(json.dumps(timed,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    callback_post("/complete",{
+        "run_id":BENCH["run_id"],
+        "report":report,
+        "metadata":timed,
+    })
+    signal.alarm(0)
     print("HB_V3_BENCHMARK_DONE",json.dumps(report,ensure_ascii=False),flush=True)
 
 if __name__=="__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print("HB_V3_BENCHMARK_FAIL",repr(exc),flush=True)
+        try:
+            callback_post("/fail",{"run_id":BENCH["run_id"],"error":repr(exc)})
+        except Exception as report_exc:
+            print("HB_V3_BENCHMARK_FAIL_REPORT_ERROR",repr(report_exc),flush=True)
+        raise
+    finally:
+        signal.alarm(0)
