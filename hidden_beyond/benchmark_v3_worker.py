@@ -198,6 +198,7 @@ def main()->None:
         text=True,timeout=120,
     ))
     caption=get_caption(meta)
+    source_duration_seconds=float(meta.get("duration") or 0)
     source_probe_seconds=time.monotonic()-probe_started
 
     transcript_started=time.monotonic()
@@ -206,6 +207,7 @@ def main()->None:
         transcript_source=f"youtube_{kind}_{lang}"
         asr_model="skipped-caption-available"
         source_fetch_seconds=source_probe_seconds
+        transcript_media_duration=source_duration_seconds
     else:
         fetch_started=time.monotonic()
         run([
@@ -225,6 +227,7 @@ def main()->None:
         )
         raw=[{"start":float(s.start),"end":float(s.end),"text":clean(s.text)} for s in seg_iter if clean(s.text)]
         transcript_source="faster_whisper_large-v3-turbo_batched"
+        transcript_media_duration=float(getattr(info,"duration",0) or source_duration_seconds or 0)
         del batched,whisper
         gc.collect(); torch.cuda.empty_cache()
 
@@ -236,7 +239,21 @@ def main()->None:
         s["slot"]=max(0.3,s["end"]-s["start"])
         s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
     transcript_seconds=time.monotonic()-transcript_started
-    beat("transcribed",f"{transcript_source}: {len(segments)} segments in {transcript_seconds:.1f}s")
+    transcript_last_end=max(float(s["end"]) for s in segments)
+    transcript_coverage_pct=(transcript_last_end*100.0/transcript_media_duration) if transcript_media_duration>0 else 0.0
+    segments_per_minute=(len(segments)/(transcript_media_duration/60.0)) if transcript_media_duration>0 else 0.0
+    cjk_chars=sum(len(CJK_RE.findall(s["text"])) for s in segments)
+    cjk_chars_per_minute=(cjk_chars/(transcript_media_duration/60.0)) if transcript_media_duration>0 else 0.0
+    beat(
+        "transcribed",
+        f"{transcript_source}: {len(segments)} segments in {transcript_seconds:.1f}s; "
+        f"coverage={transcript_coverage_pct:.1f}% density={segments_per_minute:.2f}/min cjk={cjk_chars_per_minute:.1f}/min"
+    )
+    if transcript_media_duration>=600 and transcript_coverage_pct<50.0:
+        raise RuntimeError(
+            f"transcript coverage too low: {transcript_coverage_pct:.1f}% "
+            f"({transcript_last_end:.1f}s/{transcript_media_duration:.1f}s)"
+        )
 
     translation_started=time.monotonic()
     model_name="tencent/Hy-MT2-1.8B"
@@ -321,6 +338,12 @@ def main()->None:
         "duration_seconds":meta.get("duration"),
         "transcript_source":transcript_source,
         "segments":len(segments),
+        "source_duration_seconds":round(source_duration_seconds,2),
+        "transcript_media_duration_seconds":round(transcript_media_duration,2),
+        "transcript_last_end_seconds":round(transcript_last_end,2),
+        "transcript_coverage_pct":round(transcript_coverage_pct,2),
+        "segments_per_minute":round(segments_per_minute,3),
+        "cjk_chars_per_minute":round(cjk_chars_per_minute,2),
         "source_fetch_seconds":round(source_fetch_seconds,2),
         "transcript_seconds":round(transcript_seconds,2),
         "translation_model":model_name,
