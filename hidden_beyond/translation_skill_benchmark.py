@@ -151,7 +151,11 @@ def main():
     )
     print("TRANSLATION_SKILL_REPORT",json.dumps({k:v for k,v in report.items() if k!="rows"},ensure_ascii=False),flush=True)
     if failed:
-        raise RuntimeError("translation regression failed: "+",".join(x["source"] for x in failed))
+        compact=" | ".join(
+            f"{x['source']}=>{x['translated']}[{','.join(x['reasons'])}]"
+            for x in failed
+        )
+        raise RuntimeError("translation regression failed: "+compact[:1200])
     post("/complete",{
         "run_id":BENCH["run_id"],
         "report":report,
