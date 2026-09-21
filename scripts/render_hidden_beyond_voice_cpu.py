@@ -62,7 +62,9 @@ def main()->None:
 
     run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
     from piper import PiperVoice
+    from piper.config import SynthesisConfig
     voice=PiperVoice.load(str(voices/(voice_name+".onnx")),use_cuda=False)
+    syn=SynthesisConfig()
 
     filters=subprocess.run(
         ["ffmpeg","-hide_banner","-filters"],
@@ -74,12 +76,13 @@ def main()->None:
     fitted=[]
     overflow_count=0
     retimed_count=0
+    hard_trim_count=0
     started=time.monotonic()
 
     for i,s in enumerate(segments,1):
         rawwav=segdir/f"raw-{i:05d}.wav"
         with wave.open(str(rawwav),"wb") as w:
-            voice.synthesize_wav(clean(s["vi"]),w)
+            voice.synthesize_wav(clean(s["vi"]),w,syn_config=syn)
 
         rate,width,channels=wav_format(rawwav)
         if (rate,width,channels)!=(22050,2,1):
@@ -108,11 +111,22 @@ def main()->None:
                 speed_filter=f"atempo={tempo:.6f}"
             run([
                 "ffmpeg","-y","-v","error","-i",str(rawwav),
-                "-af",f"{speed_filter},atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.05):.3f}:d=0.05",
+                "-af",f"{speed_filter},afade=t=out:st={max(0.0,slot-0.05):.3f}:d=0.05",
                 "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fitwav)
             ])
-            if wav_duration(fitwav)>slot+0.08:
+            fitted_duration=wav_duration(fitwav)
+            if fitted_duration>slot+0.08:
                 overflow_count+=1
+                # Last-resort trim is explicit and measurable. Production quality
+                # gate can reject runs with too many trims instead of hiding them.
+                trimmed=segdir/f"trim-{i:05d}.wav"
+                run([
+                    "ffmpeg","-y","-v","error","-i",str(fitwav),
+                    "-af",f"atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06",
+                    "-ar","22050","-ac","1","-c:a","pcm_s16le",str(trimmed)
+                ])
+                fitwav=trimmed
+                hard_trim_count+=1
 
         fitted.append((s,fitwav))
         if i%100==0 or i==len(segments):
@@ -154,7 +168,7 @@ def main()->None:
     # One global audio cleanup pass instead of repeating filters hundreds of times.
     run([
         "ffmpeg","-y","-v","error","-i",str(voice_wav),
-        "-af","highpass=f=70,lowpass=f=11500,acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120:makeup=1.4,loudnorm=I=-17.5:TP=-2.0:LRA=7",
+        "-af","highpass=f=70,lowpass=f=11000,acompressor=threshold=-21dB:ratio=2.0:attack=10:release=140:makeup=1.15,loudnorm=I=-19.0:TP=-3.0:LRA=6",
         "-c:a","libmp3lame","-b:a","96k","-ac","1",str(out_path)
     ])
 
@@ -162,6 +176,8 @@ def main()->None:
     render_seconds=round(time.monotonic()-started,2)
     meta["timing_overflow_segments"]=overflow_count
     meta["retimed_segments"]=retimed_count
+    meta["hard_trim_segments"]=hard_trim_count
+    meta["voice_loudness_target_lufs"]=-19.0
     meta["voice_bytes"]=out_path.stat().st_size
     meta["voice_sha256"]=sha
     meta["voice_render_device"]="github-actions-cpu"
@@ -170,7 +186,7 @@ def main()->None:
     meta_path.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     print(
         f"CPU_TTS_DONE seconds={render_seconds:.1f} retimed={retimed_count}/{len(segments)} "
-        f"bytes={out_path.stat().st_size} sha256={sha}",
+        f"hard_trim={hard_trim_count} bytes={out_path.stat().st_size} sha256={sha}",
         flush=True
     )
 
