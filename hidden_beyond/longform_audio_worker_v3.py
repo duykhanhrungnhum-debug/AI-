@@ -733,8 +733,18 @@ def main()->None:
             gc.collect()
             torch.cuda.empty_cache()
             if unresolved:
-                heartbeat("translating_fast_path",f"{len(unresolved)} review failures; deterministic MT fallback")
-                translated.update(opus_translate(unresolved,on_device="cpu"))
+                content_fallback=[]
+                for s in unresolved:
+                    try:
+                        validate_vi(translated.get(s["index"],""),s["text"],field=f"pre-TTS segment {s['index']}")
+                    except Exception:
+                        content_fallback.append(s)
+                if content_fallback:
+                    heartbeat(
+                        "translating_fast_path",
+                        f"{len(content_fallback)} content failures; deterministic MT fallback",
+                    )
+                    translated.update(opus_translate(content_fallback,on_device="cpu"))
     else:
         primary_model="Helsinki-NLP/opus-mt-zh-vi"
         translated.update(opus_translate(segments,on_device="cpu"))
@@ -753,8 +763,8 @@ def main()->None:
     final_invalid=[]
     for s in segments:
         try:
-            translated[s["index"]]=validate_segment_fit(
-                translated[s["index"]],s,field=f"final segment {s['index']}"
+            translated[s["index"]]=validate_vi(
+                translated[s["index"]],s["text"],field=f"final segment {s['index']}"
             )
         except Exception:
             final_invalid.append(s["index"])
@@ -763,6 +773,10 @@ def main()->None:
             f"translation quality unresolved {len(final_invalid)} segments: "
             +",".join(map(str,final_invalid[:30]))
         )
+    estimated_overlong_after_review=sum(
+        1 for s in segments
+        if vi_word_count(translated[s["index"]])>s["fit_words"]
+    )
 
     for s in segments:
         s["vi"]=translated[s["index"]]
@@ -813,6 +827,7 @@ def main()->None:
         "gpu_worker_seconds_to_package":round(time.monotonic()-pipeline_started,2),
         "qwen_reviewed_segments":qwen_reviewed,
         "overlong_review_segments":len(overlong_ids) if device=="cuda" else 0,
+        "estimated_overlong_after_review":estimated_overlong_after_review,
         "fallback_segments":fallback_segments,
         "fast_path_used":fast_path_used,
         "timed_segments":[{
