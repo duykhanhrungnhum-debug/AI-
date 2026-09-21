@@ -164,7 +164,7 @@ def main():
     device='cuda' if torch.cuda.is_available() else 'cpu'
     compute='float16' if device=='cuda' else 'int8'
     whisper_name='large-v3-turbo' if device=='cuda' else 'small'
-    beam_size=5 if device=='cuda' else 3
+    beam_size=3 if device=='cuda' else 3
     heartbeat('transcribing',f'Speech recognition on {device} with {whisper_name}')
     whisper=WhisperModel(whisper_name,device=device,compute_type=compute)
     seg_iter,info=whisper.transcribe(
@@ -248,6 +248,10 @@ def main():
 
         translated={}
         fallback_mt={'tok':None,'model':None}
+        translation_started=time.monotonic()
+        qwen_attempted=0
+        qwen_fallbacks=0
+        qwen_budget_seconds=12*60
 
         def deterministic_mt_fallback(s:dict)->str:
             if fallback_mt['tok'] is None:
@@ -267,7 +271,28 @@ def main():
             vi=clean(ftok.batch_decode(out,skip_special_tokens=True)[0]).strip('"“” ')
             return validate_vi(vi,s['text'],field=f'deterministic fallback segment {s["index"]}')
 
+        def recover_segment(s:dict)->str:
+            nonlocal qwen_fallbacks
+            qwen_fallbacks+=1
+            plain_prompt=(
+                'Dịch đúng một câu tiếng Trung sau sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. '
+                'Giữ nguyên nghĩa, phủ định, số liệu, tên riêng và xưng hô; không để chữ Hán. '
+                f'Tối đa {s["max_words"]+2} từ. Chỉ trả về câu tiếng Việt, không JSON, không giải thích.\n'
+                +s['text']
+            )
+            try:
+                vi=clean(qwen(
+                    plain_prompt+'\nBẮT BUỘC chỉ dùng tiếng Việt Latin; tuyệt đối không chép lại tiếng Trung.',
+                    max_new=100
+                )).strip('"“” ')
+                return validate_vi(vi,s['text'],field=f'plain fallback segment {s["index"]}')
+            except Exception:
+                heartbeat('translating_retry',
+                          f'Segment {s["index"]} Qwen fallback failed; using deterministic MT')
+                return deterministic_mt_fallback(s)
+
         def translate_block(block:list[dict]):
+            nonlocal qwen_attempted,qwen_fallbacks
             first=block[0]['index']; last=block[-1]['index']
             pos=first-1
             context_before=segments[pos-1]['text'] if pos>0 else ''
@@ -284,83 +309,109 @@ def main():
                 f'BEFORE: {context_before}\nAFTER: {context_after}\nINPUT: '
                 +json.dumps(payload,ensure_ascii=False,separators=(',',':'))
             )
+            qwen_attempted+=len(block)
             try:
-                data=qwen_json(prompt,max_new=max(500,len(block)*90),
-                               label=f'segments {first}-{last}')
+                data=qwen_json(prompt,max_new=max(600,len(block)*65),
+                               label=f'segments {first}-{last}',attempts=2)
                 items=data.get('segments')
                 if not isinstance(items,list):
                     raise ValueError('Qwen translation missing segments list')
-                batch={}
+                by_id={}
                 for item in items:
-                    idx=int(item.get('id',0)); vi=str(item.get('vi',''))
-                    src=next((x for x in block if x['index']==idx),None)
-                    if src is None:
+                    try:
+                        by_id[int(item.get('id',0))]=str(item.get('vi',''))
+                    except Exception:
                         continue
-                    batch[idx]=validate_vi(vi,src['text'],field=f'segment {idx}')
-                missing=[s['index'] for s in block if s['index'] not in batch]
-                if missing:
-                    raise ValueError(f'Qwen translation missing ids {missing}')
-                translated.update(batch)
-                heartbeat('translating',f'Translated through segment {last}/{len(segments)}')
+                recovered=0
+                for s in block:
+                    idx=s['index']
+                    raw_vi=by_id.get(idx,'')
+                    try:
+                        translated[idx]=validate_vi(raw_vi,s['text'],field=f'segment {idx}')
+                    except Exception:
+                        translated[idx]=recover_segment(s)
+                        recovered+=1
+                heartbeat('translating',
+                          f'Translated through {last}/{len(segments)}; recovered={recovered}')
                 return
             except Exception as exc:
-                if len(block)>1:
-                    heartbeat('translating_retry',
-                              f'Block {first}-{last} failed ({type(exc).__name__}); split and retry')
-                    mid=max(1,len(block)//2)
-                    translate_block(block[:mid])
-                    translate_block(block[mid:])
-                    return
-                # Last-resort for one line: avoid JSON entirely so one malformed object
-                # cannot kill a 75-minute episode.
-                s=block[0]
-                plain_prompt=(
-                    'Dịch đúng một câu tiếng Trung sau sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. '
-                    'Giữ nguyên nghĩa, phủ định, số liệu, tên riêng và xưng hô; không để chữ Hán. '
-                    f'Tối đa {s["max_words"]+2} từ. Chỉ trả về câu tiếng Việt, không JSON, không giải thích.\n'
-                    +s['text']
-                )
-                recovered=None
-                last_plain_error=None
-                for plain_attempt in range(1,3):
-                    try:
-                        vi=clean(qwen(
-                            plain_prompt+
-                            f'\nLần thử {plain_attempt}: BẮT BUỘC chỉ dùng tiếng Việt Latin; tuyệt đối không chép lại tiếng Trung.',
-                            max_new=120
-                        )).strip('"“” ')
-                        recovered=validate_vi(vi,s['text'],field=f'plain fallback segment {s["index"]}')
-                        break
-                    except Exception as plain_exc:
-                        last_plain_error=plain_exc
-                        heartbeat('translating_retry',
-                                  f'Segment {s["index"]} plain fallback {plain_attempt}/2 failed; retrying')
-                if recovered is None:
-                    heartbeat('translating_retry',
-                              f'Segment {s["index"]} switching to deterministic MT fallback')
-                    recovered=deterministic_mt_fallback(s)
-                translated[s['index']]=recovered
-                heartbeat('translating_retry',f'Segment {s["index"]} recovered without stopping episode')
+                # Never recursively re-run the whole block: that wastes successful GPU work.
+                heartbeat('translating_retry',
+                          f'Block {first}-{last} unusable ({type(exc).__name__}); fast fallback for block')
+                for s in block:
+                    translated[s['index']]=deterministic_mt_fallback(s)
+                    qwen_fallbacks+=1
 
-        chunk_size=10
+        chunk_size=20
+        next_start=0
         for start in range(0,len(segments),chunk_size):
+            elapsed=time.monotonic()-translation_started
+            fallback_ratio=qwen_fallbacks/max(1,qwen_attempted)
+            if elapsed>=qwen_budget_seconds or (qwen_attempted>=60 and fallback_ratio>0.20):
+                reason='time_budget' if elapsed>=qwen_budget_seconds else 'high_retry_ratio'
+                heartbeat('translating_fast_path',
+                          f'Switch remaining to fast MT: {reason}; elapsed={elapsed/60:.1f}m fallback_ratio={fallback_ratio:.1%}')
+                next_start=start
+                break
             translate_block(segments[start:start+chunk_size])
+            next_start=start+chunk_size
+        else:
+            next_start=len(segments)
 
-        # Tighten only lines that would force unnatural speed. Rewrite rather than chop audio.
+        if next_start<len(segments):
+            # Release Qwen before the smaller batched translation model.
+            del model,tok
+            gc.collect()
+            torch.cuda.empty_cache()
+            translation_model='hybrid-qwen-opus-gpu-budget-v1'
+            ftok=AutoTokenizer.from_pretrained('Helsinki-NLP/opus-mt-zh-vi')
+            fmodel=AutoModelForSeq2SeqLM.from_pretrained(
+                'Helsinki-NLP/opus-mt-zh-vi',low_cpu_mem_usage=True
+            ).to(device)
+            fmodel.eval()
+            pending=segments[next_start:]
+            with torch.inference_mode():
+                for off in range(0,len(pending),16):
+                    batch=pending[off:off+16]
+                    inp=ftok([s['text'] for s in batch],return_tensors='pt',padding=True,truncation=True,max_length=256).to(device)
+                    out=fmodel.generate(**inp,max_new_tokens=128,num_beams=2,
+                                        repetition_penalty=1.06,no_repeat_ngram_size=3)
+                    vis=ftok.batch_decode(out,skip_special_tokens=True)
+                    for s,vi in zip(batch,vis,strict=True):
+                        translated[s['index']]=validate_vi(vi,s['text'],field=f'fast segment {s["index"]}')
+                    heartbeat('translating_fast_path',
+                              f'Fast MT {min(next_start+off+len(batch),len(segments))}/{len(segments)}')
+            del fmodel,ftok
+            gc.collect()
+            torch.cuda.empty_cache()
+            # Reload Qwen only for title and a bounded set of severe timing rewrites.
+            tok=AutoTokenizer.from_pretrained('Qwen/Qwen2.5-3B-Instruct')
+            model=AutoModelForCausalLM.from_pretrained(
+                'Qwen/Qwen2.5-3B-Instruct',torch_dtype=torch.float16,low_cpu_mem_usage=True
+            ).to(device)
+            model.eval()
+
+        # Keep expensive rewrite calls bounded; first-pass prompts already include max_words.
+        severe=[]
         for s in segments:
             vi=translated[s['index']]
             words=len(re.findall(r'[A-Za-zÀ-ỹ0-9]+',vi))
-            if words>max(s['max_words']+2,int(s['max_words']*1.30)):
-                prompt=(
-                    'Rút gọn câu tiếng Việt sau để lồng tiếng nhưng phải giữ nguyên ý chính, phủ định, số liệu, tên riêng và xưng hô. '
-                    f'Tối đa {s["max_words"]} từ, chỉ trả về JSON {{"vi":"..."}}. '
-                    f'Nguyên văn Trung: {s["text"]}\nBản hiện tại: {vi}'
-                )
-                try:
-                    shorter=qwen_json(prompt,max_new=120,label=f'shorten segment {s["index"]}',attempts=2).get('vi','')
-                    translated[s['index']]=validate_vi(str(shorter),s['text'],field=f'short segment {s["index"]}')
-                except Exception as exc:
-                    print('HB_SHORTEN_FALLBACK',s['index'],repr(exc),flush=True)
+            limit=max(s['max_words']+3,int(s['max_words']*1.45))
+            if words>limit:
+                severe.append((words/max(1,s['max_words']),s))
+        severe.sort(key=lambda x:x[0],reverse=True)
+        for _,s in severe[:12]:
+            vi=translated[s['index']]
+            prompt=(
+                'Rút gọn câu tiếng Việt sau để lồng tiếng nhưng phải giữ nguyên ý chính, phủ định, số liệu, tên riêng và xưng hô. '
+                f'Tối đa {s["max_words"]} từ, chỉ trả về JSON {{"vi":"..."}}. '
+                f'Nguyên văn Trung: {s["text"]}\nBản hiện tại: {vi}'
+            )
+            try:
+                shorter=qwen_json(prompt,max_new=100,label=f'shorten segment {s["index"]}',attempts=1).get('vi','')
+                translated[s['index']]=validate_vi(str(shorter),s['text'],field=f'short segment {s["index"]}')
+            except Exception as exc:
+                print('HB_SHORTEN_FALLBACK',s['index'],repr(exc),flush=True)
 
         title_prompt=(
             'Dịch tiêu đề phim sau sang tiếng Việt tự nhiên theo phong cách tiên hiệp. '
@@ -475,7 +526,8 @@ def main():
         'timing_overflow_segments':overflow_count,
         'mean_tempo':round(sum(speed_values)/max(1,len(speed_values)),4),
         'voice_bytes':VOICE_MP3.stat().st_size,'voice_sha256':sha,
-        'gpu':torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu'
+        'gpu':torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu',
+        'gpu_efficiency_mode':'qwen-partial-salvage-12min-budget-v1'
     }
     META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 
