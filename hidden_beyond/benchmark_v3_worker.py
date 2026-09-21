@@ -23,6 +23,15 @@ REPORT=WORK/"benchmark.json"
 CJK_RE=re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 TAG_RE=re.compile(r"<[^>]+>")
 REPEAT_RE=re.compile(r"\b([\wÀ-ỹ]+)(?:\s+\1)+\b",re.IGNORECASE)
+
+def has_ngram_loop(value:str)->bool:
+    words=re.findall(r"[\wÀ-ỹ]+",value.lower())
+    for n in (2,3,4):
+        for i in range(0,max(0,len(words)-n*3+1)):
+            gram=words[i:i+n]
+            if gram and words[i+n:i+2*n]==gram and words[i+2*n:i+3*n]==gram:
+                return True
+    return False
 GLOSSARY={
     "修仙":"tu tiên","修士":"tu sĩ","灵气":"linh khí","靈氣":"linh khí","灵力":"linh lực","靈力":"linh lực",
     "灵根":"linh căn","靈根":"linh căn","炼气":"Luyện Khí","練氣":"Luyện Khí","筑基":"Trúc Cơ","築基":"Trúc Cơ",
@@ -90,6 +99,8 @@ def validate(text:str,source:str)->str:
     value=clean(text)
     if not value or CJK_RE.search(value):
         raise ValueError("empty_or_cjk")
+    if REPEAT_RE.search(value) or has_ngram_loop(value):
+        raise ValueError("repetition_loop")
     for number in re.findall(r"\d+",source):
         if number not in value:
             raise ValueError("lost_number")
