@@ -123,11 +123,16 @@ def main():
             prompts=[]
             for x in batch:
                 refs=[f"{zh} 翻译成 {vi}" for zh,vi in GLOSSARY.items() if zh in x["source"]]
-                term_text=("参考下面的翻译：\n"+"\n".join(refs)+"\n\n") if refs else ""
+                term_text=("参考下面的固定术语翻译：\n"+"\n".join(refs)+"\n\n") if refs else ""
                 prompts.append(
                     term_text+
-                    "将以下文本翻译为越南语，注意只需要输出翻译后的结果，不要额外解释：\n"
-                    +x["source"]
+                    "〖翻译要求〗\n"
+                    "1. 忠实传达原意，不得添加原文没有的信息，不得遗漏关键含义。\n"
+                    "2. 先保证准确，再保证越南语自然；不得改变否定、数字、疑问或人物关系。\n"
+                    "3. 人物称呼、专有名词、修仙境界和术语必须保持一致。\n"
+                    "4. 使用自然、专业、适合影视对白的越南语。\n"
+                    "5. 只输出译文，不要解释、注释、免责声明或元话语。\n"
+                    "〖待翻译文本〗\n"+x["source"]
                 )
             chats=[
                 tok.apply_chat_template([{"role":"user","content":p}],tokenize=False,add_generation_prompt=True)
