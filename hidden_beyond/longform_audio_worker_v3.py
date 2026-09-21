@@ -38,6 +38,11 @@ def has_ngram_loop(value:str)->bool:
                 return True
     return False
 TAG_RE=re.compile(r"<[^>]+>")
+DIALOGUE_GLOSSARY={
+    "自寻死路":"tự tìm đường chết",
+    "别给脸不要脸":"đừng có không biết điều",
+    "一成":"một thành",
+}
 FANTASY_GLOSSARY={
     "修仙":"tu tiên","修士":"tu sĩ","灵气":"linh khí","靈氣":"linh khí","灵力":"linh lực","靈力":"linh lực",
     "灵根":"linh căn","靈根":"linh căn","炼气":"Luyện Khí","練氣":"Luyện Khí","筑基":"Trúc Cơ","築基":"Trúc Cơ",
@@ -191,11 +196,12 @@ def validate_segment_fit(text:str,segment:dict,*,field:str)->str:
 def glossary_pairs(text:str)->list[tuple[str,str]]:
     pairs=[]
     seen=set()
-    for zh,vi in FANTASY_GLOSSARY.items():
-        if zh in text and vi not in seen:
-            pairs.append((zh,vi))
-            seen.add(vi)
-    return pairs[:8]
+    for table in (DIALOGUE_GLOSSARY,FANTASY_GLOSSARY):
+        for zh,vi in table.items():
+            if zh in text and vi not in seen:
+                pairs.append((zh,vi))
+                seen.add(vi)
+    return pairs[:10]
 
 def split_words_to_dialogue(words:list[dict])->list[dict]:
     """Create short dubbing cues from Whisper word timestamps.
