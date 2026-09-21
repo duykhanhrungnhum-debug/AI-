@@ -2,9 +2,9 @@
   "source_run_id": 35534394730,
   "series_id": 2,
   "source_video_id": "vaY4URFw0cg",
-  "purpose": "episode1_v2_retry_after_cjk_fallback_fix",
+  "purpose": "episode1_v2_retry_cost_optimized_translation",
   "stop_after_first_upload": true,
-  "nonce": "2026-09-21-episode1-v2-retry-cjk-fallback-3",
+  "nonce": "2026-09-21-episode1-v2-cost-optimized-1",
   "force_reprocess": true,
   "version_label": "V2"
 }
