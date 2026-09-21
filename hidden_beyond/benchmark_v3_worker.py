@@ -112,7 +112,7 @@ def vi_word_count(value:str)->int:
 def fit_word_limit(segment:dict)->int:
     slot=max(0.25,float(segment["end"])-float(segment["start"]))
     usable=slot+float(STYLE.get("max_extra_gap",0.18))
-    return max(2,int(math.ceil(usable*3.6)))
+    return max(2,int(math.ceil(usable*3.2)))
 
 def validate_segment(text:str,segment:dict)->str:
     value=validate(text,segment["text"])
