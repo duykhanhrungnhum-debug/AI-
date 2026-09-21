@@ -1,8 +1,8 @@
-"""Deterministic normalization of trading research signals into event records.
+"""Deterministic normalization and no-lookahead gating for trading research events.
 
-This module does not predict price direction and does not execute trades. It only
-turns already-collected research signals into a stable, auditable schema for the
-next curriculum stages.
+This module does not predict price direction and does not execute trades. It
+turns already-collected research signals into a stable, auditable schema and
+provides a conservative as-of gate for later historical studies/backtests.
 """
 from __future__ import annotations
 
@@ -43,6 +43,13 @@ def _utc_iso(value: str) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _iso_dt(value: str | None) -> datetime | None:
+    normalized = _utc_iso(value or "")
+    if normalized is None:
+        return None
+    return datetime.fromisoformat(normalized)
+
+
 def normalize_news_signal(signal: dict) -> NormalizedTradingEvent | None:
     """Normalize one collected news signal without inventing missing facts."""
     category = str(signal.get("category", "")).strip()
@@ -80,3 +87,55 @@ def normalize_news_signals(signals: list[dict]) -> list[dict]:
         seen.add(event.event_id)
         output.append(event.to_dict())
     return output
+
+
+def enforce_as_of_cutoff(events: list[dict], as_of: str) -> dict:
+    """Conservatively prevent look-ahead use of information.
+
+    An event is eligible only after the Agent has actually retrieved it and,
+    when a publication timestamp exists, after that publication timestamp too.
+    The available_at time is the later of published_at and retrieved_at.
+    Missing publication time is never invented; retrieved_at alone is used.
+    """
+    cutoff = _iso_dt(as_of)
+    if cutoff is None:
+        raise ValueError("as_of must be a valid timestamp")
+
+    eligible: list[dict] = []
+    rejected: list[dict] = []
+    for raw in events:
+        event = dict(raw)
+        retrieved = _iso_dt(str(event.get("retrieved_at", "")))
+        published = _iso_dt(event.get("published_at"))
+        if retrieved is None:
+            event["available_at"] = None
+            event["eligible_as_of"] = False
+            event["rejection_reason"] = "missing_retrieved_at"
+            rejected.append(event)
+            continue
+
+        available = max(retrieved, published) if published is not None else retrieved
+        event["available_at"] = available.astimezone(timezone.utc).isoformat()
+        event["eligible_as_of"] = available <= cutoff
+
+        if event["eligible_as_of"]:
+            event["rejection_reason"] = None
+            eligible.append(event)
+            continue
+
+        if retrieved > cutoff:
+            reason = "retrieved_after_cutoff"
+        elif published is not None and published > cutoff:
+            reason = "published_after_cutoff"
+        else:
+            reason = "available_after_cutoff"
+        event["rejection_reason"] = reason
+        rejected.append(event)
+
+    return {
+        "as_of": cutoff.astimezone(timezone.utc).isoformat(),
+        "eligible_count": len(eligible),
+        "rejected_count": len(rejected),
+        "eligible_events": eligible,
+        "rejected_events": rejected,
+    }
