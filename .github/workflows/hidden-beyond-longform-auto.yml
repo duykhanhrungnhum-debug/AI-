@@ -293,15 +293,7 @@ jobs:
               echo "Stopping Kaggle kernel after pipeline failure to protect GPU quota: $REF"
               python -m pip install --quiet --upgrade kaggle >/dev/null 2>&1 || true
               mkdir -p "$HOME/.kaggle"
-              python - <<'PY' || true
-import os
-from pathlib import Path
-token=os.environ.get("KAGGLE_API_TOKEN","").strip()
-if token:
-    p=Path.home()/".kaggle"/"access_token"
-    p.write_text(token,encoding="utf-8")
-    p.chmod(0o600)
-PY
+              python -c 'import os; from pathlib import Path; token=os.environ.get("KAGGLE_API_TOKEN","").strip(); p=Path.home()/".kaggle"/"access_token"; p.write_text(token,encoding="utf-8") if token else None; p.chmod(0o600) if token else None' || true
               env -u KAGGLE_API_TOKEN kaggle kernels delete "$REF" --yes || true
             fi
           fi
