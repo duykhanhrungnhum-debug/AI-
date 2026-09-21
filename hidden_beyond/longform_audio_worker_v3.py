@@ -364,7 +364,7 @@ def main()->None:
         sys.executable,"-m","pip","install","--quiet",
         "yt-dlp>=2026.1",
         "faster-whisper>=1.1,<2",
-        "transformers==4.56.0",
+        "transformers>=5.6,<6",
         "accelerate<2",
         "sentencepiece",
         "sacremoses",
@@ -503,7 +503,7 @@ def main()->None:
     if device=="cuda":
         primary_model="tencent/Hy-MT2-1.8B"
         heartbeat("translating",f"Loading {primary_model}; batch translation for {len(segments)} segments")
-        tok=AutoTokenizer.from_pretrained(primary_model)
+        tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
         tok.padding_side="left"
         if tok.pad_token_id is None:
             tok.pad_token=tok.eos_token
@@ -511,6 +511,7 @@ def main()->None:
             primary_model,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
+            trust_remote_code=True,
         ).to(device)
         model.eval()
 
@@ -522,13 +523,12 @@ def main()->None:
                 term_text="参考下面的翻译：\n"+"\n".join(f"{zh} 翻译成 {vi}" for zh,vi in terms)+"\n\n"
             prev=by_index.get(s["index"]-1,{}).get("text","")
             nxt=by_index.get(s["index"]+1,{}).get("text","")
+            context=clean(prev+" "+nxt)
+            context_text=(context+"\n参考上面的信息，") if context else ""
             return (
-                term_text+
-                "将 TARGET 翻译成自然、简洁的越南语，适合中国仙侠动画配音。"
-                "保持人物称谓、境界、语气和专有名词一致；不要解释，不要输出中文。"
-                "CONTEXT 只用于理解，不要把 CONTEXT 翻进答案。"
-                f"译文尽量不超过 {s['max_words']+2} 个越南语词。\n"
-                f"CONTEXT_BEFORE: {prev}\nTARGET: {s['text']}\nCONTEXT_AFTER: {nxt}"
+                term_text+context_text+
+                "把下面的文本翻译成越南语，注意只需要输出翻译后的结果，不要翻译上文，也不要额外解释：\n"
+                +s["text"]
             )
 
         batch_size=20
@@ -548,7 +548,7 @@ def main()->None:
                     tok.apply_chat_template(
                         [{"role":"user","content":prompt_for(s)}],
                         tokenize=False,
-                        add_generation_prompt=False,
+                        add_generation_prompt=True,
                     )
                     for s in batch
                 ]
@@ -564,7 +564,10 @@ def main()->None:
                     out=model.generate(
                         **inp,
                         max_new_tokens=96,
-                        do_sample=False,
+                        do_sample=True,
+                        temperature=0.7,
+                        top_p=0.6,
+                        top_k=20,
                         repetition_penalty=1.05,
                         use_cache=True,
                         pad_token_id=tok.pad_token_id,
@@ -648,11 +651,14 @@ def main()->None:
                     prompts=[]
                     for s in batch:
                         gloss=", ".join(vi for _,vi in glossary_pairs(s["text"]))
+                        prev=by_index.get(s["index"]-1,{}).get("text","")
+                        nxt=by_index.get(s["index"]+1,{}).get("text","")
                         prompts.append(
-                            "Dịch câu tiếng Trung sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. "
-                            "Không để chữ Hán, giữ số liệu, tên riêng và xưng hô. "
+                            "Dịch TARGET từ tiếng Trung sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. "
+                            "Ngữ cảnh chỉ để hiểu, không được dịch vào câu trả lời. "
+                            "Không để chữ Hán, giữ số liệu, tên riêng và xưng hô; không giải thích. "
                             +(f"Ưu tiên thuật ngữ: {gloss}. " if gloss else "")
-                            +f"Tối đa {s['max_words']+2} từ. Chỉ trả câu tiếng Việt.\n{s['text']}"
+                            +f"NGỮ CẢNH: {prev} {nxt}\nTARGET: {s['text']}"
                         )
                     chats=[
                         qtok.apply_chat_template(
@@ -696,6 +702,20 @@ def main()->None:
     missing=[s for s in segments if not translated.get(s["index"])]
     if missing:
         raise RuntimeError(f"translation missing {len(missing)} segments")
+
+    final_invalid=[]
+    for s in segments:
+        try:
+            translated[s["index"]]=validate_vi(
+                translated[s["index"]],s["text"],field=f"final segment {s['index']}"
+            )
+        except Exception:
+            final_invalid.append(s["index"])
+    if final_invalid:
+        raise RuntimeError(
+            f"translation quality unresolved {len(final_invalid)} segments: "
+            +",".join(map(str,final_invalid[:30]))
+        )
 
     for s in segments:
         s["vi"]=translated[s["index"]]
