@@ -19,15 +19,17 @@ def test_parse_fred_price_csv_accepts_first_column_date_fallback():
 
 def test_price_history_summary_requires_both_assets_and_provenance():
     history = {}
-    for asset, series in (("WTI", "DCOILWTICO"), ("BRENT", "DCOILBRENTEU")):
+    for asset, series in (("WTI", "RWTC"), ("BRENT", "RBRTE")):
         history[asset] = {
             "series_id": series,
+            "source_format": "eia-daily-html",
             "observation_count": 40,
             "first_date": "2026-01-01",
             "last_date": "2026-09-01",
             "retrieved_at": "2026-09-21T00:00:00+00:00",
             "content_hash": "hash-" + asset,
-            "source_url": "https://fred.stlouisfed.org/example",
+            "source_url": "https://www.eia.gov/dnav/pet/hist/example.htm",
+            "source_host": "eia.gov",
         }
     summary = price_history_summary(history)
     assert summary["verified"] is True
