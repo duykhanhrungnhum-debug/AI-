@@ -43,6 +43,18 @@ jobs:
           sudo apt-get install -y ffmpeg jq
           jq . hidden_beyond/longform/auto.json
 
+      - name: Preflight YouTube long-upload capability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "youtube_long_upload_preflight" > orchestrator-stage.txt
+          OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload" | python -c "import json,sys; print(json.load(sys.stdin)['value'])")"
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/channel-status" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data "{}" > channel-status.json
+          cat channel-status.json
+          STATUS="$(jq -r '.long_uploads_status // ""' channel-status.json)"
+          test "$STATUS" = "allowed" || { echo "::error title=YouTube long uploads not enabled::Current longUploadsStatus=$STATUS"; exit 1; }
+          echo "YOUTUBE_LONG_UPLOADS_ALLOWED"
+
       - name: Retrieve source video once
         shell: bash
         run: |
@@ -261,6 +273,7 @@ jobs:
         with:
           name: hidden-beyond-longform-auto-evidence
           path: |
+            channel-status.json
             start.json
             gpu-submission.json
             status.json
