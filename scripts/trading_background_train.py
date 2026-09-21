@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ai_agent.core.news_rss import GoogleNewsRSSProvider
 from ai_agent.core.researcher import InternetResearcher
+from ai_agent.core.trading_events import normalize_news_signals
 from ai_agent.core.trading_learning_memory import record_learning_memory, source_on_cooldown
 from ai_agent.core.trading_skill import (
     TradingEvidence,
@@ -102,9 +103,6 @@ def main() -> int:
     news_signals: list[dict] = []
     skipped_sources: list[dict] = []
 
-    # Authoritative baseline: official sources are retrieved and hashed. Sources
-    # that repeatedly fail are temporarily cooled down so the unattended agent
-    # learns from failure instead of repeating the same ineffective request.
     for category, title, url in source_hubs():
         add_retrieval(
             episode,
@@ -118,9 +116,6 @@ def main() -> int:
             skipped_sources=skipped_sources,
         )
 
-    # Current-events layer: keyless RSS search surfaces changing real-world
-    # drivers. These are context/discovery signals and NEVER replace the
-    # authoritative evidence gate above.
     for category, query in research_plan():
         try:
             signals = news.search(query, category=category, limit=args.news_per_query)
@@ -130,11 +125,13 @@ def main() -> int:
         except Exception as exc:
             episode.errors.append(f"news:{category}:{query}: {exc}")
 
+    normalized_events = normalize_news_signals(news_signals)
     episode.verification = TradingEvidenceVerifier().verify(episode.evidence)
     new_lessons = record_learning_memory(state, episode.errors, cycle=cycle)
 
     payload = episode.to_dict()
     payload["news_signals"] = news_signals
+    payload["normalized_events"] = normalized_events
     payload["skipped_sources"] = skipped_sources
     payload["new_lessons"] = new_lessons
     output = Path(args.output)
@@ -172,6 +169,7 @@ def main() -> int:
         "primary_sources": episode.verification.primary_sources,
         "categories": list(episode.verification.categories),
         "news_signal_count": len(news_signals),
+        "normalized_event_count": len(normalized_events),
         "error_count": len(episode.errors),
         "skipped_source_count": len(skipped_sources),
         "new_lesson_count": len(new_lessons),
