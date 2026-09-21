@@ -134,6 +134,21 @@ def validate_vi(text:str,source:str,*,field:str)->str:
             raise ValueError(f"{field} lost number {number}")
     return value
 
+def vi_word_count(value:str)->int:
+    return len(re.findall(r"[A-Za-zÀ-ỹ0-9]+",clean(value)))
+
+def fit_word_limit(segment:dict)->int:
+    slot=max(0.25,float(segment["end"])-float(segment["start"]))
+    usable=slot+float(STYLE.get("max_extra_gap",0.18))
+    return max(2,int(math.ceil(usable*3.6)))
+
+def validate_segment_fit(text:str,segment:dict,*,field:str)->str:
+    value=validate_vi(text,segment["text"],field=field)
+    limit=int(segment.get("fit_words") or fit_word_limit(segment))
+    if vi_word_count(value)>limit:
+        raise ValueError(f"{field} too long for slot")
+    return value
+
 def glossary_pairs(text:str)->list[tuple[str,str]]:
     pairs=[]
     seen=set()
@@ -455,6 +470,7 @@ def main()->None:
         s["index"]=i
         s["slot"]=max(0.30,float(s["end"])-float(s["start"]))
         s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
+        s["fit_words"]=fit_word_limit(s)
     transcript_seconds=round(time.monotonic()-transcript_started,2)
     transcript_last_end=max(float(s["end"]) for s in segments)
     transcript_coverage_pct=(transcript_last_end*100.0/transcript_media_duration) if transcript_media_duration>0 else 0.0
@@ -644,10 +660,19 @@ def main()->None:
             remaining=segments[cursor:]
             translated.update(opus_translate(remaining,on_device="cuda"))
 
-        if invalid_ids:
+        overlong_ids=[
+            s["index"] for s in segments
+            if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
+        ]
+        review_ids=sorted(set(invalid_ids)|set(overlong_ids))
+        if review_ids:
             # Qwen is an editor only. It is never the bulk translator.
-            review_items=[s for s in segments if s["index"] in set(invalid_ids)]
-            heartbeat("translation_review",f"Rule check flagged {len(review_items)} segments; bounded Qwen editor")
+            review_set=set(review_ids)
+            review_items=[s for s in segments if s["index"] in review_set]
+            heartbeat(
+                "translation_review",
+                f"Reviewing {len(review_items)} segments: invalid={len(invalid_ids)} overlong={len(overlong_ids)}",
+            )
             editor_name="Qwen/Qwen2.5-1.5B-Instruct"
             qtok=AutoTokenizer.from_pretrained(editor_name)
             qtok.padding_side="left"
@@ -671,6 +696,7 @@ def main()->None:
                             "Ngữ cảnh chỉ để hiểu, không được dịch vào câu trả lời. "
                             "Không để chữ Hán, giữ số liệu, tên riêng và xưng hô; không giải thích. "
                             +(f"Ưu tiên thuật ngữ: {gloss}. " if gloss else "")
+                            +f"Viết gọn, tự nhiên, tối đa {s['fit_words']} từ để khớp thời lượng. "
                             +f"NGỮ CẢNH: {prev} {nxt}\nTARGET: {s['text']}"
                         )
                     chats=[
@@ -691,7 +717,9 @@ def main()->None:
                     vis=qtok.batch_decode(gen,skip_special_tokens=True)
                     for s,vi in zip(batch,vis,strict=True):
                         try:
-                            translated[s["index"]]=validate_vi(vi,s["text"],field=f"review segment {s['index']}")
+                            translated[s["index"]]=validate_segment_fit(
+                                vi,s,field=f"review segment {s['index']}"
+                            )
                             qwen_reviewed+=1
                         except Exception:
                             unresolved.append(s)
@@ -719,8 +747,8 @@ def main()->None:
     final_invalid=[]
     for s in segments:
         try:
-            translated[s["index"]]=validate_vi(
-                translated[s["index"]],s["text"],field=f"final segment {s['index']}"
+            translated[s["index"]]=validate_segment_fit(
+                translated[s["index"]],s,field=f"final segment {s['index']}"
             )
         except Exception:
             final_invalid.append(s["index"])
@@ -778,6 +806,7 @@ def main()->None:
         "gpu_translation_seconds":translation_seconds if device=="cuda" else 0,
         "gpu_worker_seconds_to_package":round(time.monotonic()-pipeline_started,2),
         "qwen_reviewed_segments":qwen_reviewed,
+        "overlong_review_segments":len(overlong_ids) if device=="cuda" else 0,
         "fallback_segments":fallback_segments,
         "fast_path_used":fast_path_used,
         "timed_segments":[{
@@ -786,6 +815,7 @@ def main()->None:
             "end":round(float(s["end"]),3),
             "vi":s["vi"],
             "max_words":s["max_words"],
+            "fit_words":s["fit_words"],
         } for s in segments],
     }
     META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
