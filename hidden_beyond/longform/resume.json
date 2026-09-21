@@ -3,6 +3,6 @@
   "source_run_id": 35534394730,
   "source_video_id": "vaY4URFw0cg",
   "episode_number": 1,
-  "purpose": "resume_episode1_from_ai_ready_checkpoint",
-  "nonce": "2026-09-21-episode1-resume-1"
+  "purpose": "resume_episode1_after_optional_voice_result_fix",
+  "nonce": "2026-09-21-episode1-resume-2"
 }
