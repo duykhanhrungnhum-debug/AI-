@@ -1,0 +1,9 @@
+{
+  "nonce": "2026-09-21-professional-translation-certification-v1",
+  "purpose": "certify_professional_chinese_vietnamese_translation_before_any_video_rerun",
+  "source_video_id": "vaY4URFw0cg",
+  "translator": "tencent/Hy-MT2-7B",
+  "reviewer": "Qwen/Qwen2.5-7B-Instruct",
+  "profile": "professional-zh-vi-v1",
+  "cases": 32
+}
