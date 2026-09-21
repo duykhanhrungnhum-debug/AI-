@@ -31,6 +31,11 @@ def wav_duration(path:Path)->float:
         return w.getnframes()/w.getframerate()
 
 
+def wav_format(path:Path)->tuple[int,int,int]:
+    with wave.open(str(path),"rb") as w:
+        return w.getframerate(),w.getsampwidth(),w.getnchannels()
+
+
 def main()->None:
     ap=argparse.ArgumentParser()
     ap.add_argument("--metadata",required=True)
@@ -46,8 +51,6 @@ def main()->None:
 
     style=meta.get("style") or {}
     max_tempo=float(style.get("max_tempo",1.22))
-    min_tempo=float(style.get("min_tempo",0.90))
-    pitch_ratio=float(style.get("pitch_ratio",1.025))
     max_extra_gap=float(style.get("max_extra_gap",0.24))
     voice_name=str(meta.get("voice_name") or "vi_VN-vais1000-medium")
 
@@ -66,59 +69,67 @@ def main()->None:
         check=True,capture_output=True,text=True
     ).stdout
     has_rubberband="rubberband" in filters
-    print("CPU_TTS_FILTER", "rubberband" if has_rubberband else "atempo", flush=True)
+    print("CPU_TTS_FILTER","rubberband" if has_rubberband else "atempo",flush=True)
 
     fitted=[]
     overflow_count=0
-    speed_values=[]
+    retimed_count=0
     started=time.monotonic()
 
     for i,s in enumerate(segments,1):
         rawwav=segdir/f"raw-{i:05d}.wav"
-        fitwav=segdir/f"fit-{i:05d}.wav"
         with wave.open(str(rawwav),"wb") as w:
             voice.synthesize_wav(clean(s["vi"]),w)
+
+        rate,width,channels=wav_format(rawwav)
+        if (rate,width,channels)!=(22050,2,1):
+            normalized=segdir/f"norm-{i:05d}.wav"
+            run([
+                "ffmpeg","-y","-v","error","-i",str(rawwav),
+                "-ar","22050","-ac","1","-c:a","pcm_s16le",str(normalized)
+            ])
+            rawwav=normalized
 
         original=max(0.01,wav_duration(rawwav))
         next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max_extra_gap
         available_end=min(next_start-0.04,float(s["end"])+max_extra_gap)
         slot=max(0.25,available_end-float(s["start"]))
-        required=original/slot
-        tempo=max(min_tempo,min(max_tempo,required))
-        speed_values.append(tempo)
 
-        if has_rubberband:
-            filt=(
-                f"rubberband=tempo={tempo:.6f}:pitch={pitch_ratio:.6f}:formant=preserved,"
-                "highpass=f=70,lowpass=f=11500,"
-                "acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120:makeup=1.4"
-            )
-        else:
-            filt=(
-                f"atempo={tempo:.6f},highpass=f=70,lowpass=f=11500,"
-                "acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120:makeup=1.4"
-            )
-        run(["ffmpeg","-y","-v","error","-i",str(rawwav),"-af",filt,
-             "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fitwav)])
-
-        if wav_duration(fitwav)>slot+0.08:
-            overflow_count+=1
-            trimmed=segdir/f"trim-{i:05d}.wav"
-            run(["ffmpeg","-y","-v","error","-i",str(fitwav),
-                 "-af",f"atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06",
-                 "-ar","22050","-ac","1","-c:a","pcm_s16le",str(trimmed)])
-            fitwav=trimmed
+        # Fast path: most Piper lines already fit their cue. Do not spawn ffmpeg
+        # for those lines. Old code spawned one process for every segment.
+        fitwav=rawwav
+        if original>slot+0.08:
+            retimed_count+=1
+            tempo=min(max_tempo,max(1.0,original/slot))
+            fitwav=segdir/f"fit-{i:05d}.wav"
+            if has_rubberband:
+                speed_filter=f"rubberband=tempo={tempo:.6f}:pitch=1.0:formant=preserved"
+            else:
+                speed_filter=f"atempo={tempo:.6f}"
+            run([
+                "ffmpeg","-y","-v","error","-i",str(rawwav),
+                "-af",f"{speed_filter},atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.05):.3f}:d=0.05",
+                "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fitwav)
+            ])
+            if wav_duration(fitwav)>slot+0.08:
+                overflow_count+=1
 
         fitted.append((s,fitwav))
-        if i%50==0 or i==len(segments):
+        if i%100==0 or i==len(segments):
             elapsed=max(0.001,time.monotonic()-started)
-            rate=i/elapsed
-            remain=(len(segments)-i)/rate if rate>0 else 0
-            print(f"CPU_TTS_PROGRESS {i}/{len(segments)} eta={remain/60:.1f}m overflow={overflow_count}",flush=True)
+            rate_seg=i/elapsed
+            remain=(len(segments)-i)/rate_seg if rate_seg>0 else 0
+            print(
+                f"CPU_TTS_PROGRESS {i}/{len(segments)} eta={remain/60:.1f}m "
+                f"retimed={retimed_count} overflow={overflow_count}",
+                flush=True
+            )
 
     duration=max(float(s["end"]) for s in segments)+1.0
     with wave.open(str(fitted[0][1]),"rb") as w:
-        rate=w.getframerate(); width=w.getsampwidth(); channels=w.getnchannels()
+        rate=w.getframerate()
+        width=w.getsampwidth()
+        channels=w.getnchannels()
     if width!=2 or channels!=1:
         raise RuntimeError("unexpected fitted WAV format")
 
@@ -135,21 +146,33 @@ def main()->None:
     canvas=np.clip(canvas,-32768,32767).astype("<i2")
     voice_wav=work/"vietnamese-voice.wav"
     with wave.open(str(voice_wav),"wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(canvas.tobytes())
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(canvas.tobytes())
 
-    run(["ffmpeg","-y","-v","error","-i",str(voice_wav),
-         "-af","loudnorm=I=-17.5:TP=-2.0:LRA=7",
-         "-c:a","libmp3lame","-b:a","96k","-ac","1",str(out_path)])
+    # One global audio cleanup pass instead of repeating filters hundreds of times.
+    run([
+        "ffmpeg","-y","-v","error","-i",str(voice_wav),
+        "-af","highpass=f=70,lowpass=f=11500,acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120:makeup=1.4,loudnorm=I=-17.5:TP=-2.0:LRA=7",
+        "-c:a","libmp3lame","-b:a","96k","-ac","1",str(out_path)
+    ])
 
     sha=hashlib.sha256(out_path.read_bytes()).hexdigest()
+    render_seconds=round(time.monotonic()-started,2)
     meta["timing_overflow_segments"]=overflow_count
-    meta["mean_tempo"]=round(sum(speed_values)/max(1,len(speed_values)),4)
+    meta["retimed_segments"]=retimed_count
     meta["voice_bytes"]=out_path.stat().st_size
     meta["voice_sha256"]=sha
     meta["voice_render_device"]="github-actions-cpu"
-    meta["voice_render_seconds"]=round(time.monotonic()-started,2)
+    meta["voice_render_seconds"]=render_seconds
+    meta["voice_efficiency_mode"]="piper-fast-path-no-per-segment-ffmpeg-v3"
     meta_path.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    print(f"CPU_TTS_DONE bytes={out_path.stat().st_size} sha256={sha}",flush=True)
+    print(
+        f"CPU_TTS_DONE seconds={render_seconds:.1f} retimed={retimed_count}/{len(segments)} "
+        f"bytes={out_path.stat().st_size} sha256={sha}",
+        flush=True
+    )
 
 
 if __name__=="__main__":
