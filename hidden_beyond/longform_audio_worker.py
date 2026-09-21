@@ -121,7 +121,9 @@ def json_object(raw:str)->dict:
     text=re.sub(r'\s*\`\`\`$','',text)
     start=text.find('{')
     if start<0: raise ValueError('no JSON object in model response')
-    obj,_=json.JSONDecoder().raw_decode(text[start:])
+    # Qwen occasionally emits literal newlines/control chars inside JSON strings.
+    # strict=False accepts those without discarding the whole episode.
+    obj,_=json.JSONDecoder(strict=False).raw_decode(text[start:])
     if not isinstance(obj,dict): raise ValueError('model response is not an object')
     return obj
 
@@ -226,12 +228,32 @@ def main():
             generated=out[0][inputs.input_ids.shape[1]:]
             return tok.decode(generated,skip_special_tokens=True)
 
+        def qwen_json(prompt:str,max_new:int=900,*,label:str='translation',attempts:int=3)->dict:
+            last=None
+            current=prompt
+            for attempt in range(1,attempts+1):
+                try:
+                    return json_object(qwen(current,max_new=max_new))
+                except Exception as exc:
+                    last=exc
+                    heartbeat('translating_retry',
+                              f'{label}: invalid JSON, retry {attempt}/{attempts} ({type(exc).__name__})')
+                    current=(
+                        prompt+
+                        '\nQUAN TRỌNG: Lần trả lời trước không phải JSON hợp lệ. '
+                        'Hãy trả về đúng MỘT dòng JSON hợp lệ, escape ký tự xuống dòng/tab trong chuỗi, '
+                        'không markdown và không có bất kỳ chữ nào ngoài JSON.'
+                    )
+            raise last if last is not None else ValueError(f'{label}: JSON parse failed')
+
         translated={}
-        chunk_size=10
-        for start in range(0,len(segments),chunk_size):
-            block=segments[start:start+chunk_size]
-            context_before=segments[start-1]['text'] if start>0 else ''
-            context_after=segments[start+chunk_size]['text'] if start+chunk_size<len(segments) else ''
+
+        def translate_block(block:list[dict]):
+            first=block[0]['index']; last=block[-1]['index']
+            pos=first-1
+            context_before=segments[pos-1]['text'] if pos>0 else ''
+            after_pos=pos+len(block)
+            context_after=segments[after_pos]['text'] if after_pos<len(segments) else ''
             payload=[{
                 'id':s['index'],'seconds':round(s['slot'],2),'max_words':s['max_words'],
                 'zh':s['text'],'glossary':glossary_hint(s['text'])
@@ -243,18 +265,49 @@ def main():
                 f'BEFORE: {context_before}\nAFTER: {context_after}\nINPUT: '
                 +json.dumps(payload,ensure_ascii=False,separators=(',',':'))
             )
-            data=json_object(qwen(prompt,max_new=max(500,len(block)*90)))
-            items=data.get('segments')
-            if not isinstance(items,list): raise ValueError('Qwen translation missing segments list')
-            for item in items:
-                idx=int(item.get('id',0)); vi=str(item.get('vi',''))
-                src=next((x for x in block if x['index']==idx),None)
-                if src is None: continue
-                translated[idx]=validate_vi(vi,src['text'],field=f'segment {idx}')
-            if any(s['index'] not in translated for s in block):
-                missing=[s['index'] for s in block if s['index'] not in translated]
-                raise ValueError(f'Qwen translation missing ids {missing}')
-            heartbeat('translating',f'Translated {min(start+chunk_size,len(segments))}/{len(segments)} with context')
+            try:
+                data=qwen_json(prompt,max_new=max(500,len(block)*90),
+                               label=f'segments {first}-{last}')
+                items=data.get('segments')
+                if not isinstance(items,list):
+                    raise ValueError('Qwen translation missing segments list')
+                batch={}
+                for item in items:
+                    idx=int(item.get('id',0)); vi=str(item.get('vi',''))
+                    src=next((x for x in block if x['index']==idx),None)
+                    if src is None:
+                        continue
+                    batch[idx]=validate_vi(vi,src['text'],field=f'segment {idx}')
+                missing=[s['index'] for s in block if s['index'] not in batch]
+                if missing:
+                    raise ValueError(f'Qwen translation missing ids {missing}')
+                translated.update(batch)
+                heartbeat('translating',f'Translated through segment {last}/{len(segments)}')
+                return
+            except Exception as exc:
+                if len(block)>1:
+                    heartbeat('translating_retry',
+                              f'Block {first}-{last} failed ({type(exc).__name__}); split and retry')
+                    mid=max(1,len(block)//2)
+                    translate_block(block[:mid])
+                    translate_block(block[mid:])
+                    return
+                # Last-resort for one line: avoid JSON entirely so one malformed object
+                # cannot kill a 75-minute episode.
+                s=block[0]
+                plain_prompt=(
+                    'Dịch đúng một câu tiếng Trung sau sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. '
+                    'Giữ nguyên nghĩa, phủ định, số liệu, tên riêng và xưng hô; không để chữ Hán. '
+                    f'Tối đa {s["max_words"]+2} từ. Chỉ trả về câu tiếng Việt, không JSON, không giải thích.\n'
+                    +s['text']
+                )
+                vi=clean(qwen(plain_prompt,max_new=120)).strip('"“” ')
+                translated[s['index']]=validate_vi(vi,s['text'],field=f'plain fallback segment {s["index"]}')
+                heartbeat('translating_retry',f'Segment {s["index"]} recovered with plain-text fallback')
+
+        chunk_size=10
+        for start in range(0,len(segments),chunk_size):
+            translate_block(segments[start:start+chunk_size])
 
         # Tighten only lines that would force unnatural speed. Rewrite rather than chop audio.
         for s in segments:
@@ -267,7 +320,7 @@ def main():
                     f'Nguyên văn Trung: {s["text"]}\nBản hiện tại: {vi}'
                 )
                 try:
-                    shorter=json_object(qwen(prompt,max_new=120)).get('vi','')
+                    shorter=qwen_json(prompt,max_new=120,label=f'shorten segment {s["index"]}',attempts=2).get('vi','')
                     translated[s['index']]=validate_vi(str(shorter),s['text'],field=f'short segment {s["index"]}')
                 except Exception as exc:
                     print('HB_SHORTEN_FALLBACK',s['index'],repr(exc),flush=True)
@@ -277,7 +330,11 @@ def main():
             'Giữ tên riêng và không thêm quảng cáo. Chỉ trả JSON {"title":"..."}.\n'
             +str(cfg.get('title') or '')
         )
-        translated_title=clean(str(json_object(qwen(title_prompt,max_new=100)).get('title','')))
+        try:
+            translated_title=clean(str(qwen_json(title_prompt,max_new=100,label='title',attempts=2).get('title','')))
+        except Exception as exc:
+            print('HB_TITLE_FALLBACK',repr(exc),flush=True)
+            translated_title=clean(str(cfg.get('series_title') or cfg.get('title') or 'Hidden Beyond'))
         for s in segments: s['vi']=translated[s['index']]
         del model,tok; gc.collect(); torch.cuda.empty_cache()
     else:
