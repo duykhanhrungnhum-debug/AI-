@@ -40,11 +40,13 @@ FANTASY_GLOSSARY={
     "魔修":"ma tu","正道":"chính đạo","天道":"thiên đạo","飞升":"phi thăng","飛升":"phi thăng","境界":"cảnh giới",
 }
 STYLE={
-    "max_tempo":1.22,
-    "min_tempo":0.90,
-    "pitch_ratio":1.025,
-    "max_extra_gap":0.24,
-    "words_per_second":3.25,
+    "max_tempo":1.16,
+    "min_tempo":0.94,
+    "pitch_ratio":1.0,
+    "max_extra_gap":0.18,
+    "words_per_second":3.0,
+    "target_segment_seconds":3.2,
+    "hard_max_segment_seconds":5.5,
 }
 
 def post(path:str,payload:dict)->dict:
@@ -132,26 +134,124 @@ def glossary_pairs(text:str)->list[tuple[str,str]]:
             seen.add(vi)
     return pairs[:8]
 
-def merge_timed_segments(raw:list[dict])->list[dict]:
-    merged=[]
+def split_words_to_dialogue(words:list[dict])->list[dict]:
+    """Create short dubbing cues from Whisper word timestamps.
+
+    The target cadence mirrors the supplied reference: sentence-sized lines,
+    natural pauses, and no minute-long cues.
+    """
+    usable=[]
+    for w in words:
+        text=str(w.get("text") or "")
+        if not clean(text):
+            continue
+        start=float(w.get("start") or 0)
+        end=float(w.get("end") or start+0.08)
+        usable.append({"start":start,"end":max(start+0.04,end),"text":text})
+    if not usable:
+        return []
+
+    strong=set("。！？!?；;")
+    soft=set("，,、：:")
+    out=[]
+    cur=[]
+    for i,w in enumerate(usable):
+        cur.append(w)
+        start=cur[0]["start"]; end=w["end"]
+        text=clean("".join(x["text"] for x in cur))
+        duration=end-start
+        cjk_count=len(CJK_RE.findall(text))
+        next_gap=(usable[i+1]["start"]-end) if i+1<len(usable) else 9.0
+        last=text[-1] if text else ""
+        boundary=(
+            (last in strong and duration>=0.55)
+            or (last in soft and duration>=1.4)
+            or (next_gap>=0.32 and duration>=0.55)
+            or duration>=float(STYLE["hard_max_segment_seconds"])
+            or cjk_count>=26
+            or len(text)>=48
+        )
+        if boundary:
+            out.append({"start":start,"end":end,"text":text})
+            cur=[]
+    if cur:
+        out.append({
+            "start":cur[0]["start"],
+            "end":cur[-1]["end"],
+            "text":clean("".join(x["text"] for x in cur)),
+        })
+
+    fixed=[]
+    for s in out:
+        dur=s["end"]-s["start"]
+        if fixed and dur<0.38 and s["start"]-fixed[-1]["end"]<0.18:
+            prev=fixed[-1]
+            candidate=clean(prev["text"]+s["text"])
+            if s["end"]-prev["start"]<=5.5 and len(candidate)<=48:
+                prev["end"]=s["end"]; prev["text"]=candidate
+                continue
+        fixed.append(s)
+    return fixed
+
+def split_timed_text(raw:list[dict])->list[dict]:
+    """Normalize source captions without joining them into long cues."""
+    out=[]
+    punct=re.compile(r"(?<=[。！？!?；;])")
     for item in raw:
         text=clean(item.get("text",""))
         if not text:
             continue
-        s={"start":float(item["start"]),"end":float(item["end"]),"text":text}
-        if not merged:
-            merged.append(s)
+        start=float(item["start"]); end=float(item["end"])
+        duration=max(0.2,end-start)
+        parts=[clean(p) for p in punct.split(text) if clean(p)] or [text]
+        expanded=[]
+        for part in parts:
+            while len(part)>36:
+                cut=max(part.rfind("，",0,30),part.rfind(",",0,30),part.rfind("、",0,30))
+                if cut<10:
+                    cut=30
+                expanded.append(clean(part[:cut+1]))
+                part=clean(part[cut+1:])
+            if part:
+                expanded.append(part)
+        total=max(1,sum(max(1,len(p)) for p in expanded))
+        cursor=start
+        for n,part in enumerate(expanded):
+            frac=max(1,len(part))/total
+            part_end=end if n==len(expanded)-1 else min(end,cursor+duration*frac)
+            if part_end-cursor<0.25:
+                part_end=min(end,cursor+0.25)
+            out.append({"start":cursor,"end":max(cursor+0.2,part_end),"text":part})
+            cursor=part_end
+    return out
+
+def collect_whisper_segments(seg_iter)->tuple[list[dict],int]:
+    words=[]
+    fallback=[]
+    word_count=0
+    for s in seg_iter:
+        text=clean(s.text)
+        if not text:
             continue
-        cur=merged[-1]
-        gap=s["start"]-cur["end"]
-        candidate=clean(cur["text"]+" "+s["text"])
-        span=s["end"]-cur["start"]
-        if gap<=0.28 and span<=7.5 and len(candidate)<=82:
-            cur["end"]=s["end"]
-            cur["text"]=candidate
+        sw=getattr(s,"words",None) or []
+        if sw:
+            for w in sw:
+                wt=str(getattr(w,"word","") or "")
+                if not clean(wt):
+                    continue
+                ws=getattr(w,"start",None)
+                we=getattr(w,"end",None)
+                words.append({
+                    "start":float(s.start if ws is None else ws),
+                    "end":float(s.end if we is None else we),
+                    "text":wt,
+                })
+                word_count+=1
         else:
-            merged.append(s)
-    return merged
+            fallback.append({"start":float(s.start),"end":float(s.end),"text":text})
+    if words:
+        return split_words_to_dialogue(words),word_count
+    return split_timed_text(fallback),word_count
 
 def select_caption_track(meta:dict):
     preferred=("zh-Hans","zh-CN","zh","zh-Hant","zh-TW")
@@ -225,7 +325,7 @@ def try_youtube_captions(source_video_id:str):
         path=WORK/f"source-caption.{ext}"
         download(track_url,path)
         cues=parse_json3_caption(path) if ext=="json3" else parse_vtt_caption(path)
-        merged=merge_timed_segments(cues)
+        merged=split_timed_text(cues)
         cjk=sum(1 for s in merged if CJK_RE.search(s["text"]))
         if len(merged)<10 or cjk<max(5,int(len(merged)*0.35)):
             return None
@@ -266,6 +366,7 @@ def main()->None:
         whisper_name="skipped-caption-available"
         detected_language="zh"
         language_probability=None
+        asr_word_count=0
         heartbeat("transcribed",f"Source captions ready: {len(raw)} cues; ASR skipped")
     else:
         heartbeat("fetching_input","No usable Chinese captions; fetching compressed source audio")
@@ -285,7 +386,7 @@ def main()->None:
                 batch_size=16,
                 beam_size=1,
                 condition_on_previous_text=False,
-                word_timestamps=False,
+                word_timestamps=True,
                 vad_parameters={"min_silence_duration_ms":240,"speech_pad_ms":80},
             )
         else:
@@ -295,13 +396,10 @@ def main()->None:
                 vad_filter=True,
                 beam_size=2,
                 condition_on_previous_text=False,
-                word_timestamps=False,
+                word_timestamps=True,
                 vad_parameters={"min_silence_duration_ms":240,"speech_pad_ms":80},
             )
-        raw=[
-            {"start":float(s.start),"end":float(s.end),"text":clean(s.text)}
-            for s in seg_iter if clean(s.text)
-        ]
+        raw,asr_word_count=collect_whisper_segments(seg_iter)
         detected_language=info.language
         language_probability=float(info.language_probability or 0)
         transcript_media_duration=float(getattr(info,"duration",0) or 0)
@@ -313,7 +411,7 @@ def main()->None:
             torch.cuda.empty_cache()
         heartbeat("transcribed",f"ASR ready: {len(raw)} raw cues")
 
-    segments=merge_timed_segments(raw)
+    segments=raw
     if len(segments)<10:
         raise RuntimeError(f"too few transcript segments: {len(segments)}")
     for i,s in enumerate(segments,1):
@@ -329,11 +427,19 @@ def main()->None:
         f"Transcript ready: {len(segments)} segments in {transcript_seconds:.1f}s via {transcript_source}; "
         f"coverage={transcript_coverage_pct:.1f}% density={segments_per_minute:.2f}/min"
     )
-    if transcript_media_duration>=600 and transcript_coverage_pct<50.0:
+    if transcript_media_duration>=600 and transcript_coverage_pct<95.0:
         raise RuntimeError(
             f"transcript coverage too low: {transcript_coverage_pct:.1f}% "
             f"({transcript_last_end:.1f}s/{transcript_media_duration:.1f}s)"
         )
+    if transcript_media_duration>=600 and segments_per_minute<3.0:
+        raise RuntimeError(
+            f"dialogue segmentation too coarse: {segments_per_minute:.2f} segments/min "
+            f"for {transcript_media_duration/60.0:.1f} minutes"
+        )
+    too_long=sum(1 for s in segments if float(s["end"])-float(s["start"])>6.2)
+    if too_long:
+        raise RuntimeError(f"dialogue segmentation has {too_long} cues longer than 6.2s")
 
     translation_started=time.monotonic()
     translated={}
@@ -384,16 +490,21 @@ def main()->None:
         ).to(device)
         model.eval()
 
+        by_index={s["index"]:s for s in segments}
         def prompt_for(s:dict)->str:
             terms=glossary_pairs(s["text"])
             term_text=""
             if terms:
                 term_text="参考下面的翻译：\n"+"\n".join(f"{zh} 翻译成 {vi}" for zh,vi in terms)+"\n\n"
+            prev=by_index.get(s["index"]-1,{}).get("text","")
+            nxt=by_index.get(s["index"]+1,{}).get("text","")
             return (
                 term_text+
-                "将以下文本翻译为越南语。译文必须自然、简洁，适合中国仙侠动画越南语配音；"
-                "保持人物称谓、境界和专有名词一致；不要解释，不要输出中文。"
-                f"尽量不超过 {s['max_words']+2} 个越南语词。\n\n{s['text']}"
+                "将 TARGET 翻译成自然、简洁的越南语，适合中国仙侠动画配音。"
+                "保持人物称谓、境界、语气和专有名词一致；不要解释，不要输出中文。"
+                "CONTEXT 只用于理解，不要把 CONTEXT 翻进答案。"
+                f"译文尽量不超过 {s['max_words']+2} 个越南语词。\n"
+                f"CONTEXT_BEFORE: {prev}\nTARGET: {s['text']}\nCONTEXT_AFTER: {nxt}"
             )
 
         batch_size=20
@@ -604,6 +715,9 @@ def main()->None:
         "transcript_last_end_seconds":round(transcript_last_end,2),
         "transcript_coverage_pct":round(transcript_coverage_pct,2),
         "segments_per_minute":round(segments_per_minute,3),
+        "asr_word_count":asr_word_count,
+        "max_segment_seconds":round(max(float(s["end"])-float(s["start"]) for s in segments),3),
+        "avg_segment_seconds":round(sum(float(s["end"])-float(s["start"]) for s in segments)/len(segments),3),
         "gpu_translation_seconds":translation_seconds if device=="cuda" else 0,
         "gpu_worker_seconds_to_package":round(time.monotonic()-pipeline_started,2),
         "qwen_reviewed_segments":qwen_reviewed,
