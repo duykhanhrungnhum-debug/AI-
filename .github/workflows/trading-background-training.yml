@@ -6,10 +6,12 @@ on:
     paths:
       - 'src/ai_agent/core/trading_skill.py'
       - 'src/ai_agent/core/trading_learning_memory.py'
+      - 'src/ai_agent/core/trading_events.py'
       - 'src/ai_agent/core/news_rss.py'
       - 'scripts/trading_background_train.py'
       - 'tests/test_trading_skill.py'
       - 'tests/test_trading_learning_memory.py'
+      - 'tests/test_trading_events.py'
       - 'tests/test_news_rss.py'
       - '.github/workflows/trading-background-training.yml'
       - 'docs/TRADING_SKILL.md'
