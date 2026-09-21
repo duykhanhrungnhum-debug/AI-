@@ -2,9 +2,9 @@
   "source_run_id": 35534394730,
   "series_id": 2,
   "source_video_id": "vaY4URFw0cg",
-  "purpose": "episode1_v2_self_healing_retry",
+  "purpose": "episode1_v2_retry_after_start_timeout_fix",
   "stop_after_first_upload": true,
-  "nonce": "2026-09-21-episode1-v2-self-healing-retry-1",
+  "nonce": "2026-09-21-episode1-v2-retry-after-start-timeout-2",
   "force_reprocess": true,
   "version_label": "V2"
 }
