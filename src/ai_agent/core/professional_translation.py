@@ -28,6 +28,12 @@ META_HALLUCINATION_VI = (
 )
 META_SOURCE_ZH = ("版权","著作权","拍摄","摄制","剧组","影片","电影","政策","请求","要求")
 
+PROFESSIONAL_ZH_VI_PHRASES = {
+    "自寻死路": "tự tìm đường chết",
+    "别给脸不要脸": "đừng có không biết điều",
+    "一成": "một thành",
+}
+
 
 class Severity(str, Enum):
     CRITICAL = "critical"
