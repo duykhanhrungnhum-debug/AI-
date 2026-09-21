@@ -36,7 +36,7 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Missing job fields: {missing}")
 
-    template=Path("hidden_beyond/longform_audio_worker.py").read_text(encoding="utf-8")
+    template=Path("hidden_beyond/longform_audio_worker_v3.py").read_text(encoding="utf-8")
     marker="# __JOB_CONFIG_INJECT__"
     if marker not in template:
         raise SystemExit("Worker config marker missing")
