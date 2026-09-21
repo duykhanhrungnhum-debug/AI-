@@ -183,6 +183,46 @@ jobs:
           echo "$VIDEO_ID" > youtube-video-id.txt
           echo "YOUTUBE_UPLOAD_DONE id=$VIDEO_ID"
 
+      - name: Verify YouTube accepted and processed video
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "youtube_post_upload_verify" > orchestrator-stage.txt
+          VIDEO_ID="$(cat youtube-video-id.txt)"
+          for i in $(seq 1 40); do
+            OIDC="$(curl -fsSL               -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg youtube_video_id "$VIDEO_ID" '{youtube_video_id:$youtube_video_id}' > video-status-body.json
+            curl --fail-with-body -sS -X POST "$LONGFORM_API/video-status"               -H "Authorization: Bearer $OIDC"               -H "content-type: application/json"               --data-binary @video-status-body.json > video-status.json
+            cat video-status.json
+            EXISTS="$(jq -r '.exists' video-status.json)"
+            UPLOAD="$(jq -r '.upload_status // ""' video-status.json)"
+            PROCESSING="$(jq -r '.processing_status // ""' video-status.json)"
+            PRIVACY="$(jq -r '.privacy_status // ""' video-status.json)"
+            REJECT="$(jq -r '.rejection_reason // ""' video-status.json)"
+            FAIL_REASON="$(jq -r '.failure_reason // ""' video-status.json)"
+            PROC_FAIL="$(jq -r '.processing_failure_reason // ""' video-status.json)"
+            echo "YT_VERIFY poll=$i exists=$EXISTS upload=$UPLOAD processing=$PROCESSING privacy=$PRIVACY reject=$REJECT failure=$FAIL_REASON processing_failure=$PROC_FAIL"
+            if [ "$EXISTS" != "true" ]; then
+              echo "::error title=YouTube post-upload verification failed::Video disappeared after upload."
+              exit 1
+            fi
+            if [ "$UPLOAD" = "rejected" ] || [ "$UPLOAD" = "failed" ] || [ "$UPLOAD" = "deleted" ]; then
+              echo "::error title=YouTube rejected upload::upload_status=$UPLOAD rejection=$REJECT failure=$FAIL_REASON"
+              exit 1
+            fi
+            if [ "$PROCESSING" = "failed" ]; then
+              echo "::error title=YouTube processing failed::$PROC_FAIL"
+              exit 1
+            fi
+            if [ "$PROCESSING" = "succeeded" ] && [ "$PRIVACY" = "public" ]; then
+              echo "YOUTUBE_POST_UPLOAD_VERIFIED id=$VIDEO_ID"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error title=YouTube verification timeout::Video was not fully processed and public within 20 minutes."
+          exit 1
+
       - name: Attach playlist and complete tracked job
         shell: bash
         run: |
@@ -228,6 +268,7 @@ jobs:
             ai-output/metadata.json
             ai-output/vi.srt
             youtube-upload.json
+            video-status.json
             complete.json
             orchestrator-stage.txt
           if-no-files-found: warn
