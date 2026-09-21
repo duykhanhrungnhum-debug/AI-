@@ -147,7 +147,14 @@ META_SOURCE_ZH=("版权","著作权","拍摄","摄制","剧组","影片","电影
 NEGATION_ZH=("不","没","沒有","没有","未","無","无","别","別","莫")
 NEGATION_VI=("không","chẳng","chưa","đừng","khỏi","không có","chớ")
 QUESTION_ZH=("吗","嗎","呢","？","?")
-QUESTION_VI=("không","à","ư","sao","gì","nào","chứ","?")
+QUESTION_VI=("không","à","ư","sao","gì","nào","chứ")
+
+def has_vi_question_marker(value:str)->bool:
+    low=clean(value).casefold()
+    if "?" in low:
+        return True
+    words=set(re.findall(r"[A-Za-zÀ-ỹ]+",low))
+    return any(marker in words for marker in QUESTION_VI)
 
 def validate_translation_pair(text:str,source:str,*,field:str)->str:
     value=validate_vi(text,source,field=field)
@@ -163,7 +170,7 @@ def validate_translation_pair(text:str,source:str,*,field:str)->str:
             raise ValueError(f"{field} meta hallucination")
     if any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI):
         raise ValueError(f"{field} lost negation")
-    if any(term in source for term in QUESTION_ZH) and not any(term in low for term in QUESTION_VI):
+    if any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value):
         raise ValueError(f"{field} lost question intent")
     for zh,vi in FANTASY_GLOSSARY.items():
         if zh in source and vi.casefold() not in low:
