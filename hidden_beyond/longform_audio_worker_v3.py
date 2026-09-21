@@ -28,6 +28,15 @@ _stop=threading.Event()
 
 CJK_RE=re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 REPEAT_RE=re.compile(r"\b([\wÀ-ỹ]+)(?:\s+\1)+\b",re.IGNORECASE)
+
+def has_ngram_loop(value:str)->bool:
+    words=re.findall(r"[\wÀ-ỹ]+",value.lower())
+    for n in (2,3,4):
+        for i in range(0,max(0,len(words)-n*3+1)):
+            gram=words[i:i+n]
+            if gram and words[i+n:i+2*n]==gram and words[i+2*n:i+3*n]==gram:
+                return True
+    return False
 TAG_RE=re.compile(r"<[^>]+>")
 FANTASY_GLOSSARY={
     "修仙":"tu tiên","修士":"tu sĩ","灵气":"linh khí","靈氣":"linh khí","灵力":"linh lực","靈力":"linh lực",
@@ -118,8 +127,8 @@ def validate_vi(text:str,source:str,*,field:str)->str:
         raise ValueError(f"{field} empty")
     if CJK_RE.search(value):
         raise ValueError(f"{field} still contains CJK")
-    if REPEAT_RE.search(value):
-        raise ValueError(f"{field} has repeated words")
+    if REPEAT_RE.search(value) or has_ngram_loop(value):
+        raise ValueError(f"{field} has repetition loop")
     for number in re.findall(r"\d+",source):
         if number not in value:
             raise ValueError(f"{field} lost number {number}")
