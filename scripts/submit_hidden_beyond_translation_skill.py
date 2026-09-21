@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
-import time
 from pathlib import Path
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 
 
 def main()->None:
+    start=json.loads(Path("bench-start.json").read_text(encoding="utf-8"))
     source=Path("hidden_beyond/translation_skill_benchmark.py").read_text(encoding="utf-8")
+    marker="# __BENCH_CONFIG_INJECT__"
+    if marker not in source:
+        raise SystemExit("benchmark marker missing")
+    source=source.replace(marker,"BENCH = "+repr({
+        "run_id":start["run_id"],
+        "run_token":start["run_token"],
+        "callback_base":start["callback_base"],
+    }),1)
+
     worker=KaggleGpuWorker(
         api_token=os.environ["KAGGLE_API_TOKEN"],
         username=os.environ["KAGGLE_USERNAME"],
@@ -17,39 +27,20 @@ def main()->None:
         submission_retry_attempts=3,
         submission_retry_delay_seconds=20,
     )
-    slug="hidden-beyond-translation-skill"
+    slug="hidden-beyond-translation-skill-v2"
     sub=worker.submit_script(
         slug=slug,
-        title="HB Translation Skill",
+        title="HB Translation Skill V2",
         source=source,
         enable_internet=True,
         enable_gpu=True,
         is_private=True,
     )
+    Path("translation-submission.json").write_text(
+        json.dumps({"ref":sub.ref,"version":sub.version_number,"slug":slug},indent=2)+"\n",
+        encoding="utf-8",
+    )
     print("TRANSLATION_SKILL_SUBMITTED",sub.ref,sub.version_number,flush=True)
-
-    deadline=time.time()+20*60
-    while time.time()<deadline:
-        status=worker.status(slug)
-        print("TRANSLATION_SKILL_STATUS",status.status,status.failure_message,flush=True)
-        if status.terminal:
-            if not status.successful:
-                try:
-                    print(worker.logs(slug),flush=True)
-                except Exception as exc:
-                    print("TRANSLATION_SKILL_LOG_ERROR",repr(exc),flush=True)
-                raise RuntimeError(f"translation skill benchmark failed: {status.status} {status.failure_message}")
-            try:
-                logs=worker.logs(slug)
-                print(logs,flush=True)
-                if "TRANSLATION_SKILL_VERIFIED" not in logs:
-                    print("TRANSLATION_SKILL_LOG_MARKER_MISSING",flush=True)
-            except Exception as exc:
-                print("TRANSLATION_SKILL_LOG_READ_SKIPPED",repr(exc),flush=True)
-            print("TRANSLATION_SKILL_BENCHMARK_SUCCESS",flush=True)
-            return
-        time.sleep(20)
-    raise TimeoutError("translation skill benchmark exceeded 20 minutes")
 
 
 if __name__=="__main__":
