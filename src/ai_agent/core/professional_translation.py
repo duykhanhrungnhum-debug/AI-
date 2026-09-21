@@ -13,7 +13,7 @@ NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 NEGATION_ZH = ("不","没","沒有","没有","未","無","无","别","別","莫")
 NEGATION_VI = ("không","chẳng","chưa","đừng","khỏi","không có","chớ")
 QUESTION_ZH = ("吗","嗎","呢","？","?")
-QUESTION_VI = ("không","à","ư","sao","gì","nào","chứ","?")
+QUESTION_VI = ("không","à","ư","sao","gì","nào","chứ")
 META_HALLUCINATION_VI = (
     "không thể thực hiện yêu cầu",
     "không thể đáp ứng yêu cầu",
@@ -91,6 +91,14 @@ def _cjk_count(value: str) -> int:
 def _contains_any(haystack: str, needles: Iterable[str]) -> bool:
     low = haystack.casefold()
     return any(str(x).casefold() in low for x in needles)
+
+
+def _has_vi_question_marker(value: str) -> bool:
+    low = _norm(value).casefold()
+    if "?" in low:
+        return True
+    words = set(re.findall(r"[A-Za-zÀ-ỹ]+", low))
+    return any(marker in words for marker in QUESTION_VI)
 
 
 def build_professional_prompt(
@@ -196,7 +204,7 @@ def assess_professional_translation(
         if source_negative and not target_negative:
             issues.append(TranslationIssue("negation_lost", Severity.CRITICAL))
         source_question = any(x in source for x in QUESTION_ZH)
-        target_question = _contains_any(target, QUESTION_VI)
+        target_question = _has_vi_question_marker(target)
         if source_question and not target_question:
             issues.append(TranslationIssue("question_intent_lost", Severity.MAJOR))
 
