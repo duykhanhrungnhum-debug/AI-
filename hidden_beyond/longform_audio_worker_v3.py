@@ -229,7 +229,7 @@ def try_youtube_captions(source_video_id:str):
         cjk=sum(1 for s in merged if CJK_RE.search(s["text"]))
         if len(merged)<10 or cjk<max(5,int(len(merged)*0.35)):
             return None
-        return merged,kind,lang
+        return merged,kind,lang,float(meta.get("duration") or 0)
     except Exception as exc:
         print("HB_CAPTION_FALLBACK",repr(exc),flush=True)
         return None
@@ -261,7 +261,7 @@ def main()->None:
     caption_result=try_youtube_captions(source_video_id)
 
     if caption_result:
-        raw,caption_kind,caption_lang=caption_result
+        raw,caption_kind,caption_lang,transcript_media_duration=caption_result
         transcript_source=f"youtube_{caption_kind}_{caption_lang}"
         whisper_name="skipped-caption-available"
         detected_language="zh"
@@ -304,6 +304,7 @@ def main()->None:
         ]
         detected_language=info.language
         language_probability=float(info.language_probability or 0)
+        transcript_media_duration=float(getattr(info,"duration",0) or 0)
         del whisper
         if device=="cuda":
             del transcriber
@@ -320,7 +321,19 @@ def main()->None:
         s["slot"]=max(0.30,float(s["end"])-float(s["start"]))
         s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
     transcript_seconds=round(time.monotonic()-transcript_started,2)
-    heartbeat("transcribed",f"Transcript ready: {len(segments)} timed segments in {transcript_seconds:.1f}s via {transcript_source}")
+    transcript_last_end=max(float(s["end"]) for s in segments)
+    transcript_coverage_pct=(transcript_last_end*100.0/transcript_media_duration) if transcript_media_duration>0 else 0.0
+    segments_per_minute=(len(segments)/(transcript_media_duration/60.0)) if transcript_media_duration>0 else 0.0
+    heartbeat(
+        "transcribed",
+        f"Transcript ready: {len(segments)} segments in {transcript_seconds:.1f}s via {transcript_source}; "
+        f"coverage={transcript_coverage_pct:.1f}% density={segments_per_minute:.2f}/min"
+    )
+    if transcript_media_duration>=600 and transcript_coverage_pct<50.0:
+        raise RuntimeError(
+            f"transcript coverage too low: {transcript_coverage_pct:.1f}% "
+            f"({transcript_last_end:.1f}s/{transcript_media_duration:.1f}s)"
+        )
 
     translation_started=time.monotonic()
     translated={}
@@ -587,6 +600,10 @@ def main()->None:
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
         "gpu_efficiency_mode":"caption-first-batched-asr-hymt2-batch-qwen-editor-only-cpu-tts-v3",
         "transcript_seconds":transcript_seconds,
+        "transcript_media_duration_seconds":round(transcript_media_duration,2),
+        "transcript_last_end_seconds":round(transcript_last_end,2),
+        "transcript_coverage_pct":round(transcript_coverage_pct,2),
+        "segments_per_minute":round(segments_per_minute,3),
         "gpu_translation_seconds":translation_seconds if device=="cuda" else 0,
         "gpu_worker_seconds_to_package":round(time.monotonic()-pipeline_started,2),
         "qwen_reviewed_segments":qwen_reviewed,
