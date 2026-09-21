@@ -88,7 +88,9 @@ jobs:
           OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
           SERIES_ID="$(jq -r '.series_id' hidden_beyond/longform/auto.json)"
           SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/longform/auto.json)"
-          jq -n --argjson series_id "$SERIES_ID" --arg source_video_id "$SOURCE_VIDEO_ID"             '{series_id:$series_id,source_video_id:$source_video_id}' > start-body.json
+          FORCE_REPROCESS="$(jq -r '.force_reprocess // false' hidden_beyond/longform/auto.json)"
+          VERSION_LABEL="$(jq -r '.version_label // ""' hidden_beyond/longform/auto.json)"
+          jq -n --argjson series_id "$SERIES_ID" --arg source_video_id "$SOURCE_VIDEO_ID"             --argjson force_reprocess "$FORCE_REPROCESS" --arg version_label "$VERSION_LABEL"             '{series_id:$series_id,source_video_id:$source_video_id,force_reprocess:$force_reprocess,version_label:$version_label}' > start-body.json
           curl --fail-with-body -sS -X POST "$LONGFORM_API/start"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @start-body.json > start.json
           cat start.json
           test "$(jq -r '.stage' start.json)" = "job_created"
