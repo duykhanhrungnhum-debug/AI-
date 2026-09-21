@@ -12,6 +12,7 @@ from ai_agent.core.news_rss import GoogleNewsRSSProvider
 from ai_agent.core.researcher import InternetResearcher
 from ai_agent.core.trading_events import enforce_as_of_cutoff, normalize_news_signals
 from ai_agent.core.trading_learning_memory import record_learning_memory, source_on_cooldown
+from ai_agent.core.trading_prices import fetch_oil_price_history, price_history_summary
 from ai_agent.core.trading_skill import (
     TradingEvidence,
     TradingEvidenceVerifier,
@@ -129,6 +130,14 @@ def main() -> int:
     normalized_events = normalize_news_signals(news_signals)
     as_of_cutoff = datetime.now(timezone.utc).isoformat()
     as_of_gate = enforce_as_of_cutoff(normalized_events, as_of_cutoff)
+
+    price_history = {}
+    try:
+        price_history = fetch_oil_price_history(researcher)
+    except Exception as exc:
+        episode.errors.append(f"price-history:{exc}")
+    price_summary = price_history_summary(price_history)
+
     episode.verification = TradingEvidenceVerifier().verify(episode.evidence)
     new_lessons = record_learning_memory(state, episode.errors, cycle=cycle)
 
@@ -136,6 +145,8 @@ def main() -> int:
     payload["news_signals"] = news_signals
     payload["normalized_events"] = normalized_events
     payload["as_of_gate"] = as_of_gate
+    payload["price_history"] = price_history
+    payload["price_history_summary"] = price_summary
     payload["skipped_sources"] = skipped_sources
     payload["new_lessons"] = new_lessons
     output = Path(args.output)
@@ -178,6 +189,9 @@ def main() -> int:
         "as_of_eligible_event_count": as_of_gate["eligible_count"],
         "lookahead_rejected_event_count": as_of_gate["rejected_count"],
         "no_lookahead_enforced": True,
+        "price_history_verified": price_summary["verified"],
+        "wti_observation_count": price_summary.get("assets", {}).get("WTI", {}).get("observation_count", 0),
+        "brent_observation_count": price_summary.get("assets", {}).get("BRENT", {}).get("observation_count", 0),
         "error_count": len(episode.errors),
         "skipped_source_count": len(skipped_sources),
         "new_lesson_count": len(new_lessons),
@@ -196,10 +210,13 @@ def main() -> int:
         print("LEARNED-SKIP " + skipped["url"])
     for error in episode.errors:
         print("WARN " + error)
-    if episode.verification.passed:
-        return 0
-    print("Trading learning cycle NOT VERIFIED: " + "; ".join(episode.verification.reasons))
-    return 2
+    if not episode.verification.passed:
+        print("Trading learning cycle NOT VERIFIED: " + "; ".join(episode.verification.reasons))
+        return 2
+    if not price_summary["verified"]:
+        print("Trading price history NOT VERIFIED: WTI and Brent provenance are required")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
