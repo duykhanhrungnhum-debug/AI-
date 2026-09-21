@@ -1,6 +1,6 @@
 {
   "source_video_id": "vaY4URFw0cg",
   "source_url": "https://www.youtube.com/watch?v=vaY4URFw0cg",
-  "nonce": "2026-09-21-v3-callback-5",
-  "purpose": "measure_caption_asr_hymt2_translation_cpu_tts_callback_v3"
+  "nonce": "2026-09-21-v3-callback-6",
+  "purpose": "verify_v3_translation_after_model_input_and_transcript_coverage_guards"
 }
