@@ -1,0 +1,99 @@
+name: Professional Translation Certification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/professional-translation/request.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: professional-translation-certification
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      BENCH_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hidden-beyond-benchmark-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install coordinator
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install -e .
+          test -n "$KAGGLE_API_TOKEN"
+          jq . hidden_beyond/professional-translation/request.json
+
+      - name: Register certification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-v3-benchmark" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/professional-translation/request.json)"
+          jq -n --arg source_video_id "$SOURCE_VIDEO_ID" '{source_video_id:$source_video_id}' > bench-start-body.json
+          curl --fail-with-body -sS -X POST "$BENCH_API/start"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @bench-start-body.json > bench-start.json
+          test "$(jq -r '.ok' bench-start.json)" = "true"
+          jq -r '.run_id' bench-start.json > bench-run-id.txt
+
+      - name: Submit certification GPU benchmark
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python scripts/submit_professional_translation_benchmark.py
+
+      - name: Wait for certification result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RUN_ID="$(cat bench-run-id.txt)"
+          for i in $(seq 1 90); do
+            OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-v3-benchmark" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg run_id "$RUN_ID" '{run_id:$run_id}' > bench-status-body.json
+            curl --fail-with-body -sS -X POST "$BENCH_API/status"               -H "Authorization: Bearer $OIDC"               -H "content-type: application/json"               --data-binary @bench-status-body.json > bench-status.json
+            STATE="$(jq -r '.run.state' bench-status.json)"
+            STAGE="$(jq -r '.run.stage' bench-status.json)"
+            MSG="$(jq -r '.run.message // ""' bench-status.json)"
+            echo "PRO_CERT_PROGRESS poll=$i state=$STATE stage=$STAGE message=$MSG"
+            if [ "$STATE" = "completed" ]; then
+              jq '.run.benchmark_report' bench-status.json > professional-translation-report.json
+              test "$(jq -r '.ok' professional-translation-report.json)" = "true"
+              jq . professional-translation-report.json
+              echo "PROFESSIONAL_TRANSLATION_CERTIFIED"
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ]; then
+              echo "::error title=Professional translation certification failed::$MSG"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error title=Professional translation certification timeout::No callback within 30 minutes."
+          exit 1
+
+      - name: Preserve certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: professional-translation-certification
+          path: |
+            bench-start.json
+            bench-status.json
+            professional-translation-report.json
+            professional-translation-submission.json
+          if-no-files-found: warn
+          retention-days: 7
