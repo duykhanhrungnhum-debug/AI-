@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: trading-background-training
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   oil-research-learning:
