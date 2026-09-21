@@ -91,9 +91,25 @@ jobs:
           FORCE_REPROCESS="$(jq -r '.force_reprocess // false' hidden_beyond/longform/auto.json)"
           VERSION_LABEL="$(jq -r '.version_label // ""' hidden_beyond/longform/auto.json)"
           jq -n --argjson series_id "$SERIES_ID" --arg source_video_id "$SOURCE_VIDEO_ID"             --argjson force_reprocess "$FORCE_REPROCESS" --arg version_label "$VERSION_LABEL"             '{series_id:$series_id,source_video_id:$source_video_id,force_reprocess:$force_reprocess,version_label:$version_label}' > start-body.json
-          curl --fail-with-body -sS -X POST "$LONGFORM_API/start"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @start-body.json > start.json
-          cat start.json
-          test "$(jq -r '.stage' start.json)" = "job_created"
+          START_OK=0
+          for ATTEMPT in 1 2 3 4; do
+            HTTP_CODE="$(curl -sS -o start.json -w "%{http_code}" -X POST "$LONGFORM_API/start"               -H "Authorization: Bearer $OIDC"               -H "content-type: application/json"               --data-binary @start-body.json || echo 000)"
+            cat start.json || true
+            STAGE="$(jq -r '.stage // ""' start.json 2>/dev/null || true)"
+            ERROR_MSG="$(jq -r '.error // ""' start.json 2>/dev/null || true)"
+            if [[ "$HTTP_CODE" =~ ^2 ]] && [ "$STAGE" = "job_created" ]; then
+              START_OK=1
+              break
+            fi
+            if { [ "$HTTP_CODE" = "500" ] && [[ "$ERROR_MSG" == *"timed out"* ]]; } || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "504" ] || [ "$HTTP_CODE" = "000" ]; then
+              echo "TRANSIENT_START_FAILURE attempt=$ATTEMPT http=$HTTP_CODE error=$ERROR_MSG"
+              sleep $((ATTEMPT * 10))
+              continue
+            fi
+            echo "::error title=Hidden Beyond start failed::http=$HTTP_CODE stage=$STAGE error=$ERROR_MSG"
+            exit 1
+          done
+          test "$START_OK" = "1" || { echo "::error title=Hidden Beyond start retry exhausted::$(cat start.json 2>/dev/null)"; exit 1; }
           jq -r '.job_id' start.json > job-id.txt
           echo "TRACKED_JOB_CREATED id=$(cat job-id.txt)"
 
