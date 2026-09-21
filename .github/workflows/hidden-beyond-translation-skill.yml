@@ -1,0 +1,43 @@
+name: Hidden Beyond Translation Skill
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/translation-skill/request.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hidden-beyond-translation-skill
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install coordinator
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install -e .
+          test -n "$KAGGLE_API_TOKEN"
+          jq . hidden_beyond/translation-skill/request.json
+
+      - name: Run focused translation skill benchmark
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python scripts/submit_hidden_beyond_translation_skill.py
