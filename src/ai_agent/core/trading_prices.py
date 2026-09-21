@@ -15,11 +15,11 @@ from .researcher import InternetResearcher
 FRED_OIL_SERIES = {
     "WTI": {
         "series_id": "DCOILWTICO",
-        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILWTICO",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILWTICO&cosd=2010-01-01",
     },
     "BRENT": {
         "series_id": "DCOILBRENTEU",
-        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILBRENTEU",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILBRENTEU&cosd=2010-01-01",
     },
 }
 
