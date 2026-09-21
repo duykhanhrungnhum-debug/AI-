@@ -43,7 +43,7 @@ CASES=[
  {"id":"ctx_04","context":"说话者是宗门高层，自称本座，对晚辈说话。","source":"本座给你最后一次机会。","reference":"Bổn tọa cho ngươi cơ hội cuối cùng.","must_any":["bổn tọa","bản tọa"],"forbid":["tôi"]},
  {"id":"ctx_05","context":"师尊正在严肃警告弟子。","source":"筑基之前，不可强行开辟丹田。","reference":"Trước khi Trúc Cơ, không được cưỡng ép khai mở đan điền.","must_all":["trúc cơ","đan điền"],"must_any":["không","chớ"],"negation":True},
  {"id":"idiom_01","source":"你这是自寻死路。","reference":"Ngươi đang tự tìm đường chết."},
- {"id":"idiom_02","source":"别给脸不要脸。","reference":"Đừng được đằng chân lân đằng đầu.","must_any":["đừng"],"negation":True},
+ {"id":"idiom_02","context":"这是训斥口语，意思是对方不识抬举、不知好歹；应按语用意义翻译，不要逐字保留“脸”的比喻。","source":"别给脸不要脸。","reference":"Đừng có không biết điều.","must_any":["đừng"],"negation":True},
  {"id":"dialogue_01","context":"A刚刚拒绝帮忙，B很不满。","source":"行，你不帮就算了。","reference":"Được, ngươi không giúp thì thôi.","must_any":["không giúp","chẳng giúp"],"negation":True},
  {"id":"dialogue_02","context":"说话者刚从昏迷中醒来，不知道发生了什么。","source":"这里是什么地方？","reference":"Đây là đâu?","question":True},
 ]
@@ -176,6 +176,7 @@ def main():
               "MINOR: câu hơi cứng hoặc lựa chọn từ chưa tối ưu nhưng nghĩa vẫn đúng. "
               "PASS: đúng nghĩa, tự nhiên, phù hợp ngữ cảnh. "
               "Không phạt chỉ vì khác câu tham khảo nếu nghĩa tương đương. "
+              "Với thành ngữ/khẩu ngữ, đánh giá theo chức năng ngữ dụng và sắc thái; không yêu cầu giữ hình ảnh ẩn dụ từng chữ nếu tiếng Việt tự nhiên đã truyền đúng ý. "
               "Chỉ trả JSON một dòng: {\"severity\":\"PASS|MINOR|MAJOR|CRITICAL\",\"reason\":\"...\",\"correction\":\"...\"}.\n"
               f"NGỮ CẢNH: {case.get('context','')}\n"
               f"NGUỒN TRUNG: {case['source']}\n"
