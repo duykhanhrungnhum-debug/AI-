@@ -139,7 +139,7 @@ jobs:
           set -Eeuo pipefail
           echo "follow_ai_heartbeat" > orchestrator-stage.txt
           JOB_ID="$(cat job-id.txt)"
-          for i in $(seq 1 180); do
+          for i in $(seq 1 80); do
             OIDC="$(curl -fsSL               -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
             jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > status-body.json
             curl --fail-with-body -sS -X POST "$LONGFORM_API/status"               -H "Authorization: Bearer $OIDC"               -H "content-type: application/json"               --data-binary @status-body.json > status.json
@@ -158,7 +158,7 @@ jobs:
             fi
             sleep 30
           done
-          echo "::error title=Hidden Beyond AI timeout::No ai_ready state within 90 minutes."
+          echo "::error title=Hidden Beyond AI timeout::No ai_ready state within 40 minutes; stopping to protect GPU quota."
           exit 1
 
       - name: Fetch AI outputs
@@ -287,6 +287,24 @@ jobs:
           echo "::error title=Hidden Beyond pipeline stopped::Stopped at stage $STAGE"
           echo "## Hidden Beyond pipeline stopped" >> "$GITHUB_STEP_SUMMARY"
           echo "**Stage:** $STAGE" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s gpu-submission.json ] && [ -n "${KAGGLE_API_TOKEN:-}" ]; then
+            REF="$(jq -r '.ref // empty' gpu-submission.json 2>/dev/null)"
+            if [ -n "$REF" ]; then
+              echo "Stopping Kaggle kernel after pipeline failure to protect GPU quota: $REF"
+              python -m pip install --quiet --upgrade kaggle >/dev/null 2>&1 || true
+              mkdir -p "$HOME/.kaggle"
+              python - <<'PY' || true
+import os
+from pathlib import Path
+token=os.environ.get("KAGGLE_API_TOKEN","").strip()
+if token:
+    p=Path.home()/".kaggle"/"access_token"
+    p.write_text(token,encoding="utf-8")
+    p.chmod(0o600)
+PY
+              env -u KAGGLE_API_TOKEN kaggle kernels delete "$REF" --yes || true
+            fi
+          fi
           if [ -s start.json ]; then
             JOB_ID="$(jq -r '.job_id // empty' start.json)"
             JOB_TOKEN="$(jq -r '.job_token // empty' start.json)"
