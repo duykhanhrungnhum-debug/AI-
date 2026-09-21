@@ -1,4 +1,4 @@
-from ai_agent.core.trading_prices import parse_fred_price_csv, parse_fred_price_table, price_history_summary
+from ai_agent.core.trading_prices import parse_eia_daily_table, parse_fred_price_csv, parse_fred_price_table, price_history_summary
 
 
 def test_parse_fred_price_csv_accepts_observation_date_and_skips_missing():
@@ -56,4 +56,26 @@ def test_parse_fred_price_table_extracts_daily_rows():
     assert rows == [
         {"date": "2026-09-01", "usd_per_barrel": 100.5},
         {"date": "2026-09-03", "usd_per_barrel": 101.25},
+    ]
+
+
+def test_parse_eia_daily_table_reconstructs_weekday_dates():
+    html = """<html><table>
+    <tr><th>Week Of</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th></tr>
+    <tr><td>1986 Jan- 6 to Jan-10</td><td>26.53</td><td>25.85</td><td>25.87</td><td>26.03</td><td>25.65</td></tr>
+    <tr><td>1986 Jan-13 to Jan-17</td><td>25.08</td><td></td><td>25.18</td><td>23.98</td><td>23.63</td></tr>
+    </table></html>"""
+    rows = parse_eia_daily_table(html)
+    assert rows[0] == {"date": "1986-01-06", "usd_per_barrel": 26.53}
+    assert {"date": "1986-01-14", "usd_per_barrel": 25.18} not in rows
+    assert {"date": "1986-01-15", "usd_per_barrel": 25.18} in rows
+    assert len(rows) == 9
+
+
+def test_parse_eia_daily_table_handles_cross_year_week():
+    html = """<table><tr><td>1986 Dec-29 to Jan- 2</td><td></td><td>17.73</td><td></td><td></td><td>18.13</td></tr></table>"""
+    rows = parse_eia_daily_table(html)
+    assert rows == [
+        {"date": "1986-12-30", "usd_per_barrel": 17.73},
+        {"date": "1987-01-02", "usd_per_barrel": 18.13},
     ]
