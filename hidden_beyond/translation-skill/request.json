@@ -1,6 +1,6 @@
 {
-  "nonce": "2026-09-21-translation-skill-v3-show-failures",
-  "purpose": "inspect_failed_translation_outputs_before_episode1_rerun",
+  "nonce": "2026-09-21-translation-skill-v4-unique",
+  "purpose": "inspect_translation_outputs_after_unique_kaggle_title",
   "model": "tencent/Hy-MT2-7B",
   "cases": 15,
   "source_video_id": "vaY4URFw0cg"
