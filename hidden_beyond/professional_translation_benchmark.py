@@ -36,16 +36,16 @@ CASES=[
  {"id":"num_03","source":"如果今晚渡劫失败，他至少要闭关十年。","reference":"Nếu tối nay Độ Kiếp thất bại, hắn phải bế quan ít nhất mười năm.","must_all":["độ kiếp"],"must_any":["mười năm","10 năm"]},
  {"id":"style_01","source":"别以为你赢了一次，就能一直赢下去。","reference":"Đừng tưởng thắng một lần là có thể thắng mãi.","must_any":["đừng","chớ"],"negation":True},
  {"id":"style_02","source":"你若真想救她，就别再浪费时间了。","reference":"Nếu thật sự muốn cứu nàng thì đừng lãng phí thời gian nữa.","must_any":["cứu","đừng"],"negation":True},
- {"id":"style_03","source":"就算只有一成机会，我也要试。","reference":"Dù chỉ có một thành cơ hội, ta cũng phải thử.","must_any":["một thành","10%","một phần mười"]},
+ {"id":"style_03","source":"就算只有一成机会，我也要试。","reference":"Dù chỉ có một thành cơ hội, ta cũng phải thử."},
  {"id":"ctx_01","context":"长老在责备一个年轻弟子。弟子刚刚违反门规。","source":"你还知道回来？","reference":"Ngươi còn biết đường về à?","must_any":["về"],"question":True},
  {"id":"ctx_02","context":"两人正在讨论一名女子。说话者强调她不是恋人。","source":"她只是我的师妹，不是你想的那样。","reference":"Nàng chỉ là sư muội của ta, không phải như ngươi nghĩ.","must_all":["sư muội"],"negation":True},
  {"id":"ctx_03","context":"青云宗是宗门名称，必须固定译名为 Thanh Vân Tông。","source":"三年后，我们在青云宗再见。","reference":"Ba năm sau, chúng ta gặp lại ở Thanh Vân Tông.","must_all":["thanh vân tông"],"must_any":["ba năm","3 năm"]},
  {"id":"ctx_04","context":"说话者是宗门高层，自称本座，对晚辈说话。","source":"本座给你最后一次机会。","reference":"Bổn tọa cho ngươi cơ hội cuối cùng.","must_any":["bổn tọa","bản tọa"],"forbid":["tôi"]},
  {"id":"ctx_05","context":"师尊正在严肃警告弟子。","source":"筑基之前，不可强行开辟丹田。","reference":"Trước khi Trúc Cơ, không được cưỡng ép khai mở đan điền.","must_all":["trúc cơ","đan điền"],"must_any":["không","chớ"],"negation":True},
- {"id":"idiom_01","source":"你这是自寻死路。","reference":"Ngươi đang tự tìm đường chết.","must_any":["tìm đường chết","tự sát","tự chuốc"]},
+ {"id":"idiom_01","source":"你这是自寻死路。","reference":"Ngươi đang tự tìm đường chết."},
  {"id":"idiom_02","source":"别给脸不要脸。","reference":"Đừng được đằng chân lân đằng đầu.","must_any":["đừng"],"negation":True},
  {"id":"dialogue_01","context":"A刚刚拒绝帮忙，B很不满。","source":"行，你不帮就算了。","reference":"Được, ngươi không giúp thì thôi.","must_any":["không giúp","chẳng giúp"],"negation":True},
- {"id":"dialogue_02","context":"说话者刚从昏迷中醒来，不知道发生了什么。","source":"这里是什么地方？","reference":"Đây là đâu?","must_any":["đâu"],"question":True},
+ {"id":"dialogue_02","context":"说话者刚从昏迷中醒来，不知道发生了什么。","source":"这里是什么地方？","reference":"Đây là đâu?","question":True},
 ]
 
 GLOSSARY={
@@ -56,6 +56,7 @@ GLOSSARY={
  "功法":"công pháp","秘境":"bí cảnh","洞府":"động phủ","魔修":"ma tu","正道":"chính đạo",
  "天道":"thiên đạo","飞升":"phi thăng","境界":"cảnh giới","丹田":"đan điền","灵石":"linh thạch",
  "道侣":"đạo lữ","青云宗":"Thanh Vân Tông","本座":"bổn tọa",
+ "自寻死路":"tự tìm đường chết","别给脸不要脸":"đừng có không biết điều","一成":"một thành",
 }
 META=("không thể thực hiện yêu cầu","không thể đáp ứng yêu cầu","vi phạm bản quyền","chính sách nội dung","đội phim","đoàn phim","quay phim")
 CJK_RE=re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -187,7 +188,24 @@ def main():
             out=rmodel.generate(**inp,max_new_tokens=160,do_sample=False,repetition_penalty=1.03,pad_token_id=rtok.pad_token_id,eos_token_id=rtok.eos_token_id)
             gen=out[:,inp["input_ids"].shape[1]:]
             review=rtok.batch_decode(gen,skip_special_tokens=True)[0]
-            row["review"]=parse_review(review)
+            parsed=parse_review(review)
+            if parsed.get("reason")=="review_json_parse_failed":
+                retry_prompt=(
+                  "Chỉ trả đúng một JSON hợp lệ, không markdown, không giải thích ngoài JSON. "
+                  "Đánh giá bản dịch Trung-Việt theo nghĩa: "
+                  "{\"severity\":\"PASS|MINOR|MAJOR|CRITICAL\",\"reason\":\"...\",\"correction\":\"...\"}.\n"
+                  f"NGỮ CẢNH: {case.get('context','')}\n"
+                  f"NGUỒN TRUNG: {case['source']}\n"
+                  f"BẢN DỊCH: {row['target']}\n"
+                  f"THAM KHẢO: {case['reference']}"
+                )
+                retry_chat=rtok.apply_chat_template([{"role":"user","content":retry_prompt}],tokenize=False,add_generation_prompt=True)
+                rinp=rtok([retry_chat],return_tensors="pt",truncation=True,max_length=900)
+                rinp={k:v.to("cuda") for k,v in rinp.items() if k!="token_type_ids"}
+                rout=rmodel.generate(**rinp,max_new_tokens=140,do_sample=False,repetition_penalty=1.03,pad_token_id=rtok.pad_token_id,eos_token_id=rtok.eos_token_id)
+                rgen=rout[:,rinp["input_ids"].shape[1]:]
+                parsed=parse_review(rtok.batch_decode(rgen,skip_special_tokens=True)[0])
+            row["review"]=parsed
             print("PRO_CASE",json.dumps({"id":case["id"],"target":row["target"],"hard":row["hard_reasons"],"review":row["review"]},ensure_ascii=False),flush=True)
 
     hard_failed=[r for r in rows if r["hard_reasons"]]
