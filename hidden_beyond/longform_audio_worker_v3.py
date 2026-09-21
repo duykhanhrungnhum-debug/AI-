@@ -140,7 +140,7 @@ def vi_word_count(value:str)->int:
 
 def fit_word_limit(segment:dict)->int:
     slot=max(0.25,float(segment.get("tts_slot") or (float(segment["end"])-float(segment["start"]))))
-    return max(2,int(math.ceil(slot*5.2)))
+    return max(2,int(math.ceil(slot*4.8)))
 
 def validate_segment_fit(text:str,segment:dict,*,field:str)->str:
     value=validate_vi(text,segment["text"],field=field)
@@ -469,11 +469,8 @@ def main()->None:
     for i,s in enumerate(segments,1):
         s["index"]=i
         s["slot"]=max(0.30,float(s["end"])-float(s["start"]))
-        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+float(STYLE["max_extra_gap"])+float(STYLE["min_pause_between_cues"])
-        available_end=min(
-            next_start-float(STYLE["min_pause_between_cues"]),
-            float(s["end"])+float(STYLE["max_extra_gap"]),
-        )
+        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max(1.2,float(STYLE["max_extra_gap"]))+float(STYLE["min_pause_between_cues"])
+        available_end=next_start-float(STYLE["min_pause_between_cues"])
         s["tts_slot"]=max(0.25,available_end-float(s["start"]))
         s["max_words"]=max(2,int(math.floor(s["tts_slot"]*STYLE["words_per_second"]+0.5)))
         s["fit_words"]=fit_word_limit(s)
@@ -729,6 +726,59 @@ def main()->None:
                             qwen_reviewed+=1
                         except Exception:
                             unresolved.append(s)
+            # A source-based retranslation can still echo context or stay too long.
+            # Repair unresolved lines by compressing the current Vietnamese text only,
+            # which is a much easier bounded editing task for the small editor model.
+            for repair_round in range(2):
+                if not unresolved:
+                    break
+                pending=unresolved
+                unresolved=[]
+                with torch.inference_mode():
+                    for off in range(0,len(pending),8):
+                        batch=pending[off:off+8]
+                        prompts=[]
+                        for s in batch:
+                            current=clean(translated.get(s["index"],""))
+                            try:
+                                validate_vi(current,s["text"],field="compression input")
+                                prompts.append(
+                                    f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
+                                    "Giữ đúng ý chính, tên riêng và số liệu; không thêm ý, không giải thích. "
+                                    "Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
+                                )
+                            except Exception:
+                                prompts.append(
+                                    f"Dịch câu tiếng Trung sau sang tiếng Việt tự nhiên, tối đa {s['fit_words']} từ. "
+                                    "Giữ tên riêng và số liệu; không giải thích, không để chữ Hán.\n"+s["text"]
+                                )
+                        chats=[
+                            qtok.apply_chat_template(
+                                [{"role":"user","content":p}],
+                                tokenize=False,add_generation_prompt=True,
+                            ) for p in prompts
+                        ]
+                        inp=qtok(chats,return_tensors="pt",padding=True,truncation=True,max_length=384)
+                        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+                        out=qmodel.generate(
+                            **inp,max_new_tokens=72,do_sample=False,repetition_penalty=1.08,
+                            pad_token_id=qtok.pad_token_id,eos_token_id=qtok.eos_token_id,
+                        )
+                        gen=out[:,inp["input_ids"].shape[1]:]
+                        vis=qtok.batch_decode(gen,skip_special_tokens=True)
+                        for s,vi in zip(batch,vis,strict=True):
+                            try:
+                                translated[s["index"]]=validate_segment_fit(
+                                    vi,s,field=f"compression segment {s['index']}"
+                                )
+                                qwen_reviewed+=1
+                            except Exception:
+                                unresolved.append(s)
+                heartbeat(
+                    "translation_review",
+                    f"Compression round {repair_round+1}: unresolved={len(unresolved)}",
+                )
+
             del qmodel,qtok
             gc.collect()
             torch.cuda.empty_cache()
@@ -763,8 +813,8 @@ def main()->None:
     final_invalid=[]
     for s in segments:
         try:
-            translated[s["index"]]=validate_vi(
-                translated[s["index"]],s["text"],field=f"final segment {s['index']}"
+            translated[s["index"]]=validate_segment_fit(
+                translated[s["index"]],s,field=f"final segment {s['index']}"
             )
         except Exception:
             final_invalid.append(s["index"])
