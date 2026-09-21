@@ -228,30 +228,26 @@ def main():
             generated=out[0][inputs.input_ids.shape[1]:]
             return tok.decode(generated,skip_special_tokens=True)
 
-        def qwen_json(prompt:str,max_new:int=900,*,label:str='translation',attempts:int=3)->dict:
-            last=None
-            current=prompt
-            for attempt in range(1,attempts+1):
-                try:
-                    return json_object(qwen(current,max_new=max_new))
-                except Exception as exc:
-                    last=exc
-                    heartbeat('translating_retry',
-                              f'{label}: invalid JSON, retry {attempt}/{attempts} ({type(exc).__name__})')
-                    current=(
-                        prompt+
-                        '\nQUAN TRỌNG: Lần trả lời trước không phải JSON hợp lệ. '
-                        'Hãy trả về đúng MỘT dòng JSON hợp lệ, escape ký tự xuống dòng/tab trong chuỗi, '
-                        'không markdown và không có bất kỳ chữ nào ngoài JSON.'
-                    )
-            raise last if last is not None else ValueError(f'{label}: JSON parse failed')
+        def parse_tagged_lines(raw:str)->dict[int,str]:
+            parsed={}
+            for line in str(raw).splitlines():
+                m=re.match(r'^\\s*(?:[-*]\\s*)?\\[(\\d+)\\]\\s*(.+?)\\s*$',line)
+                if not m:
+                    continue
+                parsed[int(m.group(1))]=clean(m.group(2))
+            return parsed
+
+        def qwen_tagged(prompt:str,max_new:int)->dict[int,str]:
+            # Tagged plain-text output is substantially more robust than forcing JSON
+            # from a small local model; malformed JSON caused the expensive retry storm.
+            return parse_tagged_lines(qwen(prompt,max_new=max_new))
 
         translated={}
         fallback_mt={'tok':None,'model':None}
         translation_started=time.monotonic()
         qwen_attempted=0
         qwen_fallbacks=0
-        qwen_budget_seconds=12*60
+        qwen_budget_seconds=10*60
 
         def deterministic_mt_fallback(s:dict)->str:
             if fallback_mt['tok'] is None:
@@ -298,49 +294,45 @@ def main():
             context_before=segments[pos-1]['text'] if pos>0 else ''
             after_pos=pos+len(block)
             context_after=segments[after_pos]['text'] if after_pos<len(segments) else ''
-            payload=[{
-                'id':s['index'],'seconds':round(s['slot'],2),'max_words':s['max_words'],
-                'zh':s['text'],'glossary':glossary_hint(s['text'])
-            } for s in block]
+            input_lines=[]
+            for s in block:
+                gloss=glossary_hint(s['text'])
+                hint=f' | glossary={gloss}' if gloss else ''
+                input_lines.append(
+                    f"[{s['index']}] seconds={s['slot']:.2f} max_words={s['max_words']} | {s['text']}{hint}"
+                )
             prompt=(
-                'Dịch các câu sau. BEFORE/AFTER chỉ dùng để hiểu ngữ cảnh, không được dịch vào kết quả. '
-                'Nếu có glossary thì ưu tiên đúng thuật ngữ đó. Giữ đúng từng id. '
-                'Schema bắt buộc: {"segments":[{"id":1,"vi":"..."}]}.\n'
-                f'BEFORE: {context_before}\nAFTER: {context_after}\nINPUT: '
-                +json.dumps(payload,ensure_ascii=False,separators=(',',':'))
+                'Dịch từng dòng tiếng Trung sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. '
+                'BEFORE/AFTER chỉ để hiểu ngữ cảnh, không đưa vào kết quả. Giữ đúng nghĩa, số liệu, tên riêng, '
+                'xưng hô và thuật ngữ; không để chữ Hán. Tuân thủ max_words càng sát càng tốt. '
+                'Trả về đúng MỘT dòng cho mỗi id theo dạng [id] bản dịch tiếng Việt. '
+                'Không JSON, không markdown, không giải thích, không bỏ id.\\n'
+                f'BEFORE: {context_before}\\nAFTER: {context_after}\\nINPUT:\\n'
+                +'\\n'.join(input_lines)
             )
             qwen_attempted+=len(block)
             try:
-                data=qwen_json(prompt,max_new=max(600,len(block)*65),
-                               label=f'segments {first}-{last}',attempts=2)
-                items=data.get('segments')
-                if not isinstance(items,list):
-                    raise ValueError('Qwen translation missing segments list')
-                by_id={}
-                for item in items:
-                    try:
-                        by_id[int(item.get('id',0))]=str(item.get('vi',''))
-                    except Exception:
-                        continue
-                recovered=0
-                for s in block:
-                    idx=s['index']
-                    raw_vi=by_id.get(idx,'')
-                    try:
-                        translated[idx]=validate_vi(raw_vi,s['text'],field=f'segment {idx}')
-                    except Exception:
-                        translated[idx]=recover_segment(s)
-                        recovered+=1
-                heartbeat('translating',
-                          f'Translated through {last}/{len(segments)}; recovered={recovered}')
-                return
+                by_id=qwen_tagged(prompt,max_new=max(420,len(block)*48))
             except Exception as exc:
-                # Never recursively re-run the whole block: that wastes successful GPU work.
                 heartbeat('translating_retry',
-                          f'Block {first}-{last} unusable ({type(exc).__name__}); fast fallback for block')
+                          f'Block {first}-{last} model call failed ({type(exc).__name__}); safe MT fallback')
                 for s in block:
                     translated[s['index']]=deterministic_mt_fallback(s)
                     qwen_fallbacks+=1
+                return
+
+            recovered=0
+            for s in block:
+                idx=s['index']
+                raw_vi=by_id.get(idx,'')
+                try:
+                    translated[idx]=validate_vi(raw_vi,s['text'],field=f'segment {idx}')
+                except Exception:
+                    translated[idx]=recover_segment(s)
+                    recovered+=1
+            pct=last*100.0/max(1,len(segments))
+            heartbeat('translating',
+                      f'Translated {last}/{len(segments)} ({pct:.1f}%); recovered={recovered}')
 
         chunk_size=20
         next_start=0
@@ -379,8 +371,10 @@ def main():
                     vis=ftok.batch_decode(out,skip_special_tokens=True)
                     for s,vi in zip(batch,vis,strict=True):
                         translated[s['index']]=validate_vi(vi,s['text'],field=f'fast segment {s["index"]}')
+                    done=min(next_start+off+len(batch),len(segments))
+                    pct=done*100.0/max(1,len(segments))
                     heartbeat('translating_fast_path',
-                              f'Fast MT {min(next_start+off+len(batch),len(segments))}/{len(segments)}')
+                              f'Fast MT {done}/{len(segments)} ({pct:.1f}%)')
             del fmodel,ftok
             gc.collect()
             torch.cuda.empty_cache()
@@ -400,26 +394,29 @@ def main():
             if words>limit:
                 severe.append((words/max(1,s['max_words']),s))
         severe.sort(key=lambda x:x[0],reverse=True)
-        for _,s in severe[:12]:
+        for _,s in severe[:8]:
             vi=translated[s['index']]
             prompt=(
                 'Rút gọn câu tiếng Việt sau để lồng tiếng nhưng phải giữ nguyên ý chính, phủ định, số liệu, tên riêng và xưng hô. '
-                f'Tối đa {s["max_words"]} từ, chỉ trả về JSON {{"vi":"..."}}. '
-                f'Nguyên văn Trung: {s["text"]}\nBản hiện tại: {vi}'
+                f'Tối đa {s["max_words"]} từ. Chỉ trả về câu tiếng Việt, không JSON, không giải thích.\\n'
+                f'Nguyên văn Trung: {s["text"]}\\nBản hiện tại: {vi}'
             )
             try:
-                shorter=qwen_json(prompt,max_new=100,label=f'shorten segment {s["index"]}',attempts=1).get('vi','')
-                translated[s['index']]=validate_vi(str(shorter),s['text'],field=f'short segment {s["index"]}')
+                shorter=clean(qwen(prompt,max_new=80))
+                translated[s['index']]=validate_vi(shorter,s['text'],field=f'short segment {s["index"]}')
             except Exception as exc:
                 print('HB_SHORTEN_FALLBACK',s['index'],repr(exc),flush=True)
 
         title_prompt=(
             'Dịch tiêu đề phim sau sang tiếng Việt tự nhiên theo phong cách tiên hiệp. '
-            'Giữ tên riêng và không thêm quảng cáo. Chỉ trả JSON {"title":"..."}.\n'
+            'Giữ tên riêng, không thêm quảng cáo. Chỉ trả về tiêu đề tiếng Việt, không JSON, không giải thích.\\n'
             +str(cfg.get('title') or '')
         )
         try:
-            translated_title=clean(str(qwen_json(title_prompt,max_new=100,label='title',attempts=2).get('title','')))
+            candidate=clean(qwen(title_prompt,max_new=80))
+            if not candidate or CJK_RE.search(candidate):
+                raise ValueError('title output invalid')
+            translated_title=candidate
         except Exception as exc:
             print('HB_TITLE_FALLBACK',repr(exc),flush=True)
             translated_title=clean(str(cfg.get('series_title') or cfg.get('title') or 'Hidden Beyond'))
