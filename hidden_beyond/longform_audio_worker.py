@@ -148,7 +148,7 @@ def main():
     heartbeat('installing','Installing local AI runtime')
     run([sys.executable,'-m','pip','install','--quiet',
          'faster-whisper>=1.1,<2','transformers<5','accelerate<2',
-         'sentencepiece','sacremoses','piper-tts>=1.3,<2'])
+         'sentencepiece','sacremoses'])
 
     import numpy as np
     import torch
@@ -442,79 +442,16 @@ def main():
         translated_title=clean(out_text[-1])
         del model,tok; gc.collect()
 
-    heartbeat('tts','Synthesizing sample-style Vietnamese voice with timing-safe fitting')
+    heartbeat('packaging_translation','Packaging translated timing data for CPU voice render')
     voice_mode='piper-vais1000-sample-style-v2'
     voice_name='vi_VN-vais1000-medium'
-    voices=WORK/'piper-voices'; voices.mkdir(exist_ok=True)
-    run([sys.executable,'-m','piper.download_voices',voice_name,'--download-dir',str(voices)])
-    from piper import PiperVoice
-    piper_voice=PiperVoice.load(str(voices/(voice_name+'.onnx')),use_cuda=False)
-
-    def synth(text:str,path:Path):
-        with wave.open(str(path),'wb') as w:
-            piper_voice.synthesize_wav(clean(text),w)
-
-    fitted=[]
-    tts_started=time.monotonic()
-    overflow_count=0
-    speed_values=[]
-    for i,s in enumerate(segments,1):
-        rawwav=SEGDIR/f'raw-{i:05d}.wav'; fitwav=SEGDIR/f'fit-{i:05d}.wav'
-        synth(s['vi'],rawwav)
-        original=max(0.01,wav_duration(rawwav))
-        next_start=float(segments[i]['start']) if i<len(segments) else float(s['end'])+STYLE['max_extra_gap']
-        available_end=min(next_start-0.04,float(s['end'])+STYLE['max_extra_gap'])
-        slot=max(0.25,available_end-float(s['start']))
-        required=original/slot
-        tempo=max(STYLE['min_tempo'],min(STYLE['max_tempo'],required))
-        speed_values.append(tempo)
-        filter_chain=(
-            f'rubberband=tempo={tempo:.6f}:pitch={STYLE["pitch_ratio"]:.6f}:formant=preserved,'
-            'highpass=f=70,lowpass=f=11500,'
-            'acompressor=threshold=-20dB:ratio=2.2:attack=8:release=120:makeup=1.4'
-        )
-        run(['ffmpeg','-y','-v','error','-i',str(rawwav),'-af',filter_chain,
-             '-ar','22050','-ac','1','-c:a','pcm_s16le',str(fitwav)])
-        fitted_duration=wav_duration(fitwav)
-        if fitted_duration>slot+0.08:
-            overflow_count+=1
-            trimmed=SEGDIR/f'trim-{i:05d}.wav'
-            run(['ffmpeg','-y','-v','error','-i',str(fitwav),'-af',f'atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06',
-                 '-ar','22050','-ac','1','-c:a','pcm_s16le',str(trimmed)])
-            fitwav=trimmed
-        s['audio']=fitwav
-        s['voice_end']=float(s['start'])+wav_duration(fitwav)
-        fitted.append((s,fitwav))
-        if i%50==0 or i==len(segments):
-            elapsed=max(0.001,time.monotonic()-tts_started)
-            rate=i/elapsed
-            remaining=(len(segments)-i)/rate if rate>0 else 0
-            heartbeat('tts',f'Voice {i}/{len(segments)}; eta≈{remaining/60:.1f} min; overflow={overflow_count}')
-
-    duration=max(float(s['end']) for s in segments)+1.0
-    with wave.open(str(fitted[0][1]),'rb') as w:
-        rate=w.getframerate(); width=w.getsampwidth(); channels=w.getnchannels()
-    if width!=2 or channels!=1: raise RuntimeError('unexpected fitted WAV format')
-    frames=max(1,int(math.ceil(duration*rate)))
-    canvas=np.zeros(frames,dtype=np.float32)
-    for s,path in fitted:
-        with wave.open(str(path),'rb') as w:
-            data=np.frombuffer(w.readframes(w.getnframes()),dtype='<i2').astype(np.float32)
-        pos=max(0,int(round(float(s['start'])*rate)))
-        end=min(len(canvas),pos+len(data))
-        if pos<len(canvas): canvas[pos:end]+=data[:end-pos]
-    canvas=np.clip(canvas,-32768,32767).astype('<i2')
-    with wave.open(str(VOICE_WAV),'wb') as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(canvas.tobytes())
-    run(['ffmpeg','-y','-v','error','-i',str(VOICE_WAV),'-af','loudnorm=I=-17.5:TP=-2.0:LRA=7',
-         '-c:a','libmp3lame','-b:a','96k','-ac','1',str(VOICE_MP3)])
 
     lines=[]
     for i,s in enumerate(segments,1):
         lines += [str(i),f"{ts(s['start'])} --> {ts(s['end'])}",s['vi'],'']
     SRT.write_text('\n'.join(lines),encoding='utf-8')
 
-    sha=hashlib.sha256(VOICE_MP3.read_bytes()).hexdigest()
+    translation_seconds=round(time.monotonic()-translation_started,2) if device=='cuda' else None
     meta={
         'ok':True,'job_id':JOB_ID,'source_video_id':cfg['source_video_id'],
         'series_id':cfg['series_id'],'episode_number':cfg['episode_number'],
@@ -522,21 +459,27 @@ def main():
         'translation_model':translation_model,'whisper_model':whisper_name,'tts_voice':voice_mode,
         'translation_mode':'contextual_cultivation_dubbing','timing_mode':'speech-segment-sync-no-hard-speedup',
         'style_profile':'reference-inspired-short-bursts-pauses-moderate-bright',
-        'style_pitch_ratio':STYLE['pitch_ratio'],'style_max_tempo':STYLE['max_tempo'],
-        'timing_overflow_segments':overflow_count,
-        'mean_tempo':round(sum(speed_values)/max(1,len(speed_values)),4),
-        'voice_bytes':VOICE_MP3.stat().st_size,'voice_sha256':sha,
+        'style':STYLE,'voice_name':voice_name,
         'gpu':torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu',
-        'gpu_efficiency_mode':'qwen-partial-salvage-12min-budget-v1'
+        'gpu_efficiency_mode':'qwen-partial-salvage-12min-budget-cpu-tts-v2',
+        'gpu_translation_seconds':translation_seconds,
+        'qwen_attempted_segments':qwen_attempted if device=='cuda' else 0,
+        'qwen_fallback_segments':qwen_fallbacks if device=='cuda' else 0,
+        'timed_segments':[{
+            'index':s['index'],'start':round(float(s['start']),3),'end':round(float(s['end']),3),
+            'vi':s['vi'],'max_words':s['max_words']
+        } for s in segments]
     }
     META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 
-    heartbeat('uploading_ai_output','Uploading corrected Vietnamese voice and subtitles')
-    upload(cfg['voice_upload_url'],VOICE_MP3,'audio/mpeg')
+    heartbeat('uploading_translation','Uploading subtitles and timing metadata; GPU work is done')
     upload(cfg['subtitle_upload_url'],SRT,'text/plain')
     upload(cfg['metadata_upload_url'],META,'application/json')
-    result=post('/ai-complete',{'job_id':JOB_ID,'translated_title':translated_title,'output_sha256':sha,'output_bytes':VOICE_MP3.stat().st_size})
-    print('HB_AI_COMPLETE',json.dumps(result,ensure_ascii=False),flush=True)
+    result=post('/ai-complete',{
+        'job_id':JOB_ID,'translated_title':translated_title,
+        'output_sha256':'','output_bytes':META.stat().st_size,'voice_generated':False
+    })
+    print('HB_AI_COMPLETE_GPU_RELEASE',json.dumps(result,ensure_ascii=False),flush=True)
 
 if __name__=='__main__':
     thread=threading.Thread(target=heartbeat_loop,daemon=True)
