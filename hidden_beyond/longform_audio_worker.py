@@ -102,9 +102,11 @@ def main():
 
     device="cuda" if torch.cuda.is_available() else "cpu"
     compute="float16" if device=="cuda" else "int8"
-    heartbeat("transcribing",f"Speech recognition on {device}")
-    whisper=WhisperModel("large-v3-turbo",device=device,compute_type=compute)
-    seg_iter,info=whisper.transcribe(str(AUDIO),language="zh",vad_filter=True,beam_size=5,condition_on_previous_text=True)
+    whisper_name="large-v3-turbo" if device=="cuda" else "small"
+    beam_size=5 if device=="cuda" else 3
+    heartbeat("transcribing",f"Speech recognition on {device} with {whisper_name}")
+    whisper=WhisperModel(whisper_name,device=device,compute_type=compute)
+    seg_iter,info=whisper.transcribe(str(AUDIO),language="zh",vad_filter=True,beam_size=beam_size,condition_on_previous_text=True)
     raw=[{"start":float(s.start),"end":float(s.end),"text":clean(s.text)} for s in seg_iter if clean(s.text)]
     if len(raw)<10: raise RuntimeError(f"too few transcript segments: {len(raw)}")
 
@@ -204,7 +206,7 @@ def main():
         "ok":True,"job_id":JOB_ID,"source_video_id":cfg["source_video_id"],
         "series_id":cfg["series_id"],"episode_number":cfg["episode_number"],
         "translated_title":translated_title,"segments":len(segments),
-        "translation_model":model_name,"tts_voice":voice_mode,
+        "translation_model":model_name,"whisper_model":whisper_name,"tts_voice":voice_mode,
         "voice_bytes":VOICE_MP3.stat().st_size,"voice_sha256":sha,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     }
