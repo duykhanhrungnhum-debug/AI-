@@ -47,6 +47,14 @@ CASES=[
     {"source":"天道不公","must_all":["thiên đạo"],"must_any":["bất công","không công bằng"]},
 ]
 META=("không thể thực hiện yêu cầu","vi phạm bản quyền","đội phim","đoàn phim","quay phim","chính sách nội dung")
+GLOSSARY={
+    "修仙":"tu tiên","修士":"tu sĩ","灵气":"linh khí","灵力":"linh lực","灵根":"linh căn",
+    "炼气":"Luyện Khí","筑基":"Trúc Cơ","金丹":"Kim Đan","元婴":"Nguyên Anh","渡劫":"Độ Kiếp",
+    "宗门":"tông môn","师尊":"sư tôn","师兄":"sư huynh","师姐":"sư tỷ","师弟":"sư đệ",
+    "师妹":"sư muội","掌门":"chưởng môn","长老":"trưởng lão","道友":"đạo hữu",
+    "法宝":"pháp bảo","丹药":"đan dược","功法":"công pháp","秘境":"bí cảnh","洞府":"động phủ",
+    "魔修":"ma tu","正道":"chính đạo","天道":"thiên đạo","飞升":"phi thăng","境界":"cảnh giới",
+}
 CJK_RE=re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 def words(s:str)->int:
@@ -112,10 +120,15 @@ def main():
     with torch.inference_mode():
         for off in range(0,len(CASES),4):
             batch=CASES[off:off+4]
-            prompts=[
-                "将以下文本翻译为越南语，注意只需要输出翻译后的结果，不要额外解释：\n"+x["source"]
-                for x in batch
-            ]
+            prompts=[]
+            for x in batch:
+                refs=[f"{zh} 翻译成 {vi}" for zh,vi in GLOSSARY.items() if zh in x["source"]]
+                term_text=("参考下面的翻译：\n"+"\n".join(refs)+"\n\n") if refs else ""
+                prompts.append(
+                    term_text+
+                    "将以下文本翻译为越南语，注意只需要输出翻译后的结果，不要额外解释：\n"
+                    +x["source"]
+                )
             chats=[
                 tok.apply_chat_template([{"role":"user","content":p}],tokenize=False,add_generation_prompt=True)
                 for p in prompts
