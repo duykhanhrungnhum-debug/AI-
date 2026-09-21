@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_agent.core.news_rss import GoogleNewsRSSProvider
 from ai_agent.core.researcher import InternetResearcher
-from ai_agent.core.trading_events import normalize_news_signals
+from ai_agent.core.trading_events import enforce_as_of_cutoff, normalize_news_signals
 from ai_agent.core.trading_learning_memory import record_learning_memory, source_on_cooldown
 from ai_agent.core.trading_skill import (
     TradingEvidence,
@@ -126,12 +127,15 @@ def main() -> int:
             episode.errors.append(f"news:{category}:{query}: {exc}")
 
     normalized_events = normalize_news_signals(news_signals)
+    as_of_cutoff = datetime.now(timezone.utc).isoformat()
+    as_of_gate = enforce_as_of_cutoff(normalized_events, as_of_cutoff)
     episode.verification = TradingEvidenceVerifier().verify(episode.evidence)
     new_lessons = record_learning_memory(state, episode.errors, cycle=cycle)
 
     payload = episode.to_dict()
     payload["news_signals"] = news_signals
     payload["normalized_events"] = normalized_events
+    payload["as_of_gate"] = as_of_gate
     payload["skipped_sources"] = skipped_sources
     payload["new_lessons"] = new_lessons
     output = Path(args.output)
@@ -170,6 +174,10 @@ def main() -> int:
         "categories": list(episode.verification.categories),
         "news_signal_count": len(news_signals),
         "normalized_event_count": len(normalized_events),
+        "as_of_cutoff": as_of_gate["as_of"],
+        "as_of_eligible_event_count": as_of_gate["eligible_count"],
+        "lookahead_rejected_event_count": as_of_gate["rejected_count"],
+        "no_lookahead_enforced": True,
         "error_count": len(episode.errors),
         "skipped_source_count": len(skipped_sources),
         "new_lesson_count": len(new_lessons),
