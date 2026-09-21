@@ -598,16 +598,14 @@ def main()->None:
 
         batch_size=8
         cursor=0
-        budget_seconds=8*60
+        budget_seconds=15*60
         with torch.inference_mode():
             while cursor<len(segments):
                 if time.monotonic()-translation_started>=budget_seconds:
                     fast_path_used=True
-                    heartbeat(
-                        "translating_fast_path",
-                        f"Hy-MT2 budget reached at {cursor}/{len(segments)}; switching remaining to fast fallback",
+                    raise RuntimeError(
+                        f"Hy-MT2-7B translation exceeded quality budget at {cursor}/{len(segments)}"
                     )
-                    break
                 batch=segments[cursor:cursor+batch_size]
                 chats=[
                     tok.apply_chat_template(
@@ -748,10 +746,12 @@ def main()->None:
                     prompts=[]
                     for s in batch:
                         current=clean(translated.get(s["index"],""))
+                        required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
                         prompts.append(
                             f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
-                            "Giữ nguyên nghĩa, tên riêng, thuật ngữ tu tiên và số liệu; không thêm ý, không giải thích. "
-                            "Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
+                            "Giữ nguyên nghĩa, tên riêng và số liệu; không thêm ý, không giải thích. "
+                            +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
+                            +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
                         )
                     chats=[
                         qtok.apply_chat_template(
@@ -793,10 +793,12 @@ def main()->None:
                             current=clean(translated.get(s["index"],""))
                             try:
                                 validate_vi(current,s["text"],field="compression input")
+                                required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
                                 prompts.append(
                                     f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
                                     "Giữ đúng ý chính, tên riêng và số liệu; không thêm ý, không giải thích. "
-                                    "Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
+                                    +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
+                                    +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
                                 )
                             except Exception:
                                 prompts.append(
@@ -819,8 +821,11 @@ def main()->None:
                         vis=qtok.batch_decode(gen,skip_special_tokens=True)
                         for s,vi in zip(batch,vis,strict=True):
                             try:
+                                candidate=validate_translation_pair(
+                                    vi,s["text"],field=f"compression semantic segment {s['index']}"
+                                )
                                 translated[s["index"]]=validate_segment_fit(
-                                    vi,s,field=f"compression segment {s['index']}"
+                                    candidate,s,field=f"compression segment {s['index']}"
                                 )
                                 qwen_reviewed+=1
                             except Exception:
@@ -847,10 +852,12 @@ def main()->None:
                         prompts=[]
                         for s in batch:
                             current=clean(translated.get(s["index"],""))
+                            required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
                             prompts.append(
                                 f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
                                 "Giữ đúng ý chính, tên riêng và số liệu; không thêm ý, không giải thích. "
-                                "Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
+                                +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
+                                +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
                             )
                         chats=[
                             qtok.apply_chat_template(
@@ -868,8 +875,11 @@ def main()->None:
                         vis=qtok.batch_decode(gen,skip_special_tokens=True)
                         for s,vi in zip(batch,vis,strict=True):
                             try:
+                                candidate=validate_translation_pair(
+                                    vi,s["text"],field=f"final editor semantic segment {s['index']}"
+                                )
                                 translated[s["index"]]=validate_segment_fit(
-                                    vi,s,field=f"final editor segment {s['index']}"
+                                    candidate,s,field=f"final editor segment {s['index']}"
                                 )
                                 qwen_reviewed+=1
                             except Exception:
