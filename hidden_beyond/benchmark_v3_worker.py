@@ -137,12 +137,15 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
     cur=[]
     hard=float(STYLE["hard_max_segment_seconds"])
     for i,w in enumerate(usable):
-        if cur and w["start"]-cur[-1]["end"]>=0.32:
-            out.append({
-                "start":cur[0]["start"],"end":cur[-1]["end"],
-                "text":clean("".join(x["text"] for x in cur)),
-            })
-            cur=[]
+        if cur:
+            gap_before=w["start"]-cur[-1]["end"]
+            cur_duration=cur[-1]["end"]-cur[0]["start"]
+            if gap_before>=0.55 or (gap_before>=0.32 and cur_duration>=1.40):
+                out.append({
+                    "start":cur[0]["start"],"end":cur[-1]["end"],
+                    "text":clean("".join(x["text"] for x in cur)),
+                })
+                cur=[]
         if cur and w["end"]-cur[0]["start"]>hard:
             out.append({
                 "start":cur[0]["start"],"end":cur[-1]["end"],
@@ -157,13 +160,16 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
         cjk_count=len(CJK_RE.findall(text))
         next_gap=(usable[i+1]["start"]-end) if i+1<len(usable) else 9.0
         last=(text[-1] if text else "")
+        target=float(STYLE["target_segment_seconds"])
         boundary=(
-            (last in strong and duration>=0.55)
-            or (last in soft and duration>=1.4)
-            or (next_gap>=0.32 and duration>=0.55)
+            (last in strong and duration>=1.20)
+            or (last in soft and duration>=2.20)
+            or (next_gap>=0.55 and duration>=0.70)
+            or (next_gap>=0.32 and duration>=1.40)
+            or (duration>=target and (next_gap>=0.18 or last in strong or last in soft))
             or duration>=hard
-            or cjk_count>=26
-            or len(text)>=48
+            or cjk_count>=32
+            or len(text)>=64
         )
         if boundary:
             out.append({"start":start,"end":end,"text":text})
@@ -175,14 +181,21 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
             "text":clean("".join(x["text"] for x in cur)),
         })
 
-    # Fold only accidental micro-fragments; do not rebuild long chunks.
+    # Merge micro-fragments so Vietnamese dubbing has enough speaking time.
     fixed=[]
     for s in out:
         dur=s["end"]-s["start"]
-        if fixed and dur<0.38 and s["start"]-fixed[-1]["end"]<0.18:
+        if fixed:
             prev=fixed[-1]
+            prev_dur=prev["end"]-prev["start"]
+            gap=s["start"]-prev["end"]
             candidate=clean(prev["text"]+s["text"])
-            if s["end"]-prev["start"]<=hard and len(candidate)<=48:
+            if (
+                gap<=0.35
+                and s["end"]-prev["start"]<=hard
+                and (dur<0.90 or prev_dur<0.90)
+                and len(candidate)<=64
+            ):
                 prev["end"]=s["end"]
                 prev["text"]=candidate
                 continue
