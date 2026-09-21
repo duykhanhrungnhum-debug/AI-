@@ -62,6 +62,19 @@ Persistent state records cycle count, verified-cycle count, category coverage,
 source-domain retrieval history, up to 150 recent news signals, up to 200
 recent cycle summaries, recurring error memory, and bounded lessons.
 
+## No-lookahead gate
+
+Normalized events now pass through a conservative as-of availability gate before
+they can be used by later historical studies. An event becomes available only
+at the later of its publication timestamp (when known) and the timestamp when
+the Agent actually retrieved it. Missing publication time is not invented;
+retrieval time is used instead.
+
+For each cycle the artifact records the decision cutoff, eligible events, and
+rejected events with an explicit reason such as retrieved-after-cutoff or
+published-after-cutoff. This prevents future information from silently leaking
+into later event/price studies and backtests.
+
 ## Current boundary
 
 A VERIFIED v1 cycle proves that the research/evidence collector operated and
