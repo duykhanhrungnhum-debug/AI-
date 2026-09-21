@@ -322,7 +322,7 @@ def main()->None:
     run([
         sys.executable,"-m","pip","install","--quiet",
         "yt-dlp>=2026.1","faster-whisper>=1.1,<2",
-        "transformers==4.56.0","accelerate<2","sentencepiece","sacremoses",
+        "transformers>=5.6,<6","accelerate<2","sentencepiece","sacremoses",
     ])
     beat("installed","Optimized translation runtime installed")
 
@@ -420,12 +420,12 @@ def main()->None:
     translation_started=time.monotonic()
     model_name="tencent/Hy-MT2-1.8B"
     load_started=time.monotonic()
-    tok=AutoTokenizer.from_pretrained(model_name)
+    tok=AutoTokenizer.from_pretrained(model_name,trust_remote_code=True)
     tok.padding_side="left"
     if tok.pad_token_id is None:
         tok.pad_token=tok.eos_token
     model=AutoModelForCausalLM.from_pretrained(
-        model_name,torch_dtype=torch.float16,low_cpu_mem_usage=True
+        model_name,torch_dtype=torch.float16,low_cpu_mem_usage=True,trust_remote_code=True
     ).to("cuda")
     model.eval()
     model_load_seconds=time.monotonic()-load_started
@@ -437,19 +437,20 @@ def main()->None:
         terms=("参考下面的翻译：\n"+"\n".join(f"{a} 翻译成 {b}" for a,b in pairs)+"\n\n") if pairs else ""
         prev=by_index.get(s["index"]-1,{}).get("text","")
         nxt=by_index.get(s["index"]+1,{}).get("text","")
+        context=clean(prev+" "+nxt)
+        context_text=(context+"\n参考上面的信息，") if context else ""
         return (
-            terms+
-            "将 TARGET 翻译成自然、简洁的越南语，适合中国仙侠动画配音。"
-            "保持人物称谓、境界、语气和专有名词一致；不要解释，不要输出中文。"
-            "CONTEXT 只用于理解，不要把 CONTEXT 翻进答案。"
-            f"译文尽量不超过 {s['max_words']+2} 个越南语词。\n"
-            f"CONTEXT_BEFORE: {prev}\nTARGET: {s['text']}\nCONTEXT_AFTER: {nxt}"
+            terms+context_text+
+            "把下面的文本翻译成越南语，注意只需要输出翻译后的结果，不要翻译上文，也不要额外解释：\n"
+            +s["text"]
         )
 
     translated={}
     invalid=[]
     bs=20
     inference_started=time.monotonic()
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
     with torch.inference_mode():
         cursor=0
         while cursor<len(segments):
@@ -457,15 +458,16 @@ def main()->None:
             chats=[
                 tok.apply_chat_template(
                     [{"role":"user","content":prompt(s)}],
-                    tokenize=False,add_generation_prompt=False
+                    tokenize=False,add_generation_prompt=True
                 ) for s in batch
             ]
             try:
                 inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
                 inp={k:v.to("cuda") for k,v in inp.items() if k!="token_type_ids"}
                 out=model.generate(
-                    **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.05,
-                    use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
+                    **inp,max_new_tokens=96,do_sample=True,temperature=0.7,top_p=0.6,top_k=20,
+                    repetition_penalty=1.05,use_cache=True,
+                    pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
                 )
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
@@ -495,10 +497,68 @@ def main()->None:
                 f"{cursor/elapsed:.2f} seg/s; invalid={len(invalid)}"
             )
 
+    primary_invalid_count=len(invalid)
+    qwen_reviewed=0
+    unresolved=[]
+    if invalid:
+        beat("translation_review",f"Hy-MT2 flagged {len(invalid)} segments; bounded Qwen editor")
+        editor_name="Qwen/Qwen2.5-1.5B-Instruct"
+        qtok=AutoTokenizer.from_pretrained(editor_name)
+        qtok.padding_side="left"
+        if qtok.pad_token_id is None:
+            qtok.pad_token=qtok.eos_token
+        qmodel=AutoModelForCausalLM.from_pretrained(
+            editor_name,torch_dtype=torch.float16,low_cpu_mem_usage=True
+        ).to("cuda")
+        qmodel.eval()
+        invalid_set=set(invalid)
+        review_items=[s for s in segments if s["index"] in invalid_set]
+        with torch.inference_mode():
+            for off in range(0,len(review_items),8):
+                batch=review_items[off:off+8]
+                prompts=[]
+                for s in batch:
+                    prev=by_index.get(s["index"]-1,{}).get("text","")
+                    nxt=by_index.get(s["index"]+1,{}).get("text","")
+                    prompts.append(
+                        "Dịch TARGET từ tiếng Trung sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. "
+                        "Ngữ cảnh chỉ để hiểu, không được dịch vào câu trả lời. Không để chữ Hán, không giải thích. "
+                        f"NGỮ CẢNH: {prev} {nxt}\nTARGET: {s['text']}"
+                    )
+                chats=[
+                    qtok.apply_chat_template(
+                        [{"role":"user","content":p}],tokenize=False,add_generation_prompt=True
+                    ) for p in prompts
+                ]
+                inp=qtok(chats,return_tensors="pt",padding=True,truncation=True,max_length=384)
+                inp={k:v.to("cuda") for k,v in inp.items() if k!="token_type_ids"}
+                out=qmodel.generate(
+                    **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.05,
+                    pad_token_id=qtok.pad_token_id,eos_token_id=qtok.eos_token_id,
+                )
+                gen=out[:,inp["input_ids"].shape[1]:]
+                vis=qtok.batch_decode(gen,skip_special_tokens=True)
+                for s,vi in zip(batch,vis,strict=True):
+                    try:
+                        translated[s["index"]]=validate(vi,s["text"])
+                        qwen_reviewed+=1
+                    except Exception:
+                        unresolved.append(s["index"])
+        del qmodel,qtok
+        gc.collect(); torch.cuda.empty_cache()
+
+    final_invalid=[]
+    for s in segments:
+        try:
+            translated[s["index"]]=validate(translated.get(s["index"],""),s["text"])
+        except Exception:
+            final_invalid.append(s["index"])
+
     inference_seconds=time.monotonic()-inference_started
     translation_seconds=time.monotonic()-translation_started
+    invalid=final_invalid
     for s in segments:
-        s["vi"]=translated[s["index"]]
+        s["vi"]=translated.get(s["index"],"")
 
     report={
         "ok":True,
@@ -522,6 +582,9 @@ def main()->None:
         "translation_inference_seconds":round(inference_seconds,2),
         "translation_seconds":round(translation_seconds,2),
         "invalid_segments":len(invalid),
+        "primary_invalid_segments":primary_invalid_count,
+        "qwen_reviewed_segments":qwen_reviewed,
+        "unresolved_after_qwen":len(unresolved),
         "invalid_ids":invalid[:50],
         "gpu":torch.cuda.get_device_name(0),
         "gpu_benchmark_seconds":round(time.monotonic()-total_started,2),
