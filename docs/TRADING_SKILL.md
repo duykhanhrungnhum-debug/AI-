@@ -77,9 +77,9 @@ into later event/price studies and backtests.
 
 ## Historical WTI/Brent price evidence
 
-The worker retrieves daily WTI (DCOILWTICO) and Brent (DCOILBRENTEU) spot-price
-history from FRED. These series are sourced from the U.S. Energy Information
-Administration. Each artifact preserves the FRED series ID, source URL,
+The worker retrieves daily WTI (RWTC) and Brent (RBRTE) spot-price history
+directly from the U.S. Energy Information Administration (EIA) public history
+tables. Each artifact preserves the EIA series ID, source URL,
 retrieval timestamp, content hash, first/last observation date, and normalized
 USD-per-barrel observations.
 
