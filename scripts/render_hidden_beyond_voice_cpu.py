@@ -51,6 +51,7 @@ def main()->None:
 
     style=meta.get("style") or {}
     max_tempo=float(style.get("max_tempo",1.16))
+    piper_length_scale=float(style.get("piper_length_scale",0.86))
     max_extra_gap=float(style.get("max_extra_gap",0.65))
     min_pause_between_cues=float(style.get("min_pause_between_cues",0.20))
     voice_name=str(meta.get("voice_name") or "vi_VN-vais1000-medium")
@@ -65,7 +66,8 @@ def main()->None:
     from piper import PiperVoice
     from piper.config import SynthesisConfig
     voice=PiperVoice.load(str(voices/(voice_name+".onnx")),use_cuda=False)
-    syn=SynthesisConfig()
+    syn=SynthesisConfig(length_scale=piper_length_scale)
+    print(f"CPU_TTS_SYNTHESIS length_scale={piper_length_scale:.3f} post_max_tempo={max_tempo:.3f}",flush=True)
 
     filters=subprocess.run(
         ["ffmpeg","-hide_banner","-filters"],
@@ -179,6 +181,7 @@ def main()->None:
     meta["retimed_segments"]=retimed_count
     meta["hard_trim_segments"]=hard_trim_count
     meta["voice_loudness_target_lufs"]=-19.0
+    meta["piper_length_scale"]=piper_length_scale
     meta["min_pause_between_cues"]=min_pause_between_cues
     meta["max_extra_gap"]=max_extra_gap
     meta["voice_bytes"]=out_path.stat().st_size
