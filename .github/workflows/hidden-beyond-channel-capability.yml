@@ -1,0 +1,28 @@
+name: Hidden Beyond Channel Capability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hidden-beyond-channel-capability.yml"
+      - "hidden_beyond/channel-capability.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect YouTube channel upload capability
+        shell: bash
+        env:
+          LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          curl --fail-with-body -sS -X POST "$LONGFORM_API/channel-status"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data '{}' | tee channel-capability-result.json
+          echo
