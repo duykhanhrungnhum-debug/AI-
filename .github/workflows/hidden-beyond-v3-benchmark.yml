@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: hidden-beyond-v3-benchmark
@@ -21,6 +22,7 @@ jobs:
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
+      BENCH_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hidden-beyond-benchmark-api
 
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +40,18 @@ jobs:
           test -n "$KAGGLE_API_TOKEN"
           jq . hidden_beyond/benchmark/request.json
 
+      - name: Register benchmark callback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OIDC="$(curl -fsSL             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-v3-benchmark"             | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/benchmark/request.json)"
+          jq -n --arg source_video_id "$SOURCE_VIDEO_ID" '{source_video_id:$source_video_id}' > bench-start-body.json
+          curl --fail-with-body -sS -X POST "$BENCH_API/start"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @bench-start-body.json > bench-start.json
+          test "$(jq -r '.ok' bench-start.json)" = "true"
+          jq -r '.run_id' bench-start.json > bench-run-id.txt
+          echo "V3_BENCH_REGISTERED id=$(cat bench-run-id.txt)"
+
       - name: Submit full-episode GPU benchmark
         shell: bash
         run: |
@@ -48,6 +62,12 @@ jobs:
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
 
           req=json.loads(Path("hidden_beyond/benchmark/request.json").read_text(encoding="utf-8"))
+          start=json.loads(Path("bench-start.json").read_text(encoding="utf-8"))
+          req.update({
+              "callback_base":start["callback_base"],
+              "run_id":start["run_id"],
+              "run_token":start["run_token"],
+          })
           source=Path("hidden_beyond/benchmark_v3_worker.py").read_text(encoding="utf-8")
           marker="# __BENCH_CONFIG_INJECT__"
           if marker not in source:
@@ -83,55 +103,31 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p bench-output
-          python - <<'PY'
-          import json,os,time
-          from pathlib import Path
-          from urllib.error import HTTPError
-          from urllib.request import Request,urlopen
-          from ai_agent.core.kaggle_worker import KaggleGpuWorker
-
-          sub=json.loads(Path("gpu-submission.json").read_text())
-          slug=sub["slug"]
-          w=KaggleGpuWorker(
-              api_token=os.environ["KAGGLE_API_TOKEN"],
-              username=os.environ["KAGGLE_USERNAME"],
-              timeout=120,
-          )
-          urls={}
-          for i in range(1,61):
-              try:
-                  meta=w.output_metadata(slug)
-                  files=meta.get("files") if isinstance(meta,dict) else None
-                  found={}
-                  for x in files or []:
-                      if isinstance(x,dict):
-                          n=x.get("fileName",x.get("file_name"))
-                          u=x.get("url")
-                          if n in {"benchmark.json","translated-metadata.json"} and isinstance(u,str):
-                              found[n]=u
-                  print("BENCH_OUTPUT_POLL",i,sorted(found),flush=True)
-                  if set(found)=={"benchmark.json","translated-metadata.json"}:
-                      urls=found
-                      break
-              except HTTPError as exc:
-                  if exc.code not in (403,404,409):
-                      raise
-                  print("BENCH_OUTPUT_TRANSIENT",i,exc.code,flush=True)
-              time.sleep(20)
-          else:
-              raise SystemExit("Benchmark outputs not ready within 20 minutes")
-
-          for name,url in urls.items():
-              req=Request(url,headers={"User-Agent":"Hidden-Beyond-Benchmark/1.0"})
-              with urlopen(req,timeout=180) as src, open("bench-output/"+name,"wb") as dst:
-                  while True:
-                      chunk=src.read(1024*1024)
-                      if not chunk:
-                          break
-                      dst.write(chunk)
-          PY
-          jq . bench-output/benchmark.json
-          test -s bench-output/translated-metadata.json
+          RUN_ID="$(cat bench-run-id.txt)"
+          for i in $(seq 1 60); do
+            OIDC="$(curl -fsSL               -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-v3-benchmark"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg run_id "$RUN_ID" '{run_id:$run_id}' > bench-status-body.json
+            curl --fail-with-body -sS -X POST "$BENCH_API/status"               -H "Authorization: Bearer $OIDC"               -H "content-type: application/json"               --data-binary @bench-status-body.json > bench-status.json
+            STATE="$(jq -r '.run.state' bench-status.json)"
+            STAGE="$(jq -r '.run.stage' bench-status.json)"
+            MSG="$(jq -r '.run.message // ""' bench-status.json)"
+            echo "V3_BENCH_PROGRESS poll=$i state=$STATE stage=$STAGE message=$MSG"
+            if [ "$STATE" = "completed" ]; then
+              jq '.run.benchmark_report' bench-status.json > bench-output/benchmark.json
+              jq '.run.translated_metadata' bench-status.json > bench-output/translated-metadata.json
+              test -s bench-output/benchmark.json
+              test -s bench-output/translated-metadata.json
+              jq . bench-output/benchmark.json
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ]; then
+              echo "::error title=V3 benchmark worker failed::$MSG"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error title=V3 benchmark timeout::No completion callback within 20 minutes."
+          exit 1
 
       - name: Measure CPU TTS
         shell: bash
@@ -172,19 +168,18 @@ jobs:
           print("V3_PERFORMANCE_TARGET_VERIFIED")
           PY
 
-      - name: Cleanup Kaggle benchmark
-        if: always()
+      - name: Report benchmark workflow failure
+        if: failure()
         shell: bash
         run: |
           set +e
-          if [ ! -s gpu-submission.json ]; then exit 0; fi
-          REF="$(jq -r '.ref // empty' gpu-submission.json)"
-          [ -n "$REF" ] || exit 0
-          python -m pip install --quiet --upgrade kaggle
-          mkdir -p "$HOME/.kaggle"
-          python -c 'import os; from pathlib import Path; t=os.environ.get("KAGGLE_API_TOKEN","").strip(); p=Path.home()/".kaggle"/"access_token"; p.write_text(t,encoding="utf-8") if t else None; p.chmod(0o600) if t else None'
-          env -u KAGGLE_API_TOKEN kaggle kernels delete "$REF" --yes || true
-          echo "V3_BENCH_KERNEL_CLEANUP $REF"
+          if [ ! -s bench-start.json ]; then exit 0; fi
+          RUN_ID="$(jq -r '.run_id // empty' bench-start.json)"
+          RUN_TOKEN="$(jq -r '.run_token // empty' bench-start.json)"
+          [ -n "$RUN_ID" ] && [ -n "$RUN_TOKEN" ] || exit 0
+          jq -n --arg run_id "$RUN_ID" --arg error "GitHub benchmark orchestrator failed before verified completion"             '{run_id:$run_id,error:$error}' > bench-fail.json
+          curl -sS -X POST "$BENCH_API/fail"             -H "x-benchmark-token: $RUN_TOKEN"             -H "content-type: application/json"             --data-binary @bench-fail.json >/dev/null || true
+          echo "V3_BENCH_FAILURE_REPORTED id=$RUN_ID"
 
       - name: Preserve benchmark evidence
         if: always()
@@ -193,6 +188,7 @@ jobs:
           name: hidden-beyond-v3-benchmark-evidence
           path: |
             gpu-submission.json
+            bench-run-id.txt
             bench-output/benchmark.json
             bench-output/translated-metadata.json
             bench-output/voice.mp3
