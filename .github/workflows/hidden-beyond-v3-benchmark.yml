@@ -149,24 +149,39 @@ jobs:
             voice_efficiency_mode
           }' bench-output/translated-metadata.json
 
-      - name: Verify performance target
+      - name: Verify performance and reference-quality target
         shell: bash
         run: |
           set -Eeuo pipefail
           TRANSLATE="$(jq -r '.translation_seconds' bench-output/benchmark.json)"
           INVALID="$(jq -r '.invalid_segments' bench-output/benchmark.json)"
           TTS="$(jq -r '.voice_render_seconds' bench-output/translated-metadata.json)"
-          python - "$TRANSLATE" "$INVALID" "$TTS" <<'PY'
-          import sys
+          DENSITY="$(jq -r '.segments_per_minute' bench-output/benchmark.json)"
+          MAX_SEG="$(jq -r '.max_segment_seconds' bench-output/benchmark.json)"
+          SEGMENTS="$(jq -r '.segments' bench-output/benchmark.json)"
+          HARD_TRIM="$(jq -r '.hard_trim_segments // 0' bench-output/translated-metadata.json)"
+          python - "$TRANSLATE" "$INVALID" "$TTS" "$DENSITY" "$MAX_SEG" "$SEGMENTS" "$HARD_TRIM" <<'PY'
+          import sys, math
           trans=float(sys.argv[1]); invalid=int(sys.argv[2]); tts=float(sys.argv[3])
-          print(f"V3_PERF translation={trans:.1f}s tts={tts:.1f}s invalid={invalid}")
+          density=float(sys.argv[4]); max_seg=float(sys.argv[5]); segments=int(sys.argv[6]); hard_trim=int(sys.argv[7])
+          trim_limit=max(3, math.ceil(segments*0.01))
+          print(
+              f"V3_QUALITY translation={trans:.1f}s tts={tts:.1f}s invalid={invalid} "
+              f"density={density:.2f}/min max_seg={max_seg:.2f}s hard_trim={hard_trim}/{segments}"
+          )
           if trans>300:
               raise SystemExit(f"Translation target missed: {trans:.1f}s > 300s")
           if invalid>0:
               raise SystemExit(f"Primary translation quality gate missed: invalid={invalid}")
+          if density<3.0:
+              raise SystemExit(f"Dialogue cadence too coarse: {density:.2f} segments/min")
+          if max_seg>6.2:
+              raise SystemExit(f"Dialogue cue too long: {max_seg:.2f}s")
+          if hard_trim>trim_limit:
+              raise SystemExit(f"Too many TTS hard trims: {hard_trim}>{trim_limit}")
           if trans+tts>900:
               raise SystemExit(f"Translation+TTS target missed: {trans+tts:.1f}s > 900s")
-          print("V3_PERFORMANCE_TARGET_VERIFIED")
+          print("V3_REFERENCE_QUALITY_TARGET_VERIFIED")
           PY
 
       - name: Report benchmark workflow failure
