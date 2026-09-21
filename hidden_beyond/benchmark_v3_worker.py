@@ -123,9 +123,11 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
         text=str(w.get("text") or "")
         if not clean(text):
             continue
-        start=float(w.get("start") or 0)
-        end=float(w.get("end") or start+0.08)
-        usable.append({"start":start,"end":max(start+0.04,end),"text":text})
+        start=max(0.0,float(w.get("start") or 0))
+        end=max(start+0.04,float(w.get("end") or start+0.08))
+        if end-start>1.8:
+            end=start+1.8
+        usable.append({"start":start,"end":end,"text":text})
     if not usable:
         return []
 
@@ -133,7 +135,20 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
     soft=set("，,、：:")
     out=[]
     cur=[]
+    hard=float(STYLE["hard_max_segment_seconds"])
     for i,w in enumerate(usable):
+        if cur and w["start"]-cur[-1]["end"]>=0.32:
+            out.append({
+                "start":cur[0]["start"],"end":cur[-1]["end"],
+                "text":clean("".join(x["text"] for x in cur)),
+            })
+            cur=[]
+        if cur and w["end"]-cur[0]["start"]>hard:
+            out.append({
+                "start":cur[0]["start"],"end":cur[-1]["end"],
+                "text":clean("".join(x["text"] for x in cur)),
+            })
+            cur=[]
         cur.append(w)
         start=cur[0]["start"]
         end=w["end"]
@@ -146,7 +161,7 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
             (last in strong and duration>=0.55)
             or (last in soft and duration>=1.4)
             or (next_gap>=0.32 and duration>=0.55)
-            or duration>=float(STYLE["hard_max_segment_seconds"])
+            or duration>=hard
             or cjk_count>=26
             or len(text)>=48
         )
@@ -167,7 +182,7 @@ def split_words_to_dialogue(words:list[dict])->list[dict]:
         if fixed and dur<0.38 and s["start"]-fixed[-1]["end"]<0.18:
             prev=fixed[-1]
             candidate=clean(prev["text"]+s["text"])
-            if s["end"]-prev["start"]<=5.5 and len(candidate)<=48:
+            if s["end"]-prev["start"]<=hard and len(candidate)<=48:
                 prev["end"]=s["end"]
                 prev["text"]=candidate
                 continue
