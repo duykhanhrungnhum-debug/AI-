@@ -42,7 +42,7 @@ GLOSSARY={
     "丹药":"đan dược","丹藥":"đan dược","功法":"công pháp","秘境":"bí cảnh","洞府":"động phủ",
     "魔修":"ma tu","正道":"chính đạo","天道":"thiên đạo","飞升":"phi thăng","飛升":"phi thăng","境界":"cảnh giới",
 }
-STYLE={"max_tempo":1.16,"min_tempo":0.94,"pitch_ratio":1.0,"max_extra_gap":0.18,"words_per_second":3.0,"target_segment_seconds":3.2,"hard_max_segment_seconds":5.5}
+STYLE={"max_tempo":1.16,"min_tempo":0.94,"pitch_ratio":1.0,"max_extra_gap":0.65,"words_per_second":3.0,"target_segment_seconds":3.2,"hard_max_segment_seconds":5.5,"min_pause_between_cues":0.20}
 
 def callback_post(path:str,payload:dict)->dict:
     data=json.dumps(payload,ensure_ascii=False).encode()
@@ -110,9 +110,8 @@ def vi_word_count(value:str)->int:
     return len(re.findall(r"[A-Za-zÀ-ỹ0-9]+",clean(value)))
 
 def fit_word_limit(segment:dict)->int:
-    slot=max(0.25,float(segment["end"])-float(segment["start"]))
-    usable=slot+float(STYLE.get("max_extra_gap",0.18))
-    return max(2,int(math.ceil(usable*3.2)))
+    slot=max(0.25,float(segment.get("tts_slot") or (float(segment["end"])-float(segment["start"]))))
+    return max(2,int(math.ceil(slot*5.2)))
 
 def validate_segment(text:str,segment:dict)->str:
     value=validate(text,segment["text"])
@@ -419,7 +418,13 @@ def main()->None:
     for i,s in enumerate(segments,1):
         s["index"]=i
         s["slot"]=max(0.3,s["end"]-s["start"])
-        s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
+        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+float(STYLE["max_extra_gap"])+float(STYLE["min_pause_between_cues"])
+        available_end=min(
+            next_start-float(STYLE["min_pause_between_cues"]),
+            float(s["end"])+float(STYLE["max_extra_gap"]),
+        )
+        s["tts_slot"]=max(0.25,available_end-float(s["start"]))
+        s["max_words"]=max(2,int(math.floor(s["tts_slot"]*STYLE["words_per_second"]+0.5)))
         s["fit_words"]=fit_word_limit(s)
     transcript_seconds=time.monotonic()-transcript_started
     transcript_last_end=max(float(s["end"]) for s in segments)
