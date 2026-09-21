@@ -138,6 +138,30 @@ def validate_vi(text:str,source:str,*,field:str)->str:
 def vi_word_count(value:str)->int:
     return len(re.findall(r"[A-Za-zÀ-ỹ0-9]+",clean(value)))
 
+META_HALLUCINATION_VI=(
+    "không thể thực hiện yêu cầu","không thể đáp ứng yêu cầu","vi phạm bản quyền",
+    "vấn đề bản quyền","chính sách nội dung","đội làm phim","đội phim","đoàn phim",
+    "quay phim","quá trình quay",
+)
+META_SOURCE_ZH=("版权","著作权","拍摄","摄制","剧组","影片","电影","政策","请求","要求")
+
+def validate_translation_pair(text:str,source:str,*,field:str)->str:
+    value=validate_vi(text,source,field=field)
+    src_cjk=len(CJK_RE.findall(source))
+    words=vi_word_count(value)
+    if src_cjk and words>max(10,math.ceil(src_cjk*2.6)+3):
+        raise ValueError(f"{field} extreme expansion")
+    if src_cjk>=10 and words<max(2,math.floor(src_cjk/6)):
+        raise ValueError(f"{field} extreme omission")
+    low=value.casefold()
+    if not any(term in source for term in META_SOURCE_ZH):
+        if any(term in low for term in META_HALLUCINATION_VI):
+            raise ValueError(f"{field} meta hallucination")
+    for zh,vi in FANTASY_GLOSSARY.items():
+        if zh in source and vi.casefold() not in low:
+            raise ValueError(f"{field} missing glossary {zh}")
+    return value
+
 def fit_word_limit(segment:dict)->int:
     slot=max(0.25,float(segment.get("tts_slot") or (float(segment["end"])-float(segment["start"]))))
     return max(2,int(math.ceil(slot*4.8)))
@@ -394,13 +418,14 @@ def main()->None:
         "faster-whisper>=1.1,<2",
         "transformers>=5.6,<6",
         "accelerate<2",
+        "bitsandbytes>=0.45,<1",
         "sentencepiece",
         "sacremoses",
     ])
 
     import torch
     from faster_whisper import BatchedInferencePipeline, WhisperModel
-    from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
     cfg=post("/worker-config",{"job_id":JOB_ID})
     device="cuda" if torch.cuda.is_available() else "cpu"
@@ -533,18 +558,25 @@ def main()->None:
         return result
 
     if device=="cuda":
-        primary_model="tencent/Hy-MT2-1.8B"
+        primary_model="tencent/Hy-MT2-7B"
         heartbeat("translating",f"Loading {primary_model}; batch translation for {len(segments)} segments")
         tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
         tok.padding_side="left"
         if tok.pad_token_id is None:
             tok.pad_token=tok.eos_token
+        quant_config=BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
         model=AutoModelForCausalLM.from_pretrained(
             primary_model,
-            torch_dtype=torch.float16,
+            quantization_config=quant_config,
+            device_map="auto",
             low_cpu_mem_usage=True,
             trust_remote_code=True,
-        ).to(device)
+        )
         model.eval()
 
         by_index={s["index"]:s for s in segments}
@@ -555,15 +587,16 @@ def main()->None:
                 term_text="参考下面的翻译：\n"+"\n".join(f"{zh} 翻译成 {vi}" for zh,vi in terms)+"\n\n"
             prev=by_index.get(s["index"]-1,{}).get("text","")
             nxt=by_index.get(s["index"]+1,{}).get("text","")
-            context=clean(prev+" "+nxt)
-            context_text=(context+"\n参考上面的信息，") if context else ""
+            background=clean(prev+" "+nxt)
             return (
-                term_text+context_text+
-                "把下面的文本翻译成越南语，注意只需要输出翻译后的结果，不要翻译上文，也不要额外解释：\n"
-                +s["text"]
+                term_text+
+                "〖背景信息〗\n"+background+"\n"
+                "请结合背景信息将以下文本翻译为越南语。只输出待翻译文本的越南语译文，不要解释，不要翻译背景信息。\n"
+                "〖待翻译文本〗\n"+s["text"]
             )
 
-        batch_size=20
+
+        batch_size=8
         cursor=0
         budget_seconds=8*60
         with torch.inference_mode():
@@ -616,7 +649,7 @@ def main()->None:
                 vis=tok.batch_decode(generated,skip_special_tokens=True)
                 for s,vi in zip(batch,vis,strict=True):
                     try:
-                        translated[s["index"]]=validate_vi(vi,s["text"],field=f"segment {s['index']}")
+                        translated[s["index"]]=validate_translation_pair(vi,s["text"],field=f"segment {s['index']}")
                     except Exception:
                         invalid_ids.append(s["index"])
                 cursor+=len(batch)
@@ -663,11 +696,34 @@ def main()->None:
             remaining=segments[cursor:]
             translated.update(opus_translate(remaining,on_device="cuda"))
 
+        if invalid_ids:
+            invalid_set=set(invalid_ids)
+            invalid_items=[s for s in segments if s["index"] in invalid_set]
+            heartbeat(
+                "translation_verify",
+                f"Primary translation flagged {len(invalid_items)} semantic/content risks; deterministic MT fallback",
+            )
+            translated.update(opus_translate(invalid_items,on_device="cpu"))
+            still_invalid=[]
+            for s in invalid_items:
+                try:
+                    translated[s["index"]]=validate_translation_pair(
+                        translated.get(s["index"],""),s["text"],field=f"fallback verified segment {s['index']}"
+                    )
+                except Exception:
+                    still_invalid.append(s["index"])
+            if still_invalid:
+                raise RuntimeError(
+                    f"translation semantic quality unresolved {len(still_invalid)} segments: "
+                    +",".join(map(str,still_invalid[:30]))
+                )
+            invalid_ids=[]
+
         overlong_ids=[
             s["index"] for s in segments
             if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
         ]
-        review_ids=sorted(set(invalid_ids)|set(overlong_ids))
+        review_ids=sorted(set(overlong_ids))
         if review_ids:
             # Qwen is an editor only. It is never the bulk translator.
             review_set=set(review_ids)
@@ -691,16 +747,11 @@ def main()->None:
                     batch=review_items[off:off+8]
                     prompts=[]
                     for s in batch:
-                        gloss=", ".join(vi for _,vi in glossary_pairs(s["text"]))
-                        prev=by_index.get(s["index"]-1,{}).get("text","")
-                        nxt=by_index.get(s["index"]+1,{}).get("text","")
+                        current=clean(translated.get(s["index"],""))
                         prompts.append(
-                            "Dịch TARGET từ tiếng Trung sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. "
-                            "Ngữ cảnh chỉ để hiểu, không được dịch vào câu trả lời. "
-                            "Không để chữ Hán, giữ số liệu, tên riêng và xưng hô; không giải thích. "
-                            +(f"Ưu tiên thuật ngữ: {gloss}. " if gloss else "")
-                            +f"Viết gọn, tự nhiên, tối đa {s['fit_words']} từ để khớp thời lượng. "
-                            +f"NGỮ CẢNH: {prev} {nxt}\nTARGET: {s['text']}"
+                            f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
+                            "Giữ nguyên nghĩa, tên riêng, thuật ngữ tu tiên và số liệu; không thêm ý, không giải thích. "
+                            "Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
                         )
                     chats=[
                         qtok.apply_chat_template(
@@ -850,6 +901,9 @@ def main()->None:
     final_invalid=[]
     for s in segments:
         try:
+            translated[s["index"]]=validate_translation_pair(
+                translated[s["index"]],s["text"],field=f"final semantic segment {s['index']}"
+            )
             translated[s["index"]]=validate_segment_fit(
                 translated[s["index"]],s,field=f"final segment {s['index']}"
             )
@@ -896,12 +950,12 @@ def main()->None:
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"hy-mt2-batched-cultivation-dubbing-v3",
+        "translation_mode":"hy-mt2-7b-4bit-source-verified-dubbing-v4",
         "timing_mode":"speech-segment-sync",
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"caption-first-batched-asr-hymt2-batch-qwen-editor-only-cpu-tts-v3",
+        "gpu_efficiency_mode":"caption-first-asr-hymt2-7b-4bit-semantic-guard-qwen-compress-only-cpu-tts-v4",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
@@ -921,6 +975,7 @@ def main()->None:
             "index":s["index"],
             "start":round(float(s["start"]),3),
             "end":round(float(s["end"]),3),
+            "zh":s["text"],
             "vi":s["vi"],
             "max_words":s["max_words"],
             "fit_words":s["fit_words"],
