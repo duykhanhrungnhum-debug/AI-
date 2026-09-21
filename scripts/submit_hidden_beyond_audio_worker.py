@@ -55,45 +55,41 @@ def main() -> None:
         submission_retry_delay_seconds=20,
     )
     mode="gpu"
-    try:
-        s=worker.submit_script(
-            slug=slug,
-            title=f"HB AI {str(job['job_id'])[:8]}",
-            source=source,
-            enable_internet=True,
-            enable_gpu=True,
-            is_private=True,
-        )
-        print("HB_GPU_SUBMITTED",s.ref,s.version_number,flush=True)
-    except Exception as gpu_exc:
-        detail=str(gpu_exc).casefold()
-        capacity_limited=(
-            "maximum batch gpu session count" in detail
-            or "gpu session" in detail and "reached" in detail
-            or "capacity" in detail and "gpu" in detail
-        )
-        if not capacity_limited:
-            message=f"GPU submit failed: {gpu_exc!r}"
-            post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
-            raise
-        mode="cpu"
-        cpu_slug=slug+"-cpu"
-        print("HB_GPU_CAPACITY_FALLBACK_CPU",repr(gpu_exc),flush=True)
+    s=None
+    last_exc=None
+    for attempt in range(1,5):
         try:
             s=worker.submit_script(
-                slug=cpu_slug,
-                title=f"HB CPU {str(job['job_id'])[:8]}",
+                slug=slug,
+                title=f"HB AI {str(job['job_id'])[:8]}",
                 source=source,
                 enable_internet=True,
-                enable_gpu=False,
+                enable_gpu=True,
                 is_private=True,
             )
-            slug=cpu_slug
-            print("HB_CPU_SUBMITTED",s.ref,s.version_number,flush=True)
-        except Exception as cpu_exc:
-            message=f"GPU capacity fallback failed; CPU submit failed: {cpu_exc!r}"
-            post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
-            raise
+            print("HB_GPU_SUBMITTED",s.ref,s.version_number,flush=True)
+            break
+        except Exception as gpu_exc:
+            last_exc=gpu_exc
+            detail=str(gpu_exc).casefold()
+            capacity_limited=(
+                "maximum batch gpu session count" in detail
+                or ("gpu session" in detail and "reached" in detail)
+                or ("capacity" in detail and "gpu" in detail)
+            )
+            if not capacity_limited:
+                message=f"GPU submit failed: {gpu_exc!r}"
+                post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
+                raise
+            if attempt<4:
+                wait=90*attempt
+                print("HB_GPU_CAPACITY_RETRY",attempt,f"wait={wait}s",repr(gpu_exc),flush=True)
+                import time
+                time.sleep(wait)
+    if s is None:
+        message=f"GPU required for quality translation/voice; capacity unavailable after retries: {last_exc!r}"
+        post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
+        raise RuntimeError(message)
 
     Path("gpu-submission.json").write_text(
         json.dumps({"ok":True,"mode":mode,"slug":slug,"ref":s.ref,"version":s.version_number},indent=2)+"\n",
