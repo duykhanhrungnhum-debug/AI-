@@ -52,10 +52,11 @@ STYLE={
     "max_tempo":1.16,
     "min_tempo":0.94,
     "pitch_ratio":1.0,
-    "max_extra_gap":0.18,
+    "max_extra_gap":0.65,
     "words_per_second":3.0,
     "target_segment_seconds":3.2,
     "hard_max_segment_seconds":5.5,
+    "min_pause_between_cues":0.20,
 }
 
 def post(path:str,payload:dict)->dict:
@@ -138,9 +139,8 @@ def vi_word_count(value:str)->int:
     return len(re.findall(r"[A-Za-zÀ-ỹ0-9]+",clean(value)))
 
 def fit_word_limit(segment:dict)->int:
-    slot=max(0.25,float(segment["end"])-float(segment["start"]))
-    usable=slot+float(STYLE.get("max_extra_gap",0.18))
-    return max(2,int(math.ceil(usable*3.2)))
+    slot=max(0.25,float(segment.get("tts_slot") or (float(segment["end"])-float(segment["start"]))))
+    return max(2,int(math.ceil(slot*5.2)))
 
 def validate_segment_fit(text:str,segment:dict,*,field:str)->str:
     value=validate_vi(text,segment["text"],field=field)
@@ -469,7 +469,13 @@ def main()->None:
     for i,s in enumerate(segments,1):
         s["index"]=i
         s["slot"]=max(0.30,float(s["end"])-float(s["start"]))
-        s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
+        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+float(STYLE["max_extra_gap"])+float(STYLE["min_pause_between_cues"])
+        available_end=min(
+            next_start-float(STYLE["min_pause_between_cues"]),
+            float(s["end"])+float(STYLE["max_extra_gap"]),
+        )
+        s["tts_slot"]=max(0.25,available_end-float(s["start"]))
+        s["max_words"]=max(2,int(math.floor(s["tts_slot"]*STYLE["words_per_second"]+0.5)))
         s["fit_words"]=fit_word_limit(s)
     transcript_seconds=round(time.monotonic()-transcript_started,2)
     transcript_last_end=max(float(s["end"]) for s in segments)
