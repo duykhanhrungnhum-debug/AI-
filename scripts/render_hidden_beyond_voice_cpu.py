@@ -50,8 +50,9 @@ def main()->None:
         raise RuntimeError("metadata has no timed_segments")
 
     style=meta.get("style") or {}
-    max_tempo=float(style.get("max_tempo",1.22))
-    max_extra_gap=float(style.get("max_extra_gap",0.24))
+    max_tempo=float(style.get("max_tempo",1.16))
+    max_extra_gap=float(style.get("max_extra_gap",0.65))
+    min_pause_between_cues=float(style.get("min_pause_between_cues",0.20))
     voice_name=str(meta.get("voice_name") or "vi_VN-vais1000-medium")
 
     work=out_path.parent/"cpu-tts"
@@ -94,8 +95,8 @@ def main()->None:
             rawwav=normalized
 
         original=max(0.01,wav_duration(rawwav))
-        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max_extra_gap
-        available_end=min(next_start-0.04,float(s["end"])+max_extra_gap)
+        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max_extra_gap+min_pause_between_cues
+        available_end=min(next_start-min_pause_between_cues,float(s["end"])+max_extra_gap)
         slot=max(0.25,available_end-float(s["start"]))
 
         # Fast path: most Piper lines already fit their cue. Do not spawn ffmpeg
@@ -178,6 +179,8 @@ def main()->None:
     meta["retimed_segments"]=retimed_count
     meta["hard_trim_segments"]=hard_trim_count
     meta["voice_loudness_target_lufs"]=-19.0
+    meta["min_pause_between_cues"]=min_pause_between_cues
+    meta["max_extra_gap"]=max_extra_gap
     meta["voice_bytes"]=out_path.stat().st_size
     meta["voice_sha256"]=sha
     meta["voice_render_device"]="github-actions-cpu"
