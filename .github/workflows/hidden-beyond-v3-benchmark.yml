@@ -67,6 +67,8 @@ jobs:
               "callback_base":start["callback_base"],
               "run_id":start["run_id"],
               "run_token":start["run_token"],
+              "source_audio_url":start["source_audio_url"],
+              "source_audio_path":start.get("source_audio_path",""),
           })
           source=Path("hidden_beyond/benchmark_v3_worker.py").read_text(encoding="utf-8")
           marker="# __BENCH_CONFIG_INJECT__"
