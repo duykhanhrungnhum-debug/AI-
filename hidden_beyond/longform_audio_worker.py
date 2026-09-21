@@ -247,6 +247,25 @@ def main():
             raise last if last is not None else ValueError(f'{label}: JSON parse failed')
 
         translated={}
+        fallback_mt={'tok':None,'model':None}
+
+        def deterministic_mt_fallback(s:dict)->str:
+            if fallback_mt['tok'] is None:
+                heartbeat('translating_retry','Loading deterministic Chinese→Vietnamese MT fallback')
+                fallback_mt['tok']=AutoTokenizer.from_pretrained('Helsinki-NLP/opus-mt-zh-vi')
+                fallback_mt['model']=AutoModelForSeq2SeqLM.from_pretrained(
+                    'Helsinki-NLP/opus-mt-zh-vi',low_cpu_mem_usage=True
+                ).to('cpu')
+                fallback_mt['model'].eval()
+            ftok=fallback_mt['tok']; fmodel=fallback_mt['model']
+            inp=ftok([s['text']],return_tensors='pt',padding=True,truncation=True,max_length=256)
+            with torch.inference_mode():
+                out=fmodel.generate(
+                    **inp,max_new_tokens=128,num_beams=4,
+                    repetition_penalty=1.08,no_repeat_ngram_size=3
+                )
+            vi=clean(ftok.batch_decode(out,skip_special_tokens=True)[0]).strip('"“” ')
+            return validate_vi(vi,s['text'],field=f'deterministic fallback segment {s["index"]}')
 
         def translate_block(block:list[dict]):
             first=block[0]['index']; last=block[-1]['index']
@@ -301,9 +320,27 @@ def main():
                     f'Tối đa {s["max_words"]+2} từ. Chỉ trả về câu tiếng Việt, không JSON, không giải thích.\n'
                     +s['text']
                 )
-                vi=clean(qwen(plain_prompt,max_new=120)).strip('"“” ')
-                translated[s['index']]=validate_vi(vi,s['text'],field=f'plain fallback segment {s["index"]}')
-                heartbeat('translating_retry',f'Segment {s["index"]} recovered with plain-text fallback')
+                recovered=None
+                last_plain_error=None
+                for plain_attempt in range(1,3):
+                    try:
+                        vi=clean(qwen(
+                            plain_prompt+
+                            f'\nLần thử {plain_attempt}: BẮT BUỘC chỉ dùng tiếng Việt Latin; tuyệt đối không chép lại tiếng Trung.',
+                            max_new=120
+                        )).strip('"“” ')
+                        recovered=validate_vi(vi,s['text'],field=f'plain fallback segment {s["index"]}')
+                        break
+                    except Exception as plain_exc:
+                        last_plain_error=plain_exc
+                        heartbeat('translating_retry',
+                                  f'Segment {s["index"]} plain fallback {plain_attempt}/2 failed; retrying')
+                if recovered is None:
+                    heartbeat('translating_retry',
+                              f'Segment {s["index"]} switching to deterministic MT fallback')
+                    recovered=deterministic_mt_fallback(s)
+                translated[s['index']]=recovered
+                heartbeat('translating_retry',f'Segment {s["index"]} recovered without stopping episode')
 
         chunk_size=10
         for start in range(0,len(segments),chunk_size):
