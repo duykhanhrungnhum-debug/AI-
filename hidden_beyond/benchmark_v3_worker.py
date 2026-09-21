@@ -591,17 +591,24 @@ def main()->None:
         gc.collect(); torch.cuda.empty_cache()
 
     fallback_reviewed=0
-    if unresolved:
-        unresolved_set=set(unresolved)
-        fallback_items=[s for s in segments if s["index"] in unresolved_set]
-        beat("translation_fallback",f"OPUS fallback for {len(fallback_items)} unresolved segments")
+    unresolved_set=set(unresolved)
+    content_fallback=[]
+    for s in segments:
+        if s["index"] not in unresolved_set:
+            continue
+        try:
+            validate(translated.get(s["index"],""),s["text"])
+        except Exception:
+            content_fallback.append(s)
+    if content_fallback:
+        beat("translation_fallback",f"OPUS fallback for {len(content_fallback)} content-invalid segments")
         oname="Helsinki-NLP/opus-mt-zh-vi"
         otok=AutoTokenizer.from_pretrained(oname)
         omodel=AutoModelForSeq2SeqLM.from_pretrained(oname).to("cpu")
         omodel.eval()
         with torch.inference_mode():
-            for off in range(0,len(fallback_items),8):
-                batch=fallback_items[off:off+8]
+            for off in range(0,len(content_fallback),8):
+                batch=content_fallback[off:off+8]
                 inp=otok([s["text"] for s in batch],return_tensors="pt",padding=True,truncation=True,max_length=192)
                 out=omodel.generate(**inp,max_new_tokens=96,num_beams=2,repetition_penalty=1.05)
                 vis=otok.batch_decode(out,skip_special_tokens=True)
@@ -614,9 +621,13 @@ def main()->None:
     final_invalid=[]
     for s in segments:
         try:
-            translated[s["index"]]=validate_segment(translated.get(s["index"],""),s)
+            translated[s["index"]]=validate(translated.get(s["index"],""),s["text"])
         except Exception:
             final_invalid.append(s["index"])
+    estimated_overlong_after_review=sum(
+        1 for s in segments
+        if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
+    )
 
     inference_seconds=time.monotonic()-inference_started
     translation_seconds=time.monotonic()-translation_started
@@ -652,6 +663,7 @@ def main()->None:
         "qwen_reviewed_segments":qwen_reviewed,
         "unresolved_after_qwen":len(unresolved),
         "fallback_reviewed_segments":fallback_reviewed,
+        "estimated_overlong_after_review":estimated_overlong_after_review,
         "invalid_ids":invalid[:50],
         "gpu":torch.cuda.get_device_name(0),
         "gpu_benchmark_seconds":round(time.monotonic()-total_started,2),
