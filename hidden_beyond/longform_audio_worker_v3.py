@@ -779,22 +779,59 @@ def main()->None:
                     f"Compression round {repair_round+1}: unresolved={len(unresolved)}",
                 )
 
+            if unresolved:
+                heartbeat(
+                    "translating_fast_path",
+                    f"{len(unresolved)} unresolved fit/content segments; deterministic MT fallback",
+                )
+                translated.update(opus_translate(unresolved,on_device="cpu"))
+
+                # One final editor pass over deterministic MT output. This is
+                # intentionally bounded to only the few stubborn cues, so it
+                # does not turn Qwen back into the bulk translator.
+                still_unresolved=[]
+                with torch.inference_mode():
+                    for off in range(0,len(unresolved),8):
+                        batch=unresolved[off:off+8]
+                        prompts=[]
+                        for s in batch:
+                            current=clean(translated.get(s["index"],""))
+                            prompts.append(
+                                f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
+                                "Giữ đúng ý chính, tên riêng và số liệu; không thêm ý, không giải thích. "
+                                "Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
+                            )
+                        chats=[
+                            qtok.apply_chat_template(
+                                [{"role":"user","content":p}],
+                                tokenize=False,add_generation_prompt=True,
+                            ) for p in prompts
+                        ]
+                        inp=qtok(chats,return_tensors="pt",padding=True,truncation=True,max_length=256)
+                        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+                        out=qmodel.generate(
+                            **inp,max_new_tokens=48,do_sample=False,repetition_penalty=1.08,
+                            pad_token_id=qtok.pad_token_id,eos_token_id=qtok.eos_token_id,
+                        )
+                        gen=out[:,inp["input_ids"].shape[1]:]
+                        vis=qtok.batch_decode(gen,skip_special_tokens=True)
+                        for s,vi in zip(batch,vis,strict=True):
+                            try:
+                                translated[s["index"]]=validate_segment_fit(
+                                    vi,s,field=f"final editor segment {s['index']}"
+                                )
+                                qwen_reviewed+=1
+                            except Exception:
+                                still_unresolved.append(s)
+                unresolved=still_unresolved
+                heartbeat(
+                    "translation_review",
+                    f"Final deterministic repair unresolved={len(unresolved)}",
+                )
+
             del qmodel,qtok
             gc.collect()
             torch.cuda.empty_cache()
-            if unresolved:
-                content_fallback=[]
-                for s in unresolved:
-                    try:
-                        validate_vi(translated.get(s["index"],""),s["text"],field=f"pre-TTS segment {s['index']}")
-                    except Exception:
-                        content_fallback.append(s)
-                if content_fallback:
-                    heartbeat(
-                        "translating_fast_path",
-                        f"{len(content_fallback)} content failures; deterministic MT fallback",
-                    )
-                    translated.update(opus_translate(content_fallback,on_device="cpu"))
     else:
         primary_model="Helsinki-NLP/opus-mt-zh-vi"
         translated.update(opus_translate(segments,on_device="cpu"))
