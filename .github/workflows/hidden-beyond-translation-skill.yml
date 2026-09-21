@@ -54,3 +54,33 @@ jobs:
         run: |
           set -Eeuo pipefail
           python scripts/submit_hidden_beyond_translation_skill.py
+
+      - name: Wait for verified translation result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RUN_ID="$(cat bench-run-id.txt)"
+          for i in $(seq 1 60); do
+            OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-v3-benchmark" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg run_id "$RUN_ID" '{run_id:$run_id}' > bench-status-body.json
+            curl --fail-with-body -sS -X POST "$BENCH_API/status" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @bench-status-body.json > bench-status.json
+            STATE="$(jq -r '.run.state' bench-status.json)"
+            STAGE="$(jq -r '.run.stage' bench-status.json)"
+            MSG="$(jq -r '.run.message // ""' bench-status.json)"
+            echo "TRANSLATION_SKILL_PROGRESS poll=$i state=$STATE stage=$STAGE message=$MSG"
+            if [ "$STATE" = "completed" ]; then
+              jq '.run.benchmark_report' bench-status.json > translation-report.json
+              test "$(jq -r '.ok' translation-report.json)" = "true"
+              test "$(jq -r '.failed' translation-report.json)" = "0"
+              jq . translation-report.json
+              echo "TRANSLATION_SKILL_VERIFIED"
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ]; then
+              echo "::error title=Translation skill benchmark failed::$MSG"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error title=Translation skill benchmark timeout::No callback within 20 minutes."
+          exit 1
