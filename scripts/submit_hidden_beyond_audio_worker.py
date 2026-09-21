@@ -54,6 +54,7 @@ def main() -> None:
         submission_retry_attempts=3,
         submission_retry_delay_seconds=20,
     )
+    mode="gpu"
     try:
         s=worker.submit_script(
             slug=slug,
@@ -64,14 +65,40 @@ def main() -> None:
             is_private=True,
         )
         print("HB_GPU_SUBMITTED",s.ref,s.version_number,flush=True)
-        Path("gpu-submission.json").write_text(
-            json.dumps({"ok":True,"slug":slug,"ref":s.ref,"version":s.version_number},indent=2)+"\n",
-            encoding="utf-8",
+    except Exception as gpu_exc:
+        detail=str(gpu_exc).casefold()
+        capacity_limited=(
+            "maximum batch gpu session count" in detail
+            or "gpu session" in detail and "reached" in detail
+            or "capacity" in detail and "gpu" in detail
         )
-    except Exception as exc:
-        message=f"GPU submit failed: {exc!r}"
-        post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
-        raise
+        if not capacity_limited:
+            message=f"GPU submit failed: {gpu_exc!r}"
+            post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
+            raise
+        mode="cpu"
+        cpu_slug=slug+"-cpu"
+        print("HB_GPU_CAPACITY_FALLBACK_CPU",repr(gpu_exc),flush=True)
+        try:
+            s=worker.submit_script(
+                slug=cpu_slug,
+                title=f"HB CPU {str(job['job_id'])[:8]}",
+                source=source,
+                enable_internet=True,
+                enable_gpu=False,
+                is_private=True,
+            )
+            slug=cpu_slug
+            print("HB_CPU_SUBMITTED",s.ref,s.version_number,flush=True)
+        except Exception as cpu_exc:
+            message=f"GPU capacity fallback failed; CPU submit failed: {cpu_exc!r}"
+            post_fail(job["callback_base"],job["job_id"],job["job_token"],message)
+            raise
+
+    Path("gpu-submission.json").write_text(
+        json.dumps({"ok":True,"mode":mode,"slug":slug,"ref":s.ref,"version":s.version_number},indent=2)+"\n",
+        encoding="utf-8",
+    )
 
 
 if __name__=="__main__":
