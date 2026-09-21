@@ -2,9 +2,9 @@
   "source_run_id": 35534394730,
   "series_id": 2,
   "source_video_id": "vaY4URFw0cg",
-  "purpose": "episode1_final_deterministic_repair",
+  "purpose": "episode1_rerun_after_ai_translation_skill_upgrade",
   "stop_after_first_upload": true,
-  "nonce": "2026-09-21-episode1-final-3",
+  "nonce": "2026-09-21-episode1-v4-translation-upgrade",
   "force_reprocess": true,
-  "version_label": "V3"
+  "version_label": "V4"
 }
