@@ -1,0 +1,6 @@
+{
+  "nonce": "2026-09-21-translation-skill-v1",
+  "purpose": "verify_chinese_vietnamese_accuracy_before_episode1_rerun",
+  "model": "tencent/Hy-MT2-7B",
+  "cases": 15
+}
