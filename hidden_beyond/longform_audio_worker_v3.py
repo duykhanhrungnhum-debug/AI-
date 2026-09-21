@@ -144,6 +144,10 @@ META_HALLUCINATION_VI=(
     "quay phim","quá trình quay",
 )
 META_SOURCE_ZH=("版权","著作权","拍摄","摄制","剧组","影片","电影","政策","请求","要求")
+NEGATION_ZH=("不","没","沒有","没有","未","無","无","别","別","莫")
+NEGATION_VI=("không","chẳng","chưa","đừng","khỏi","không có","chớ")
+QUESTION_ZH=("吗","嗎","呢","？","?")
+QUESTION_VI=("không","à","ư","sao","gì","nào","chứ","?")
 
 def validate_translation_pair(text:str,source:str,*,field:str)->str:
     value=validate_vi(text,source,field=field)
@@ -157,6 +161,10 @@ def validate_translation_pair(text:str,source:str,*,field:str)->str:
     if not any(term in source for term in META_SOURCE_ZH):
         if any(term in low for term in META_HALLUCINATION_VI):
             raise ValueError(f"{field} meta hallucination")
+    if any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI):
+        raise ValueError(f"{field} lost negation")
+    if any(term in source for term in QUESTION_ZH) and not any(term in low for term in QUESTION_VI):
+        raise ValueError(f"{field} lost question intent")
     for zh,vi in FANTASY_GLOSSARY.items():
         if zh in source and vi.casefold() not in low:
             raise ValueError(f"{field} missing glossary {zh}")
@@ -584,15 +592,24 @@ def main()->None:
             terms=glossary_pairs(s["text"])
             term_text=""
             if terms:
-                term_text="参考下面的翻译：\n"+"\n".join(f"{zh} 翻译成 {vi}" for zh,vi in terms)+"\n\n"
-            prev=by_index.get(s["index"]-1,{}).get("text","")
-            nxt=by_index.get(s["index"]+1,{}).get("text","")
-            background=clean(prev+" "+nxt)
+                term_text="参考下面的固定术语翻译：\n"+"\n".join(f"{zh} 翻译成 {vi}" for zh,vi in terms)+"\n\n"
+            idx=s["index"]
+            context_parts=[]
+            for j in (idx-2,idx-1,idx+1,idx+2):
+                if j in by_index:
+                    context_parts.append(by_index[j].get("text",""))
+            background=clean(" ".join(context_parts))
             return (
                 term_text+
                 "〖背景信息〗\n"+background+"\n"
-                "请结合背景信息将以下文本翻译为越南语。只输出待翻译文本的越南语译文，不要解释，不要翻译背景信息。\n"
-                "〖待翻译文本〗\n"+s["text"]
+                "〖翻译要求〗\n"
+                "1. 忠实传达原意，不得添加原文没有的信息，不得遗漏关键含义。\n"
+                "2. 先保证准确，再保证越南语自然；不得改变人物关系、否定、数字、疑问或情绪强度。\n"
+                "3. 人物称呼、专有名词、修仙境界、功法和术语必须前后一致。\n"
+                "4. 使用自然、专业、适合仙侠影视对白的越南语；不要逐字硬译。\n"
+                "5. 只输出待翻译文本的越南语译文，不要解释、注释、免责声明或元话语。\n"
+                "〖待翻译文本〗\n"+s["text"]+"\n"
+                "请结合背景信息将待翻译文本准确翻译为越南语。"
             )
 
 
@@ -960,12 +977,14 @@ def main()->None:
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"hy-mt2-7b-4bit-source-verified-dubbing-v4",
+        "translation_mode":"professional-hymt2-7b-context-terminology-semantic-qa-v5",
         "timing_mode":"speech-segment-sync",
+        "translation_quality_profile":"professional-v1",
+        "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"caption-first-asr-hymt2-7b-4bit-semantic-guard-qwen-compress-only-cpu-tts-v4",
+        "gpu_efficiency_mode":"caption-first-asr-hymt2-7b-professional-brief-semantic-guard-qwen-compress-only-cpu-tts-v5",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
