@@ -316,13 +316,28 @@ def main()->None:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     url=BENCH["source_url"]
-    beat("source_probe","Checking source captions before ASR")
+    source_audio_url=str(BENCH.get("source_audio_url") or "").strip()
+    if not source_audio_url:
+        raise RuntimeError("staged source audio URL missing")
+
+    beat("source_probe","Checking source captions; staged audio is ready as fallback")
     probe_started=time.monotonic()
-    meta=json.loads(subprocess.check_output(
-        [sys.executable,"-m","yt_dlp","--no-playlist","--skip-download","--dump-single-json",url],
-        text=True,timeout=120,
-    ))
-    caption=get_caption(meta)
+    meta={}
+    caption=None
+    try:
+        probe=subprocess.run(
+            [sys.executable,"-m","yt_dlp","--no-playlist","--skip-download","--dump-single-json",url],
+            text=True,capture_output=True,timeout=45
+        )
+        if probe.returncode==0 and probe.stdout.strip():
+            meta=json.loads(probe.stdout)
+            caption=get_caption(meta)
+        else:
+            msg=clean((probe.stderr or probe.stdout or "")[-500:])
+            print("BENCH_CAPTION_PROBE_FALLBACK",msg,flush=True)
+    except Exception as exc:
+        print("BENCH_CAPTION_PROBE_FALLBACK",repr(exc),flush=True)
+
     source_duration_seconds=float(meta.get("duration") or 0)
     source_probe_seconds=time.monotonic()-probe_started
 
@@ -336,12 +351,10 @@ def main()->None:
         asr_word_count=0
     else:
         fetch_started=time.monotonic()
-        run([
-            sys.executable,"-m","yt_dlp","--no-playlist",
-            "--retries","5","--fragment-retries","5",
-            "-x","--audio-format","mp3","--audio-quality","64K",
-            "-o",str(AUDIO),url,
-        ])
+        beat("fetching_input","Caption unavailable; downloading staged source audio")
+        download(source_audio_url,AUDIO)
+        if AUDIO.stat().st_size<100000:
+            raise RuntimeError("staged source audio is unexpectedly small")
         source_fetch_seconds=source_probe_seconds+(time.monotonic()-fetch_started)
         asr_model="large-v3-turbo"
         whisper=WhisperModel(asr_model,device="cuda",compute_type="float16")
