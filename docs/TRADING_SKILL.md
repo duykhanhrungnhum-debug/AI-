@@ -75,6 +75,20 @@ rejected events with an explicit reason such as retrieved-after-cutoff or
 published-after-cutoff. This prevents future information from silently leaking
 into later event/price studies and backtests.
 
+## Historical WTI/Brent price evidence
+
+The worker retrieves daily WTI (DCOILWTICO) and Brent (DCOILBRENTEU) spot-price
+history from FRED. These series are sourced from the U.S. Energy Information
+Administration. Each artifact preserves the FRED series ID, source URL,
+retrieval timestamp, content hash, first/last observation date, and normalized
+USD-per-barrel observations.
+
+This stage proves auditable historical-price ingestion only. It does not yet
+prove event-to-price linkage, backtest validity, or trading profitability.
+Historical datasets are retained with retrieval provenance because later work
+must account for revisions/vintages before claiming strict historical as-of
+reproducibility.
+
 ## Current boundary
 
 A VERIFIED v1 cycle proves that the research/evidence collector operated and
