@@ -172,13 +172,23 @@ jobs:
           curl --fail-with-body -sS -X POST "$LONGFORM_API/result"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @result-body.json > result.json
           test "$(jq -r '.stage' result.json)" = "ai_ready"
           mkdir -p ai-output
-          curl -fL --retry 3 "$(jq -r '.voice_audio_url' result.json)" -o ai-output/voice.mp3
           curl -fL --retry 3 "$(jq -r '.subtitle_url' result.json)" -o ai-output/vi.srt
           curl -fL --retry 3 "$(jq -r '.metadata_url' result.json)" -o ai-output/metadata.json
-          test -s ai-output/voice.mp3
           test -s ai-output/vi.srt
           test -s ai-output/metadata.json
           jq . ai-output/metadata.json
+
+      - name: Render Vietnamese voice on CPU
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "render_voice_cpu" > orchestrator-stage.txt
+          python -m pip install --quiet "piper-tts>=1.3,<2" numpy
+          python scripts/render_hidden_beyond_voice_cpu.py               --metadata ai-output/metadata.json               --output ai-output/voice.mp3
+          test -s ai-output/voice.mp3
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 ai-output/voice.mp3 | grep -q audio
+          echo "CPU_VOICE_READY bytes=$(stat -c%s ai-output/voice.mp3)"
+          jq '.gpu_efficiency_mode,.voice_render_device,.gpu_translation_seconds,.voice_render_seconds' ai-output/metadata.json
 
       - name: Mux Vietnamese voice with original video
         shell: bash
