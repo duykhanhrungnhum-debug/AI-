@@ -17,6 +17,12 @@ jobs:
           python-version: '3.11'
       - name: Install package and test dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Compile Hidden Beyond longform workers
+        run: >-
+          python -m py_compile
+          hidden_beyond/longform_audio_worker.py
+          scripts/submit_hidden_beyond_audio_worker.py
+          scripts/render_hidden_beyond_voice_cpu.py
       - name: Run test suite
         run: python -m pytest -q
       - name: Smoke test public Internet retrieval and verification
