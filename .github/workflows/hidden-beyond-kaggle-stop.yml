@@ -26,6 +26,18 @@ jobs:
         run: |
           set -Eeuo pipefail
           python -m pip install --quiet --upgrade kaggle
+          mkdir -p "$HOME/.kaggle"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          token=os.environ["KAGGLE_API_TOKEN"].strip()
+          if not token:
+              raise SystemExit("KAGGLE_API_TOKEN is empty after stripping whitespace")
+          p=Path.home()/".kaggle"/"access_token"
+          p.write_text(token,encoding="utf-8")
+          p.chmod(0o600)
+          PY
+          unset KAGGLE_API_TOKEN
           REF="$(jq -r '.kernel_ref' hidden_beyond/kaggle-stop.json)"
           test -n "$REF" && test "$REF" != "null"
           kaggle kernels delete "$REF" --yes
