@@ -106,6 +106,21 @@ def validate(text:str,source:str)->str:
             raise ValueError("lost_number")
     return value
 
+def vi_word_count(value:str)->int:
+    return len(re.findall(r"[A-Za-zÀ-ỹ0-9]+",clean(value)))
+
+def fit_word_limit(segment:dict)->int:
+    slot=max(0.25,float(segment["end"])-float(segment["start"]))
+    usable=slot+float(STYLE.get("max_extra_gap",0.18))
+    return max(2,int(math.ceil(usable*3.6)))
+
+def validate_segment(text:str,segment:dict)->str:
+    value=validate(text,segment["text"])
+    limit=int(segment.get("fit_words") or fit_word_limit(segment))
+    if vi_word_count(value)>limit:
+        raise ValueError("too_long_for_slot")
+    return value
+
 def _join_text(parts:list[str])->str:
     raw="".join(str(x) for x in parts)
     # Preserve natural Latin spacing while keeping Chinese compact.
@@ -341,7 +356,7 @@ def main()->None:
 
     import torch
     from faster_whisper import BatchedInferencePipeline, WhisperModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
     url=BENCH["source_url"]
     source_audio_url=str(BENCH.get("source_audio_url") or "").strip()
@@ -405,6 +420,7 @@ def main()->None:
         s["index"]=i
         s["slot"]=max(0.3,s["end"]-s["start"])
         s["max_words"]=max(2,int(math.floor(s["slot"]*STYLE["words_per_second"]+0.5)))
+        s["fit_words"]=fit_word_limit(s)
     transcript_seconds=time.monotonic()-transcript_started
     transcript_last_end=max(float(s["end"]) for s in segments)
     transcript_coverage_pct=(transcript_last_end*100.0/transcript_media_duration) if transcript_media_duration>0 else 0.0
@@ -511,10 +527,18 @@ def main()->None:
             )
 
     primary_invalid_count=len(invalid)
+    overlong_primary=[
+        s["index"] for s in segments
+        if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
+    ]
+    review_ids=sorted(set(invalid)|set(overlong_primary))
     qwen_reviewed=0
     unresolved=[]
-    if invalid:
-        beat("translation_review",f"Hy-MT2 flagged {len(invalid)} segments; bounded Qwen editor")
+    if review_ids:
+        beat(
+            "translation_review",
+            f"Reviewing {len(review_ids)} segments: invalid={len(invalid)} overlong={len(overlong_primary)}"
+        )
         editor_name="Qwen/Qwen2.5-1.5B-Instruct"
         qtok=AutoTokenizer.from_pretrained(editor_name)
         qtok.padding_side="left"
@@ -524,8 +548,8 @@ def main()->None:
             editor_name,torch_dtype=torch.float16,low_cpu_mem_usage=True
         ).to("cuda")
         qmodel.eval()
-        invalid_set=set(invalid)
-        review_items=[s for s in segments if s["index"] in invalid_set]
+        review_set=set(review_ids)
+        review_items=[s for s in segments if s["index"] in review_set]
         with torch.inference_mode():
             for off in range(0,len(review_items),8):
                 batch=review_items[off:off+8]
@@ -536,6 +560,7 @@ def main()->None:
                     prompts.append(
                         "Dịch TARGET từ tiếng Trung sang tiếng Việt tự nhiên để lồng tiếng phim tiên hiệp. "
                         "Ngữ cảnh chỉ để hiểu, không được dịch vào câu trả lời. Không để chữ Hán, không giải thích. "
+                        f"Viết gọn, tự nhiên, tối đa {s['fit_words']} từ để khớp thời lượng. "
                         f"NGỮ CẢNH: {prev} {nxt}\nTARGET: {s['text']}"
                     )
                 chats=[
@@ -553,17 +578,38 @@ def main()->None:
                 vis=qtok.batch_decode(gen,skip_special_tokens=True)
                 for s,vi in zip(batch,vis,strict=True):
                     try:
-                        translated[s["index"]]=validate(vi,s["text"])
+                        translated[s["index"]]=validate_segment(vi,s)
                         qwen_reviewed+=1
                     except Exception:
                         unresolved.append(s["index"])
         del qmodel,qtok
         gc.collect(); torch.cuda.empty_cache()
 
+    fallback_reviewed=0
+    if unresolved:
+        unresolved_set=set(unresolved)
+        fallback_items=[s for s in segments if s["index"] in unresolved_set]
+        beat("translation_fallback",f"OPUS fallback for {len(fallback_items)} unresolved segments")
+        oname="Helsinki-NLP/opus-mt-zh-vi"
+        otok=AutoTokenizer.from_pretrained(oname)
+        omodel=AutoModelForSeq2SeqLM.from_pretrained(oname).to("cpu")
+        omodel.eval()
+        with torch.inference_mode():
+            for off in range(0,len(fallback_items),8):
+                batch=fallback_items[off:off+8]
+                inp=otok([s["text"] for s in batch],return_tensors="pt",padding=True,truncation=True,max_length=192)
+                out=omodel.generate(**inp,max_new_tokens=96,num_beams=2,repetition_penalty=1.05)
+                vis=otok.batch_decode(out,skip_special_tokens=True)
+                for s,vi in zip(batch,vis,strict=True):
+                    translated[s["index"]]=clean(vi)
+                    fallback_reviewed+=1
+        del omodel,otok
+        gc.collect()
+
     final_invalid=[]
     for s in segments:
         try:
-            translated[s["index"]]=validate(translated.get(s["index"],""),s["text"])
+            translated[s["index"]]=validate_segment(translated.get(s["index"],""),s)
         except Exception:
             final_invalid.append(s["index"])
 
@@ -596,8 +642,11 @@ def main()->None:
         "translation_seconds":round(translation_seconds,2),
         "invalid_segments":len(invalid),
         "primary_invalid_segments":primary_invalid_count,
+        "primary_overlong_segments":len(overlong_primary),
+        "review_segments":len(review_ids),
         "qwen_reviewed_segments":qwen_reviewed,
         "unresolved_after_qwen":len(unresolved),
+        "fallback_reviewed_segments":fallback_reviewed,
         "invalid_ids":invalid[:50],
         "gpu":torch.cuda.get_device_name(0),
         "gpu_benchmark_seconds":round(time.monotonic()-total_started,2),
