@@ -121,7 +121,7 @@ jobs:
           echo "upload_input_audio" > orchestrator-stage.txt
           URL="$(jq -r '.input_audio_upload_url' start.json)"
           test -n "$URL" && test "$URL" != "null"
-          curl --fail-with-body -sS -X PUT "$URL"             -H "content-type: audio/mpeg"             -H "x-upsert: true"             --data-binary @source-audio.mp3 > input-upload.json
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS -X PUT "$URL"             -H "content-type: audio/mpeg"             -H "x-upsert: true"             --data-binary @source-audio.mp3 > input-upload.json
           echo "AI_INPUT_UPLOADED"
 
       - name: Submit GPU AI worker
@@ -153,7 +153,26 @@ jobs:
               exit 0
             fi
             if [ "$STATE" = "failed" ] || [ "$STATE" = "stalled" ]; then
-              echo "::error title=Hidden Beyond AI stopped::$STATE / $STAGE / $MSG"
+              jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > supervisor-body.json
+              curl --fail-with-body -sS -X POST "$LONGFORM_API/supervisor-decision"                 -H "Authorization: Bearer $OIDC"                 -H "content-type: application/json"                 --data-binary @supervisor-body.json > supervisor-decision.json
+              RETRYABLE="$(jq -r '.retryable // false' supervisor-decision.json)"
+              ACTION="$(jq -r '.job.recovery_action // ""' supervisor-decision.json)"
+              CODE="$(jq -r '.job.recovery_code // ""' supervisor-decision.json)"
+              ATTEMPTS="$(jq -r '.job.recovery_attempts // 0' supervisor-decision.json)"
+              MAX_ATTEMPTS="$(jq -r '.job.max_recovery_attempts // 0' supervisor-decision.json)"
+              echo "SUPERVISOR_DECISION retryable=$RETRYABLE action=$ACTION code=$CODE attempts=$ATTEMPTS/$MAX_ATTEMPTS"
+              if [ "$RETRYABLE" = "true" ] && [ "$ACTION" = "retry_worker" ]; then
+                curl --fail-with-body -sS -X POST "$LONGFORM_API/recover"                   -H "Authorization: Bearer $OIDC"                   -H "content-type: application/json"                   --data-binary @supervisor-body.json > supervisor-recover.json
+                cat supervisor-recover.json
+                echo "SUPERVISOR_RECOVERY_START code=$CODE"
+                rm -f gpu-submission.json
+                python scripts/submit_hidden_beyond_audio_worker.py --start start.json
+                test -s gpu-submission.json
+                echo "SUPERVISOR_WORKER_RESUBMITTED $(jq -r '.ref' gpu-submission.json)"
+                sleep 10
+                continue
+              fi
+              echo "::error title=Hidden Beyond AI stopped::$STATE / $STAGE / $MSG / supervisor=$CODE:$ACTION"
               exit 1
             fi
             sleep 30
@@ -238,7 +257,7 @@ jobs:
           echo "youtube_upload" > orchestrator-stage.txt
           URL="$(jq -r '.youtube_upload_url' result.json)"
           test -n "$URL" && test "$URL" != "null"
-          curl --fail-with-body -sS -X PUT "$URL"             -H "content-type: video/mp4"             --data-binary @final.mp4 > youtube-upload.json
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 3 -sS -X PUT "$URL"             -H "content-type: video/mp4"             --data-binary @final.mp4 > youtube-upload.json
           cat youtube-upload.json
           VIDEO_ID="$(jq -r '.id' youtube-upload.json)"
           test -n "$VIDEO_ID" && test "$VIDEO_ID" != "null"
@@ -354,5 +373,7 @@ jobs:
             video-status.json
             complete.json
             orchestrator-stage.txt
+            supervisor-decision.json
+            supervisor-recover.json
           if-no-files-found: warn
           retention-days: 7
