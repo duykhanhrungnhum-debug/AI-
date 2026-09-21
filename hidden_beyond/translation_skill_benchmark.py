@@ -8,6 +8,26 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.request import Request, urlopen
+
+# __BENCH_CONFIG_INJECT__
+
+def post(path:str,payload:dict)->dict:
+    data=json.dumps(payload,ensure_ascii=False).encode()
+    req=Request(
+        BENCH["callback_base"].rstrip("/")+path,
+        data=data,
+        headers={"content-type":"application/json","x-benchmark-token":BENCH["run_token"]},
+        method="POST",
+    )
+    with urlopen(req,timeout=120) as r:
+        return json.loads(r.read().decode())
+
+def beat(stage:str,message:str)->None:
+    try:
+        post("/heartbeat",{"run_id":BENCH["run_id"],"stage":stage,"message":message})
+    except Exception as exc:
+        print("TRANSLATION_BENCH_HEARTBEAT_ERROR",repr(exc),flush=True)
 
 CASES=[
     {"source":"看不懂","must_any":["không hiểu","đọc không hiểu"],"forbid":["bản quyền","yêu cầu","đội phim","quay phim"]},
@@ -57,6 +77,7 @@ def validate(case:dict,out:str)->list[str]:
     return reasons
 
 def main():
+    beat("installing","Installing translation benchmark runtime")
     subprocess.run([
         sys.executable,"-m","pip","install","--quiet",
         "transformers>=5.6,<6","accelerate<2","bitsandbytes>=0.45,<1","sentencepiece"
@@ -67,6 +88,7 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA GPU required")
     model_name="tencent/Hy-MT2-7B"
+    beat("loading_model",f"Loading {model_name} in 4-bit")
     tok=AutoTokenizer.from_pretrained(model_name,trust_remote_code=True)
     tok.padding_side="left"
     if tok.pad_token_id is None:
@@ -86,6 +108,7 @@ def main():
     load_seconds=time.monotonic()-started
 
     rows=[]
+    beat("translating",f"Running {len(CASES)} focused Chinese-Vietnamese regression cases")
     with torch.inference_mode():
         for off in range(0,len(CASES),4):
             batch=CASES[off:off+4]
@@ -129,7 +152,20 @@ def main():
     print("TRANSLATION_SKILL_REPORT",json.dumps({k:v for k,v in report.items() if k!="rows"},ensure_ascii=False),flush=True)
     if failed:
         raise RuntimeError("translation regression failed: "+",".join(x["source"] for x in failed))
+    post("/complete",{
+        "run_id":BENCH["run_id"],
+        "report":report,
+        "metadata":{"model":model_name,"cases":len(rows),"passed":len(rows),"failed":len(failed)}
+    })
     print("TRANSLATION_SKILL_VERIFIED",flush=True)
 
 if __name__=="__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print("TRANSLATION_SKILL_FAIL",repr(exc),flush=True)
+        try:
+            post("/fail",{"run_id":BENCH["run_id"],"error":repr(exc)})
+        except Exception as fail_exc:
+            print("TRANSLATION_SKILL_FAIL_REPORT_ERROR",repr(fail_exc),flush=True)
+        raise
