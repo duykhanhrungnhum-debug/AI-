@@ -1,4 +1,4 @@
-from ai_agent.core.trading_prices import parse_fred_price_csv, price_history_summary
+from ai_agent.core.trading_prices import parse_fred_price_csv, parse_fred_price_table, price_history_summary
 
 
 def test_parse_fred_price_csv_accepts_observation_date_and_skips_missing():
@@ -43,3 +43,17 @@ def test_price_history_summary_rejects_missing_asset():
         }
     })
     assert summary["verified"] is False
+
+
+def test_parse_fred_price_table_extracts_daily_rows():
+    html = """<html><table>
+    <tr><th>DATE</th><th>VALUE</th></tr>
+    <tr><td>2026-09-01</td><td>100.50</td></tr>
+    <tr><td>2026-09-02</td><td>.</td></tr>
+    <tr><td>2026-09-03</td><td>101.25</td></tr>
+    </table></html>"""
+    rows = parse_fred_price_table(html)
+    assert rows == [
+        {"date": "2026-09-01", "usd_per_barrel": 100.5},
+        {"date": "2026-09-03", "usd_per_barrel": 101.25},
+    ]
