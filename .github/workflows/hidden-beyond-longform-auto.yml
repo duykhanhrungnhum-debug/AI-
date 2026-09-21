@@ -191,8 +191,14 @@ jobs:
           curl --fail-with-body -sS -X POST "$LONGFORM_API/result"             -H "Authorization: Bearer $OIDC"             -H "content-type: application/json"             --data-binary @result-body.json > result.json
           test "$(jq -r '.stage' result.json)" = "ai_ready"
           mkdir -p ai-output
-          curl -fL --retry 3 "$(jq -r '.subtitle_url' result.json)" -o ai-output/vi.srt
-          curl -fL --retry 3 "$(jq -r '.metadata_url' result.json)" -o ai-output/metadata.json
+          jq -n --arg job_id "$JOB_ID" --arg kind "subtitle" '{job_id:$job_id,kind:$kind}' > artifact-subtitle.json
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS -X POST "$LONGFORM_API/artifact" \
+            -H "Authorization: Bearer $OIDC" -H "content-type: application/json" \
+            --data-binary @artifact-subtitle.json -o ai-output/vi.srt
+          jq -n --arg job_id "$JOB_ID" --arg kind "metadata" '{job_id:$job_id,kind:$kind}' > artifact-metadata.json
+          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS -X POST "$LONGFORM_API/artifact" \
+            -H "Authorization: Bearer $OIDC" -H "content-type: application/json" \
+            --data-binary @artifact-metadata.json -o ai-output/metadata.json
           test -s ai-output/vi.srt
           test -s ai-output/metadata.json
           jq . ai-output/metadata.json
