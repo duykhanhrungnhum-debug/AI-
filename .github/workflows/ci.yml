@@ -22,6 +22,7 @@ jobs:
           python -m py_compile
           hidden_beyond/longform_audio_worker.py
           hidden_beyond/longform_audio_worker_v3.py
+          hidden_beyond/benchmark_v3_worker.py
           scripts/submit_hidden_beyond_audio_worker.py
           scripts/render_hidden_beyond_voice_cpu.py
       - name: Run test suite
