@@ -264,8 +264,18 @@ jobs:
             JOB_ID="$(jq -r '.job_id // empty' start.json)"
             JOB_TOKEN="$(jq -r '.job_token // empty' start.json)"
             if [ -n "$JOB_ID" ] && [ -n "$JOB_TOKEN" ]; then
-              jq -n --arg job_id "$JOB_ID" --arg error "Orchestrator failed at stage $STAGE"                 '{job_id:$job_id,error:$error}' > orchestrator-fail.json
-              curl -sS -X POST "$LONGFORM_API/fail"                 -H "x-job-token: $JOB_TOKEN"                 -H "content-type: application/json"                 --data-binary @orchestrator-fail.json || true
+              OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-longform-upload" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+              jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > failure-status-body.json
+              curl -sS -X POST "$LONGFORM_API/status" -H "Authorization: Bearer $OIDC" -H "content-type: application/json" --data-binary @failure-status-body.json > failure-status.json || true
+              EXISTING_STATE="$(jq -r '.job.state // empty' failure-status.json 2>/dev/null)"
+              EXISTING_MSG="$(jq -r '.job.message // empty' failure-status.json 2>/dev/null)"
+              if [ "$EXISTING_STATE" = "failed" ] || [ "$EXISTING_STATE" = "stalled" ]; then
+                echo "::error title=Hidden Beyond worker stopped::$EXISTING_STATE / $EXISTING_MSG"
+                echo "**Worker error:** $EXISTING_MSG" >> "$GITHUB_STEP_SUMMARY"
+              else
+                jq -n --arg job_id "$JOB_ID" --arg error "Orchestrator failed at stage $STAGE" '{job_id:$job_id,error:$error}' > orchestrator-fail.json
+                curl -sS -X POST "$LONGFORM_API/fail" -H "x-job-token: $JOB_TOKEN" -H "content-type: application/json" --data-binary @orchestrator-fail.json || true
+              fi
             fi
           fi
 
