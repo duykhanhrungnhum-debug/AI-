@@ -956,8 +956,15 @@ def main()->None:
         limit=int(s.get("fit_words") or 18)
         if repair:
             structural_rule=""
+            include_previous=True
+            include_context=True
             if "still contains CJK" in failure_reason:
-                structural_rule="上一版仍含中文字符；修正版只能输出越南语，不得包含任何中文汉字。\n"
+                structural_rule=(
+                    "上一版含中文或解释性内容。现在重新独立翻译。"
+                    "输出必须只有一行越南语对白；禁止汉字、禁止解释、禁止前缀、禁止讨论翻译过程。\n"
+                )
+                include_previous=False
+                include_context=False
             elif "repetition loop" in failure_reason:
                 structural_rule="上一版出现重复循环；修正版不得重复词句。\n"
             elif " empty" in failure_reason or failure_reason.endswith("empty"):
@@ -969,8 +976,8 @@ def main()->None:
                 +structural_rule
                 +profile_prompt_rule(translation_profile)+"\n"
                 +f"尽量控制在 {limit} 个越南语词以内，但不要为了缩短而改变原意。\n"
-                +f"上下文：{context_for(s)}\n"
-                +(f"上一版：{current}\n" if current else "")
+                +(f"上下文：{context_for(s)}\n" if include_context else "")
+                +(f"上一版：{current}\n" if include_previous and current else "")
                 +"只输出修正后的越南语一句话，不解释。\n"
                 +f"原文：{s['text']}"
             )
@@ -1075,7 +1082,7 @@ def main()->None:
                 inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
                 inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
                 out=model.generate(
-                    **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.06,
+                    **inp,max_new_tokens=64,do_sample=False,repetition_penalty=1.08,
                     use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
                 )
                 generated=out[:,inp["input_ids"].shape[1]:]
