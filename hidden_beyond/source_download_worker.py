@@ -9,10 +9,29 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 WORK=Path("/kaggle/working")
 OUT=WORK/"source.mp4"
 META=WORK/"source-metadata.json"
+
+def post(path:str,payload:dict)->dict:
+    data=json.dumps(payload,ensure_ascii=False).encode()
+    req=Request(
+        CONFIG["callback_base"].rstrip("/")+path,
+        data=data,
+        headers={"content-type":"application/json","x-handoff-token":CONFIG["handoff_token"]},
+        method="POST",
+    )
+    with urlopen(req,timeout=120) as r:
+        return json.loads(r.read().decode())
+
+def upload_file(url:str,path:Path)->None:
+    data=path.read_bytes()
+    req=Request(url,data=data,headers={"content-type":"video/mp4","x-upsert":"true"},method="PUT")
+    with urlopen(req,timeout=900) as r:
+        if r.status not in (200,201):
+            raise RuntimeError(f"source upload failed {r.status}")
 
 def main():
     subprocess.run(
@@ -63,7 +82,18 @@ def main():
         "retriever":"kaggle-cpu-yt-dlp-ejs",
     }
     META.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    post("/heartbeat",{"handoff_id":CONFIG["handoff_id"],"message":"source_downloaded_uploading"})
+    upload_file(CONFIG["upload_url"],OUT)
+    result=post("/complete",{"handoff_id":CONFIG["handoff_id"],"metadata":report})
     print("SOURCE_DOWNLOAD_OK",json.dumps(report,ensure_ascii=False),flush=True)
+    print("SOURCE_HANDOFF_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
 
 if __name__=="__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        try:
+            post("/fail",{"handoff_id":CONFIG.get("handoff_id"),"error":repr(exc)})
+        except Exception as fail_exc:
+            print("SOURCE_HANDOFF_FAIL_REPORT_ERROR",repr(fail_exc),flush=True)
+        raise
