@@ -1,6 +1,6 @@
 {
-  "nonce": "2026-09-21-professional-translation-certification-v3",
-  "purpose": "retest_professional_chinese_vietnamese_after_idiom_pragmatic_qa_fix",
+  "nonce": "2026-09-22-professional-translation-certification-v4",
+  "purpose": "verify_concise_xianxia_register_and_v3_minor_error_memory",
   "source_video_id": "vaY4URFw0cg",
   "translator": "tencent/Hy-MT2-7B",
   "reviewer": "Qwen/Qwen2.5-7B-Instruct",
