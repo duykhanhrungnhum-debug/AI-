@@ -26,6 +26,7 @@ jobs:
       KAGGLE_USERNAME: duykhanhta
       LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
       SEGMENT_CACHE_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-segment-cache-api
+      SOURCE_HANDOFF_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-source-handoff-api
 
     steps:
       - uses: actions/checkout@v4
@@ -103,8 +104,44 @@ jobs:
               jq --arg source_url "$SOURCE_URL" '.source_url=$source_url' hidden_beyond/longform/auto.json > "$tmp"
               mv "$tmp" hidden_beyond/longform/auto.json
             fi
-            python scripts/retrieve_hidden_beyond_source_kaggle.py               --config hidden_beyond/longform/auto.json               --output source-input/source.mp4
-            echo "SOURCE_DOWNLOADED_KAGGLE_CPU url=$SOURCE_URL"
+
+            OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-source-handoff"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            jq -n --arg source_video_id "$SOURCE_VIDEO_ID" '{source_video_id:$source_video_id}' > source-handoff-prepare-body.json
+            curl --fail-with-body -sS -X POST "$SOURCE_HANDOFF_API/prepare"               -H "Authorization: Bearer $OIDC" -H "content-type: application/json"               --data-binary @source-handoff-prepare-body.json > source-handoff.json
+            jq --arg callback_base "$SOURCE_HANDOFF_API" '.callback_base=$callback_base' source-handoff.json > source-handoff.tmp
+            mv source-handoff.tmp source-handoff.json
+            test "$(jq -r '.ok' source-handoff.json)" = "true"
+
+            python scripts/retrieve_hidden_beyond_source_kaggle.py               --config hidden_beyond/longform/auto.json               --handoff source-handoff.json
+            test -s source-submission.json
+
+            HANDOFF_ID="$(jq -r '.handoff_id' source-handoff.json)"
+            READY=0
+            for ATTEMPT in $(seq 1 90); do
+              OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"                 "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-source-handoff"                 | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+              jq -n --arg handoff_id "$HANDOFF_ID" '{handoff_id:$handoff_id}' > source-handoff-status-body.json
+              curl --fail-with-body -sS -X POST "$SOURCE_HANDOFF_API/status"                 -H "Authorization: Bearer $OIDC" -H "content-type: application/json"                 --data-binary @source-handoff-status-body.json > source-handoff-status.json
+              STATE="$(jq -r '.handoff.state // ""' source-handoff-status.json)"
+              MSG="$(jq -r '.handoff.message // ""' source-handoff-status.json)"
+              echo "SOURCE_HANDOFF_PROGRESS attempt=$ATTEMPT state=$STATE message=$MSG"
+              if [ "$STATE" = "completed" ]; then
+                READY=1
+                break
+              fi
+              if [ "$STATE" = "failed" ]; then
+                echo "::error title=Source handoff failed::$MSG"
+                exit 1
+              fi
+              sleep 10
+            done
+            test "$READY" = "1" || { echo "::error title=Source handoff timeout::No completed source within 15 minutes"; exit 1; }
+
+            OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-source-handoff"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+            curl --fail-with-body -sS -X POST "$SOURCE_HANDOFF_API/download"               -H "Authorization: Bearer $OIDC" -H "content-type: application/json"               --data-binary @source-handoff-status-body.json > source-handoff-download.json
+            SOURCE_DOWNLOAD_URL="$(jq -r '.download_url' source-handoff-download.json)"
+            test -n "$SOURCE_DOWNLOAD_URL" && test "$SOURCE_DOWNLOAD_URL" != "null"
+            curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS               "$SOURCE_DOWNLOAD_URL" -o source-input/source.mp4
+            echo "SOURCE_DOWNLOADED_VIA_SUPABASE_HANDOFF url=$SOURCE_URL"
           fi
 
           test -s source-input/source.mp4
