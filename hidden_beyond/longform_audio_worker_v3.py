@@ -667,21 +667,41 @@ def main()->None:
 
     pipeline_started=time.monotonic()
     heartbeat("source_download","Downloading source once on the direct worker")
-    cmd=[
-        sys.executable,"-m","yt_dlp","--no-playlist",
-        "--retries","5","--fragment-retries","5",
-        "--remote-components","ejs:github",
-    ]
-    if shutil.which("node"):
-        cmd += ["--js-runtimes","node"]
-    cmd += [
-        "-f","bv*[height<=720]+ba/b[height<=720]/b",
-        "--merge-output-format","mp4","-o",str(SOURCE),str(cfg["source_url"]),
-    ]
-    run(cmd)
-    if not SOURCE.exists() or SOURCE.stat().st_size<1_000_000:
-        raise RuntimeError("source download missing or unexpectedly small")
-    heartbeat("source_ready",f"Source ready bytes={SOURCE.stat().st_size}")
+    client_sets=[None,"android_vr,web_safari","tv,mweb"]
+    last_source_error=""
+    for attempt,clients in enumerate(client_sets,1):
+        if SOURCE.exists():
+            SOURCE.unlink()
+        cmd=[
+            sys.executable,"-m","yt_dlp","--no-playlist",
+            "--retries","5","--fragment-retries","5",
+            "--remote-components","ejs:github",
+        ]
+        if shutil.which("node"):
+            cmd += ["--js-runtimes","node"]
+        if clients:
+            cmd += ["--extractor-args",f"youtube:player_client={clients}"]
+        cmd += [
+            "-f","bv*[height<=720]+ba/b[height<=720]/b",
+            "--merge-output-format","mp4","-o",str(SOURCE),str(cfg["source_url"]),
+        ]
+        proc=subprocess.run(cmd,text=True,capture_output=True)
+        if proc.returncode==0 and SOURCE.exists() and SOURCE.stat().st_size>=1_000_000:
+            heartbeat(
+                "source_ready",
+                f"Source ready attempt={attempt} clients={clients or 'default'} bytes={SOURCE.stat().st_size}",
+            )
+            break
+        tail=(proc.stderr or proc.stdout or "").strip()[-1200:]
+        last_source_error=tail or f"yt-dlp exit={proc.returncode}"
+        heartbeat(
+            "source_retry",
+            f"Source attempt {attempt}/{len(client_sets)} failed clients={clients or 'default'}; retrying bounded fallback",
+        )
+        if attempt<len(client_sets):
+            time.sleep(12*attempt)
+    else:
+        raise RuntimeError("source download failed after bounded retries: "+last_source_error)
 
     transcript_started=time.monotonic()
     heartbeat("caption_probe","Checking source captions before ASR")
