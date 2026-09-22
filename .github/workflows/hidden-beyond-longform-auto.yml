@@ -101,7 +101,7 @@ jobs:
               test -n "$SOURCE_VIDEO_ID" && test "$SOURCE_VIDEO_ID" != "null"
               SOURCE_URL="https://www.youtube.com/watch?v=$SOURCE_VIDEO_ID"
             fi
-            python -m yt_dlp --no-playlist --retries 5 --fragment-retries 5               -f "bv*[height<=720]+ba/b[height<=720]/b"               --merge-output-format mp4 -o source-input/source.mp4 "$SOURCE_URL"
+            python -m yt_dlp --no-playlist --retries 5 --fragment-retries 5 --js-runtimes node --remote-components ejs:github               -f "bv*[height<=720]+ba/b[height<=720]/b"               --merge-output-format mp4 -o source-input/source.mp4 "$SOURCE_URL"
             echo "SOURCE_DOWNLOADED_DIRECT url=$SOURCE_URL"
           fi
 
