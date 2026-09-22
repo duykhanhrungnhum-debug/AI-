@@ -40,6 +40,7 @@ def main()->None:
     ap=argparse.ArgumentParser()
     ap.add_argument("--metadata",required=True)
     ap.add_argument("--output",required=True)
+    ap.add_argument("--cache-dir",default=".cache/hidden-beyond-tts")
     args=ap.parse_args()
 
     meta_path=Path(args.metadata)
@@ -58,11 +59,16 @@ def main()->None:
 
     work=out_path.parent/"cpu-tts"
     segdir=work/"segments"
-    voices=work/"voices"
+    cache_root=Path(args.cache_dir)
+    raw_cache=cache_root/"raw"
+    voices=cache_root/"voices"
     segdir.mkdir(parents=True,exist_ok=True)
+    raw_cache.mkdir(parents=True,exist_ok=True)
     voices.mkdir(parents=True,exist_ok=True)
 
-    run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
+    model_file=voices/(voice_name+".onnx")
+    if not model_file.exists():
+        run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
     from piper import PiperVoice
     from piper.config import SynthesisConfig
     voice=PiperVoice.load(str(voices/(voice_name+".onnx")),use_cuda=False)
@@ -80,12 +86,32 @@ def main()->None:
     overflow_count=0
     retimed_count=0
     hard_trim_count=0
+    tts_cache_hits=0
+    tts_cache_misses=0
     started=time.monotonic()
 
     for i,s in enumerate(segments,1):
+        text=clean(s["vi"])
+        cache_key=hashlib.sha256(
+            json.dumps({
+                "engine":"piper",
+                "voice":voice_name,
+                "length_scale":round(piper_length_scale,6),
+                "text":text,
+            },ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8")
+        ).hexdigest()
+        cached_raw=raw_cache/f"{cache_key}.wav"
         rawwav=segdir/f"raw-{i:05d}.wav"
-        with wave.open(str(rawwav),"wb") as w:
-            voice.synthesize_wav(clean(s["vi"]),w,syn_config=syn)
+        if cached_raw.exists() and cached_raw.stat().st_size>128:
+            rawwav=cached_raw
+            tts_cache_hits+=1
+        else:
+            with wave.open(str(rawwav),"wb") as w:
+                voice.synthesize_wav(text,w,syn_config=syn)
+            if rawwav.stat().st_size>128:
+                cached_raw.write_bytes(rawwav.read_bytes())
+                rawwav=cached_raw
+            tts_cache_misses+=1
 
         rate,width,channels=wav_format(rawwav)
         if (rate,width,channels)!=(22050,2,1):
@@ -141,6 +167,7 @@ def main()->None:
             remain=(len(segments)-i)/rate_seg if rate_seg>0 else 0
             print(
                 f"CPU_TTS_PROGRESS {i}/{len(segments)} eta={remain/60:.1f}m "
+                f"cache_hit={tts_cache_hits} cache_miss={tts_cache_misses} "
                 f"retimed={retimed_count} overflow={overflow_count}",
                 flush=True
             )
@@ -191,10 +218,14 @@ def main()->None:
     meta["voice_sha256"]=sha
     meta["voice_render_device"]="github-actions-cpu"
     meta["voice_render_seconds"]=render_seconds
-    meta["voice_efficiency_mode"]="piper-fast-path-no-per-segment-ffmpeg-v3"
+    meta["tts_cache_hits"]=tts_cache_hits
+    meta["tts_cache_misses"]=tts_cache_misses
+    meta["tts_cache_hit_rate"]=round(tts_cache_hits/max(1,len(segments)),4)
+    meta["voice_efficiency_mode"]="piper-content-addressed-segment-cache-fast-path-v4"
     meta_path.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     print(
-        f"CPU_TTS_DONE seconds={render_seconds:.1f} retimed={retimed_count}/{len(segments)} "
+        f"CPU_TTS_DONE seconds={render_seconds:.1f} cache_hit={tts_cache_hits} "
+        f"cache_miss={tts_cache_misses} retimed={retimed_count}/{len(segments)} "
         f"hard_trim={hard_trim_count} bytes={out_path.stat().st_size} sha256={sha}",
         flush=True
     )
