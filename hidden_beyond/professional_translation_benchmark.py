@@ -232,15 +232,30 @@ def main():
       "rows":[{"id":r["case"]["id"],"source":r["case"]["source"],"reference":r["case"]["reference"],"target":r["target"],"hard_reasons":r["hard_reasons"],"review":r["review"]} for r in rows],
     }
     Path("/kaggle/working/professional-translation-report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    metadata={
+        "profile":report["profile"],"cases":total,"hard_failed":len(hard_failed),
+        "critical":len(critical),"major":len(major),"minor":len(minor),
+    }
     if not professional_ok:
+        problem_rows=[
+            r for r in rows
+            if r["hard_reasons"] or r["review"]["severity"]!="PASS"
+        ]
         summary=" | ".join(
             f"{r['case']['id']}:{','.join(r['hard_reasons']) or r['review']['severity']}:{r['review'].get('reason','')}"
-            for r in rows if r["hard_reasons"] or r["review"]["severity"] in {"CRITICAL","MAJOR"}
+            for r in problem_rows
         )
-        raise RuntimeError("professional translation benchmark failed: "+summary[:1400])
-    post("/complete",{"run_id":BENCH["run_id"],"report":report,"metadata":{
-        "profile":report["profile"],"cases":total,"hard_failed":0,"critical":0,"major":0,"minor":len(minor)
-    }})
+        if not summary:
+            summary=f"minor_threshold_exceeded:{len(minor)}>{report['acceptance']['minor_max']}"
+        error="professional translation benchmark failed: "+summary[:1400]
+        post("/fail",{
+            "run_id":BENCH["run_id"],
+            "error":error,
+            "report":report,
+            "metadata":metadata,
+        })
+        raise RuntimeError(error)
+    post("/complete",{"run_id":BENCH["run_id"],"report":report,"metadata":metadata})
     print("PROFESSIONAL_TRANSLATION_VERIFIED",json.dumps({k:v for k,v in report.items() if k!="rows"},ensure_ascii=False),flush=True)
 
 if __name__=="__main__":
