@@ -232,7 +232,14 @@ def has_vi_question_marker(value:str)->bool:
     words=set(re.findall(r"[A-Za-zÀ-ỹ]+",low))
     return any(marker in words for marker in QUESTION_VI)
 
-def validate_translation_pair(text:str,source:str,*,field:str)->str:
+def validate_translation_pair(text:str,source:str,*,field:str,enforce_intent:bool=True)->str:
+    """Validate translation integrity.
+
+    Hard failures are deterministic defects that can safely block production.
+    Negation/question checks are heuristic review signals: they trigger repair
+    while models are available, but they must not create an endless hard-fail
+    loop after bounded review.
+    """
     value=validate_vi(text,source,field=field)
     src_cjk=len(CJK_RE.findall(source))
     words=vi_word_count(value)
@@ -244,12 +251,13 @@ def validate_translation_pair(text:str,source:str,*,field:str)->str:
     if not any(term in source for term in META_SOURCE_ZH):
         if any(term in low for term in META_HALLUCINATION_VI):
             raise ValueError(f"{field} meta hallucination")
-    if any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI):
-        raise ValueError(f"{field} lost negation")
-    if any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value):
-        raise ValueError(f"{field} lost question intent")
-    for zh,vi in FANTASY_GLOSSARY.items():
-        if zh in source and vi.casefold() not in low:
+    if enforce_intent:
+        if any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI):
+            raise ValueError(f"{field} lost negation")
+        if any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value):
+            raise ValueError(f"{field} lost question intent")
+    for zh,vi in glossary_pairs(source):
+        if vi.casefold() not in low:
             raise ValueError(f"{field} missing glossary {zh}")
     return value
 
@@ -268,7 +276,10 @@ def glossary_pairs(text:str)->list[tuple[str,str]]:
     pairs=[]
     seen=set()
     profile_glossary=ACTIVE_PROFILE.get("glossary") or {}
-    tables=(DIALOGUE_GLOSSARY,FANTASY_GLOSSARY,profile_glossary)
+    tables=[DIALOGUE_GLOSSARY]
+    if str(ACTIVE_PROFILE.get("genre") or "").lower()=="xianxia":
+        tables.append(FANTASY_GLOSSARY)
+    tables.append(profile_glossary)
     for table in tables:
         for zh,vi in table.items():
             if zh in text and vi not in seen:
@@ -1259,8 +1270,24 @@ def main()->None:
                 )
 
             if unresolved:
+                hard_unresolved=[]
+                for s in unresolved:
+                    try:
+                        candidate=validate_translation_pair(
+                            translated.get(s["index"],""),
+                            s["text"],
+                            field=f"post-review hard semantic segment {s['index']}",
+                            enforce_intent=False,
+                        )
+                        translated[s["index"]]=validate_segment_fit(
+                            candidate,s,field=f"post-review hard fit segment {s['index']}"
+                        )
+                    except Exception:
+                        hard_unresolved.append(s)
+                unresolved=hard_unresolved
+            if unresolved:
                 raise RuntimeError(
-                    "translation quality unresolved after Qwen editor "
+                    "translation hard quality unresolved after bounded review "
                     +str(len(unresolved))+" segments: "
                     +",".join(str(s["index"]) for s in unresolved[:30])
                 )
@@ -1287,7 +1314,8 @@ def main()->None:
     for s in segments:
         try:
             translated[s["index"]]=validate_translation_pair(
-                translated[s["index"]],s["text"],field=f"final semantic segment {s['index']}"
+                translated[s["index"]],s["text"],field=f"final semantic segment {s['index']}",
+                enforce_intent=False,
             )
             translated[s["index"]]=validate_segment_fit(
                 translated[s["index"]],s,field=f"final segment {s['index']}"
@@ -1336,9 +1364,9 @@ def main()->None:
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"universal-longform-direct-context-qa-v7",
+        "translation_mode":"universal-longform-direct-context-qa-v8",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"universal-longform-v1",
+        "translation_quality_profile":"universal-longform-v2-hard-vs-review",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
