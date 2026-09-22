@@ -1,0 +1,111 @@
+name: Hidden Beyond Bot2 Kaggle Source Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/bot2_kaggle_source_probe.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Submit one CPU source probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          python - <<'PY'
+          import os,textwrap
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          source=textwrap.dedent(r"""
+          import json,subprocess,sys,time,urllib.request
+          from pathlib import Path
+
+          PROBE_ID="44268abd-b920-4349-9b29-8e1dd47f65db"
+          CALLBACK="https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hb-bot2-kaggle-source-probe"
+          URL="https://www.youtube.com/watch?v=z56-Xzl-fkY"
+
+          def callback(payload):
+              body=json.dumps(payload,ensure_ascii=False).encode("utf-8")
+              req=urllib.request.Request(CALLBACK,data=body,method="POST",headers={"content-type":"application/json"})
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  print("CALLBACK",r.status,r.read().decode("utf-8","replace"))
+
+          result={"probe_id":PROBE_ID,"ok":False,"stage":"bootstrap"}
+          try:
+              subprocess.check_call([sys.executable,"-m","pip","install","--quiet","-U",
+                                     "yt-dlp>=2026.1","bgutil-ytdlp-pot-provider"])
+              subprocess.check_call(["git","clone","--depth","1","--branch","2.0.0",
+                                     "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git",
+                                     "/kaggle/working/bgutil"])
+              subprocess.check_call(["npm","ci"],cwd="/kaggle/working/bgutil/server")
+              subprocess.check_call(["npx","tsc"],cwd="/kaggle/working/bgutil/server")
+              log=open("/kaggle/working/bgutil.log","w",encoding="utf-8")
+              provider=subprocess.Popen(["node","build/main.js"],cwd="/kaggle/working/bgutil/server",
+                                        stdout=log,stderr=subprocess.STDOUT)
+              time.sleep(3)
+
+              cmd=[
+                  sys.executable,"-m","yt_dlp","-v","--no-playlist",
+                  "--retries","1","--fragment-retries","1",
+                  "--remote-components","ejs:github",
+                  "--extractor-args","youtube:player_client=mweb",
+                  "--download-sections","*0-20",
+                  "-f","b[height<=480]/b",
+                  "--merge-output-format","mp4",
+                  "-o","/kaggle/working/source-smoke.mp4",
+                  URL,
+              ]
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=240)
+              combined=((p.stdout or "")+"\n"+(p.stderr or ""))[-5000:]
+              path=Path("/kaggle/working/source-smoke.mp4")
+              size=path.stat().st_size if path.exists() else 0
+              result.update({
+                  "ok":p.returncode==0 and size>100000,
+                  "stage":"download",
+                  "returncode":p.returncode,
+                  "bytes":size,
+                  "login_required":"LOGIN_REQUIRED" in combined or "Sign in to confirm" in combined,
+                  "tail":combined[-1800:],
+              })
+              try:
+                  provider.terminate()
+              except Exception:
+                  pass
+          except Exception as exc:
+              result.update({"ok":False,"stage":"exception","error":repr(exc)[:1200]})
+
+          callback(result)
+          print("BOT2_KAGGLE_SOURCE_PROBE",json.dumps(result,ensure_ascii=False))
+          """)
+
+          w=KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+          )
+          s=w.submit_script(
+              slug="hidden-beyond-bot2-source-pot-probe",
+              title="Hidden Beyond Bot2 Source POT Probe",
+              source=source,
+              enable_internet=True,
+              enable_gpu=False,
+              is_private=True,
+          )
+          print("BOT2_KAGGLE_SOURCE_PROBE_SUBMITTED",s.ref,s.version_number)
+          PY
