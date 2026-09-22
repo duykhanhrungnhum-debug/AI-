@@ -49,7 +49,10 @@ jobs:
           result={"probe_id":PROBE_ID,"ok":False,"stage":"bootstrap"}
           try:
               subprocess.check_call([sys.executable,"-m","pip","install","--quiet","-U",
-                                     "yt-dlp>=2026.1","bgutil-ytdlp-pot-provider"])
+                                     "yt-dlp[default]>=2026.1","bgutil-ytdlp-pot-provider"])
+              subprocess.check_call(["bash","-lc",
+                                     "export DENO_INSTALL=/kaggle/working/deno && curl -fsSL https://deno.land/install.sh | sh"])
+              deno="/kaggle/working/deno/bin/deno"
               subprocess.check_call(["git","clone","--depth","1","--branch","2.0.0",
                                      "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git",
                                      "/kaggle/working/bgutil"])
@@ -63,8 +66,8 @@ jobs:
               cmd=[
                   sys.executable,"-m","yt_dlp","-v","--no-playlist",
                   "--retries","1","--fragment-retries","1",
-                  "--remote-components","ejs:github",
-                  "--js-runtimes","node",
+                  "--remote-components","ejs:npm",
+                  "--js-runtimes","deno:"+deno,
                   "--extractor-args","youtube:player_client=mweb",
                   "--download-sections","*0-20",
                   "-f","b[height<=480]/b",
