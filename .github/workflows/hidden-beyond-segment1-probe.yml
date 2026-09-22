@@ -31,12 +31,12 @@ jobs:
           test -n "$KAGGLE_API_TOKEN"
           python -m pip install -e .
 
-      - name: Submit and wait for isolated segment 1 probe
+      - name: Submit isolated segment 1 probe
         shell: bash
         run: |
           set -Eeuo pipefail
           python - <<'PY'
-          import json, os, time
+          import os
           from pathlib import Path
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
 
@@ -45,51 +45,17 @@ jobs:
               api_token=os.environ["KAGGLE_API_TOKEN"],
               username=os.environ["KAGGLE_USERNAME"],
               timeout=120,
-              submission_retry_attempts=3,
-              submission_retry_delay_seconds=20,
+              submission_retry_attempts=5,
+              submission_retry_delay_seconds=30,
           )
-          slug="hidden-beyond-segment1-probe"
           sub=worker.submit_script(
-              slug=slug,
-              title="Hidden Beyond Segment 1 Probe",
+              slug="hidden-beyond-segment1-probe-callback",
+              title="Hidden Beyond Segment 1 Probe Callback",
               source=source,
               enable_internet=True,
               enable_gpu=True,
               is_private=True,
           )
           print("PROBE_SUBMITTED",sub.ref,sub.version_number,flush=True)
-
-          for i in range(90):
-              st=worker.status(slug)
-              print("PROBE_STATUS",i+1,st.status,st.failure_message,flush=True)
-              if st.terminal:
-                  break
-              time.sleep(20)
-          else:
-              raise RuntimeError("segment1 probe timed out")
-
-          try:
-              logs=worker.logs(slug)
-              print(logs[-12000:],flush=True)
-          except Exception as exc:
-              print("PROBE_LOG_READ_ERROR",repr(exc),flush=True)
-
-          if not st.successful:
-              raise RuntimeError("segment1 probe Kaggle failed: "+st.failure_message)
-
-          data=worker.download_output_file(slug,"segment1-probe-result.json")
-          Path("segment1-probe-result.json").write_bytes(data)
-          result=json.loads(data.decode("utf-8"))
-          print("SEGMENT1_FINAL_RESULT",json.dumps(result,ensure_ascii=False),flush=True)
-          if not result.get("ok"):
-              raise RuntimeError("segment1 probe still fails: "+json.dumps(result,ensure_ascii=False))
+          print("RESULT_WILL_ARRIVE_VIA_SUPABASE_CALLBACK",flush=True)
           PY
-
-      - name: Preserve probe evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hidden-beyond-segment1-probe
-          path: segment1-probe-result.json
-          if-no-files-found: warn
-          retention-days: 7
