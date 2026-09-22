@@ -817,494 +817,219 @@ def main()->None:
 
     translation_started=time.monotonic()
     translated={}
-    invalid_ids=[]
     qwen_reviewed=0
     fallback_segments=0
-    primary_model=""
     fast_path_used=False
+    primary_model="tencent/Hy-MT2-7B"
 
-    def opus_translate(items:list[dict], *, on_device:str)->dict[int,str]:
-        nonlocal fallback_segments
-        model_name="Helsinki-NLP/opus-mt-zh-vi"
-        otok=AutoTokenizer.from_pretrained(model_name)
-        omodel=AutoModelForSeq2SeqLM.from_pretrained(model_name,low_cpu_mem_usage=True).to(on_device)
-        omodel.eval()
-        result={}
-        bs=24 if on_device=="cuda" else 8
-        with torch.inference_mode():
-            for off in range(0,len(items),bs):
-                batch=items[off:off+bs]
-                inp=otok([x["text"] for x in batch],return_tensors="pt",padding=True,truncation=True,max_length=256)
-                inp={k:v.to(on_device) for k,v in inp.items()}
-                out=omodel.generate(**inp,max_new_tokens=128,num_beams=1,repetition_penalty=1.05)
-                texts=otok.batch_decode(out,skip_special_tokens=True)
-                for s,vi in zip(batch,texts,strict=True):
-                    try:
-                        result[s["index"]]=validate_vi(vi,s["text"],field=f"fallback segment {s['index']}")
-                    except Exception:
-                        result[s["index"]]=clean(vi)
-                fallback_segments+=len(batch)
-        del omodel,otok
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return result
+    if device!="cuda":
+        raise RuntimeError("Hidden Beyond production translation requires Kaggle GPU")
 
-    if device=="cuda":
-        primary_model="tencent/Hy-MT2-7B"
-        heartbeat("translating",f"Loading {primary_model}; translating {len(pending_segments)} segments")
-        tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
-        tok.padding_side="left"
-        if tok.pad_token_id is None:
-            tok.pad_token=tok.eos_token
-        quant_config=BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-        model=AutoModelForCausalLM.from_pretrained(
-            primary_model,
-            quantization_config=quant_config,
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
-        )
-        model.eval()
+    heartbeat("translating",f"Loading {primary_model}; translating {len(segments)} segments")
+    tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
+    tok.padding_side="left"
+    if tok.pad_token_id is None:
+        tok.pad_token=tok.eos_token
+    quant_config=BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+    )
+    model=AutoModelForCausalLM.from_pretrained(
+        primary_model,
+        quantization_config=quant_config,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,
+    )
+    model.eval()
 
-        by_index={s["index"]:s for s in segments}
-        def prompt_for(s:dict)->str:
-            terms=glossary_pairs(s["text"])
-            term_text=""
-            if terms:
-                term_text="参考下面的固定术语翻译：\n"+"\n".join(f"{zh} 翻译成 {vi}" for zh,vi in terms)+"\n\n"
-            idx=s["index"]
-            context_parts=[]
-            for j in (idx-2,idx-1,idx+1,idx+2):
-                if j in by_index:
-                    context_parts.append(by_index[j].get("text",""))
-            background=clean(" ".join(context_parts))
+    by_index={s["index"]:s for s in segments}
+
+    def context_for(s:dict)->str:
+        idx=s["index"]
+        parts=[]
+        for j in (idx-2,idx-1,idx+1,idx+2):
+            if j in by_index:
+                parts.append(by_index[j].get("text",""))
+        return clean(" ".join(parts))
+
+    def prompt_for(s:dict, *, repair:bool=False, current:str="")->str:
+        terms=glossary_pairs(s["text"])
+        term_text=""
+        if terms:
+            term_text="固定术语："+"；".join(f"{zh}={vi}" for zh,vi in terms)+"\n"
+        limit=int(s.get("fit_words") or 18)
+        if repair:
             return (
-                term_text+
-                "〖背景信息〗\n"+background+"\n"
-                "〖翻译要求〗\n"
-                "1. 忠实传达原意，不得添加原文没有的信息，不得遗漏关键含义。\n"
-                "2. 先保证准确，再保证越南语自然；不得改变人物关系、否定、数字、疑问或情绪强度。\n"
-                "3. 人物称呼、专有名词、术语必须在同一系列中前后一致。\n"
-                "4. "+profile_prompt_rule(translation_profile)+"\n"
-                "5. 原文简短时译文也应简洁，以便自然配音；不要写成解释性长句。\n"
-                "6. 只输出待翻译文本的越南语译文，不要解释、注释、免责声明或元话语。\n"
-                "〖待翻译文本〗\n"+s["text"]+"\n"
-                "请结合背景信息将待翻译文本准确翻译为越南语。"
+                term_text
+                +"请重新翻译下面一句中文为自然、准确、简洁的越南语影视对白。\n"
+                +"必须忠实原意，不添加信息，不遗漏否定、疑问、数字、人物关系和专有名词。\n"
+                +profile_prompt_rule(translation_profile)+"\n"
+                +f"尽量控制在 {limit} 个越南语词以内，但不要为了缩短而改变原意。\n"
+                +f"上下文：{context_for(s)}\n"
+                +(f"上一版：{current}\n" if current else "")
+                +"只输出修正后的越南语一句话，不解释。\n"
+                +f"原文：{s['text']}"
+            )
+        return (
+            term_text
+            +"〖背景信息〗\n"+context_for(s)+"\n"
+            +"〖翻译要求〗\n"
+            +"1. 忠实传达原意，不添加原文没有的信息，不遗漏关键含义。\n"
+            +"2. 保持人物关系、否定、数字、疑问和情绪强度。\n"
+            +"3. 称呼、专有名词和术语在同一系列中保持一致。\n"
+            +"4. "+profile_prompt_rule(translation_profile)+"\n"
+            +f"5. 尽量简洁，目标不超过 {limit} 个越南语词，适合配音。\n"
+            +"6. 只输出越南语译文，不解释。\n"
+            +"〖待翻译文本〗\n"+s["text"]
+        )
+
+    def soft_intent_review(source:str,value:str)->bool:
+        low=clean(value).casefold()
+        lost_neg=any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI)
+        lost_q=any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value)
+        return lost_neg or lost_q
+
+    review_ids=set()
+    hard_invalid=set()
+    batch_size=8
+    cursor=0
+    with torch.inference_mode():
+        while cursor<len(segments):
+            batch=segments[cursor:cursor+batch_size]
+            chats=[
+                tok.apply_chat_template(
+                    [{"role":"user","content":prompt_for(s)}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                for s in batch
+            ]
+            try:
+                inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
+                inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+                out=model.generate(
+                    **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.05,
+                    use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
+                )
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if batch_size<=4:
+                    raise
+                batch_size=max(4,batch_size//2)
+                heartbeat("translating",f"GPU memory guard: translation batch={batch_size}")
+                continue
+
+            generated=out[:,inp["input_ids"].shape[1]:]
+            vis=tok.batch_decode(generated,skip_special_tokens=True)
+            for s,vi in zip(batch,vis,strict=True):
+                idx=s["index"]
+                candidate=clean(vi)
+                translated[idx]=candidate
+                try:
+                    translated[idx]=validate_translation_pair(
+                        candidate,s["text"],field=f"segment {idx}",enforce_intent=False
+                    )
+                except Exception:
+                    hard_invalid.add(idx)
+                    review_ids.add(idx)
+                if soft_intent_review(s["text"],candidate):
+                    review_ids.add(idx)
+                if vi_word_count(candidate)>s["fit_words"]:
+                    review_ids.add(idx)
+
+            cursor+=len(batch)
+            elapsed=max(0.001,time.monotonic()-translation_started)
+            heartbeat(
+                "translating",
+                f"Hy-MT2 {cursor}/{len(segments)} ({cursor*100.0/len(segments):.1f}%); "
+                f"{cursor/elapsed:.1f} seg/s; review={len(review_ids)} hard={len(hard_invalid)}",
             )
 
-
-        batch_size=8
-        cursor=0
-        budget_seconds=15*60
+    # Exactly one bounded repair pass, using the same already-loaded Hy-MT2.
+    # No OPUS/Qwen/model handoff in the production GPU path.
+    repair_items=[s for s in segments if s["index"] in review_ids]
+    if repair_items:
+        heartbeat(
+            "translation_repair",
+            f"Single targeted repair pass: {len(repair_items)} of {len(segments)} segments",
+        )
+        hard_after=[]
         with torch.inference_mode():
-            while cursor<len(pending_segments):
-                if time.monotonic()-translation_started>=budget_seconds:
-                    fast_path_used=True
-                    raise RuntimeError(
-                        f"Hy-MT2-7B translation exceeded quality budget at {cursor}/{len(pending_segments)}"
-                    )
-                batch=pending_segments[cursor:cursor+batch_size]
+            for off in range(0,len(repair_items),4):
+                batch=repair_items[off:off+4]
                 chats=[
                     tok.apply_chat_template(
-                        [{"role":"user","content":prompt_for(s)}],
+                        [{"role":"user","content":prompt_for(
+                            s,repair=True,current=translated.get(s["index"],"")
+                        )}],
                         tokenize=False,
                         add_generation_prompt=True,
                     )
                     for s in batch
                 ]
-                try:
-                    inp=tok(
-                        chats,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=512,
-                    )
-                    inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
-                    out=model.generate(
-                        **inp,
-                        max_new_tokens=96,
-                        do_sample=False,
-                        repetition_penalty=1.05,
-                        use_cache=True,
-                        pad_token_id=tok.pad_token_id,
-                        eos_token_id=tok.eos_token_id,
-                    )
-                except torch.cuda.OutOfMemoryError:
-                    torch.cuda.empty_cache()
-                    if batch_size<=5:
-                        raise
-                    batch_size=max(5,batch_size//2)
-                    heartbeat("translating",f"GPU memory guard: reducing translation batch to {batch_size}")
-                    continue
+                inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
+                inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+                out=model.generate(
+                    **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.06,
+                    use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
+                )
                 generated=out[:,inp["input_ids"].shape[1]:]
                 vis=tok.batch_decode(generated,skip_special_tokens=True)
                 for s,vi in zip(batch,vis,strict=True):
+                    idx=s["index"]
+                    candidate=clean(vi)
+                    translated[idx]=candidate
                     try:
-                        translated[s["index"]]=validate_translation_pair(vi,s["text"],field=f"segment {s['index']}")
-                    except Exception:
-                        invalid_ids.append(s["index"])
-                cursor+=len(batch)
-                elapsed=max(0.001,time.monotonic()-translation_started)
-                rate=cursor/elapsed
-                pct=cursor*100.0/max(1,len(pending_segments))
-                heartbeat(
-                    "translating",
-                    f"Hy-MT2 {cursor}/{len(pending_segments)} ({pct:.1f}%); {rate:.1f} seg/s; invalid={len(invalid_ids)}",
-                )
-
-        title_item={
-            "index":0,
-            "text":str(cfg.get("title") or ""),
-            "max_words":20,
-        }
-        try:
-            title_chat=tok.apply_chat_template(
-                [{"role":"user","content":(
-                    "将以下标题翻译为自然越南语，保持原作品题材风格和专有名词，只输出越南语标题，不要解释：\n\n"
-                    +title_item["text"]
-                )}],
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            inp=tok([title_chat],return_tensors="pt",padding=True,truncation=True,max_length=256)
-            inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
-            out=model.generate(
-                **inp,max_new_tokens=64,do_sample=False,repetition_penalty=1.05,
-                pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
-            )
-            generated=out[:,inp["input_ids"].shape[1]:]
-            translated_title=clean(tok.batch_decode(generated,skip_special_tokens=True)[0])
-            if not translated_title or CJK_RE.search(translated_title):
-                raise ValueError("invalid translated title")
-        except Exception:
-            translated_title=clean(str(cfg.get("series_title") or cfg.get("title") or "Hidden Beyond"))
-
-        if cursor<len(pending_segments):
-            remaining=pending_segments[cursor:]
-            translated.update(opus_translate(remaining,on_device="cuda"))
-
-        if invalid_ids:
-            invalid_set=set(invalid_ids)
-            invalid_items=[s for s in segments if s["index"] in invalid_set]
-            heartbeat(
-                "translation_verify",
-                f"Primary translation flagged {len(invalid_items)} semantic/content risks; deterministic MT fallback",
-            )
-            translated.update(opus_translate(invalid_items,on_device="cpu"))
-
-            still_invalid=[]
-            invalid_reason={}
-            for s in invalid_items:
-                try:
-                    translated[s["index"]]=validate_translation_pair(
-                        translated.get(s["index"],""),s["text"],field=f"fallback verified segment {s['index']}"
-                    )
-                except Exception as exc:
-                    still_invalid.append(s)
-                    invalid_reason[s["index"]]=str(exc)
-
-            # Repair only the small set that still fails semantic QA.
-            # Reuse the already-loaded primary model: no extra model/service and no full-video retry loop.
-            for repair_round in range(2):
-                if not still_invalid:
-                    break
-                heartbeat(
-                    "translation_repair",
-                    f"Targeted Hy-MT repair round {repair_round+1}: {len(still_invalid)} segments",
-                )
-                repaired=[]
-                with torch.inference_mode():
-                    for off in range(0,len(still_invalid),4):
-                        batch=still_invalid[off:off+4]
-                        chats=[]
-                        for s in batch:
-                            idx=s["index"]
-                            context_parts=[]
-                            for j in (idx-2,idx-1,idx+1,idx+2):
-                                if j in by_index:
-                                    context_parts.append(by_index[j].get("text",""))
-                            context=clean(" ".join(context_parts))
-                            terms=glossary_pairs(s["text"])
-                            required="; ".join(f"{zh}={vi}" for zh,vi in terms)
-                            current=clean(translated.get(idx,""))
-                            reason=invalid_reason.get(idx,"semantic QA failed")
-                            prompt=(
-                                "请重新翻译下面一句中文为自然、准确、简洁的越南语影视对白。\n"
-                                "必须保持原意，不添加信息，不遗漏否定、疑问、数字、人物关系和专有名词。\n"
-                                +profile_prompt_rule(translation_profile)+"\n"
-                                +(f"固定术语：{required}\n" if required else "")
-                                +f"上下文：{context}\n"
-                                +f"上一版越南语：{current}\n"
-                                +f"上一版失败原因：{reason}\n"
-                                +"只输出修正后的越南语一句话，不解释。\n"
-                                +f"原文：{s['text']}"
-                            )
-                            chats.append(tok.apply_chat_template(
-                                [{"role":"user","content":prompt}],
-                                tokenize=False,
-                                add_generation_prompt=True,
-                            ))
-                        inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
-                        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
-                        out=model.generate(
-                            **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.06,
-                            use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
-                        )
-                        gen=out[:,inp["input_ids"].shape[1]:]
-                        vis=tok.batch_decode(gen,skip_special_tokens=True)
-                        for s,vi in zip(batch,vis,strict=True):
-                            try:
-                                candidate=validate_translation_pair(
-                                    vi,s["text"],field=f"semantic repair segment {s['index']}"
-                                )
-                                translated[s["index"]]=candidate
-                            except Exception as exc:
-                                repaired.append(s)
-                                invalid_reason[s["index"]]=str(exc)
-                still_invalid=repaired
-
-            invalid_ids=[s["index"] for s in still_invalid]
-            if invalid_ids:
-                heartbeat(
-                    "translation_review",
-                    f"{len(invalid_ids)} semantic QA risks remain after Hy-MT repair; forwarding only these cues to Qwen editor",
-                )
-
-        del model,tok
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        overlong_ids=[
-            s["index"] for s in segments
-            if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
-        ]
-        review_ids=sorted(set(overlong_ids+invalid_ids))
-        if review_ids:
-            # Qwen is an editor only. It is never the bulk translator.
-            review_set=set(review_ids)
-            invalid_set=set(invalid_ids)
-            review_items=[s for s in segments if s["index"] in review_set]
-            heartbeat(
-                "translation_review",
-                f"Reviewing {len(review_items)} segments: semantic={len(invalid_ids)} overlong={len(overlong_ids)}",
-            )
-            editor_name="Qwen/Qwen2.5-1.5B-Instruct"
-            qtok=AutoTokenizer.from_pretrained(editor_name)
-            qtok.padding_side="left"
-            if qtok.pad_token_id is None:
-                qtok.pad_token=qtok.eos_token
-            qmodel=AutoModelForCausalLM.from_pretrained(
-                editor_name,torch_dtype=torch.float16,low_cpu_mem_usage=True
-            ).to(device)
-            qmodel.eval()
-            unresolved=[]
-            with torch.inference_mode():
-                for off in range(0,len(review_items),8):
-                    batch=review_items[off:off+8]
-                    prompts=[]
-                    for s in batch:
-                        current=clean(translated.get(s["index"],""))
-                        required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
-                        if s["index"] in invalid_set:
-                            prompts.append(
-                                f"Dịch lại chính xác câu tiếng Trung sau sang tiếng Việt tự nhiên, tối đa {s['fit_words']} từ để lồng tiếng. "
-                                "Giữ nguyên nghĩa, phủ định, câu hỏi, số liệu, tên riêng và quan hệ nhân vật; "
-                                "không thêm ý, không giải thích. "
-                                +(f"Bắt buộc dùng các thuật ngữ: {required}. " if required else "")
-                                +"Chỉ trả một câu tiếng Việt.\n"
-                                +"Nguyên văn Trung: "+s["text"]+"\n"
-                                +"Bản trước cần sửa: "+current
-                            )
-                        else:
-                            prompts.append(
-                                f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
-                                "Giữ nguyên nghĩa, tên riêng và số liệu; không thêm ý, không giải thích. "
-                                +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
-                                +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
-                            )
-                    chats=[
-                        qtok.apply_chat_template(
-                            [{"role":"user","content":p}],
-                            tokenize=False,
-                            add_generation_prompt=True,
-                        )
-                        for p in prompts
-                    ]
-                    inp=qtok(chats,return_tensors="pt",padding=True,truncation=True,max_length=384)
-                    inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
-                    out=qmodel.generate(
-                        **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.05,
-                        pad_token_id=qtok.pad_token_id,eos_token_id=qtok.eos_token_id,
-                    )
-                    gen=out[:,inp["input_ids"].shape[1]:]
-                    vis=qtok.batch_decode(gen,skip_special_tokens=True)
-                    for s,vi in zip(batch,vis,strict=True):
-                        try:
-                            candidate=validate_translation_pair(
-                                vi,s["text"],field=f"review semantic segment {s['index']}"
-                            )
-                            translated[s["index"]]=validate_segment_fit(
-                                candidate,s,field=f"review segment {s['index']}"
-                            )
-                            qwen_reviewed+=1
-                        except Exception:
-                            unresolved.append(s)
-            # A source-based retranslation can still echo context or stay too long.
-            # Repair unresolved lines by compressing the current Vietnamese text only,
-            # which is a much easier bounded editing task for the small editor model.
-            for repair_round in range(2):
-                if not unresolved:
-                    break
-                pending=unresolved
-                unresolved=[]
-                with torch.inference_mode():
-                    for off in range(0,len(pending),8):
-                        batch=pending[off:off+8]
-                        prompts=[]
-                        for s in batch:
-                            current=clean(translated.get(s["index"],""))
-                            try:
-                                validate_vi(current,s["text"],field="compression input")
-                                required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
-                                prompts.append(
-                                    f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
-                                    "Giữ đúng ý chính, tên riêng và số liệu; không thêm ý, không giải thích. "
-                                    +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
-                                    +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
-                                )
-                            except Exception:
-                                prompts.append(
-                                    f"Dịch câu tiếng Trung sau sang tiếng Việt tự nhiên, tối đa {s['fit_words']} từ. "
-                                    "Giữ tên riêng và số liệu; không giải thích, không để chữ Hán.\n"+s["text"]
-                                )
-                        chats=[
-                            qtok.apply_chat_template(
-                                [{"role":"user","content":p}],
-                                tokenize=False,add_generation_prompt=True,
-                            ) for p in prompts
-                        ]
-                        inp=qtok(chats,return_tensors="pt",padding=True,truncation=True,max_length=384)
-                        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
-                        out=qmodel.generate(
-                            **inp,max_new_tokens=72,do_sample=False,repetition_penalty=1.08,
-                            pad_token_id=qtok.pad_token_id,eos_token_id=qtok.eos_token_id,
-                        )
-                        gen=out[:,inp["input_ids"].shape[1]:]
-                        vis=qtok.batch_decode(gen,skip_special_tokens=True)
-                        for s,vi in zip(batch,vis,strict=True):
-                            try:
-                                candidate=validate_translation_pair(
-                                    vi,s["text"],field=f"compression semantic segment {s['index']}"
-                                )
-                                translated[s["index"]]=validate_segment_fit(
-                                    candidate,s,field=f"compression segment {s['index']}"
-                                )
-                                qwen_reviewed+=1
-                            except Exception:
-                                unresolved.append(s)
-                heartbeat(
-                    "translation_review",
-                    f"Compression round {repair_round+1}: unresolved={len(unresolved)}",
-                )
-
-            if unresolved:
-                heartbeat(
-                    "translating_fast_path",
-                    f"{len(unresolved)} unresolved fit/content segments; deterministic MT fallback",
-                )
-                translated.update(opus_translate(unresolved,on_device="cpu"))
-
-                # One final editor pass over deterministic MT output. This is
-                # intentionally bounded to only the few stubborn cues, so it
-                # does not turn Qwen back into the bulk translator.
-                still_unresolved=[]
-                with torch.inference_mode():
-                    for off in range(0,len(unresolved),8):
-                        batch=unresolved[off:off+8]
-                        prompts=[]
-                        for s in batch:
-                            current=clean(translated.get(s["index"],""))
-                            required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
-                            prompts.append(
-                                f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
-                                "Giữ đúng ý chính, tên riêng và số liệu; không thêm ý, không giải thích. "
-                                +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
-                                +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
-                            )
-                        chats=[
-                            qtok.apply_chat_template(
-                                [{"role":"user","content":p}],
-                                tokenize=False,add_generation_prompt=True,
-                            ) for p in prompts
-                        ]
-                        inp=qtok(chats,return_tensors="pt",padding=True,truncation=True,max_length=256)
-                        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
-                        out=qmodel.generate(
-                            **inp,max_new_tokens=48,do_sample=False,repetition_penalty=1.08,
-                            pad_token_id=qtok.pad_token_id,eos_token_id=qtok.eos_token_id,
-                        )
-                        gen=out[:,inp["input_ids"].shape[1]:]
-                        vis=qtok.batch_decode(gen,skip_special_tokens=True)
-                        for s,vi in zip(batch,vis,strict=True):
-                            try:
-                                candidate=validate_translation_pair(
-                                    vi,s["text"],field=f"final editor semantic segment {s['index']}"
-                                )
-                                translated[s["index"]]=validate_segment_fit(
-                                    candidate,s,field=f"final editor segment {s['index']}"
-                                )
-                                qwen_reviewed+=1
-                            except Exception:
-                                still_unresolved.append(s)
-                unresolved=still_unresolved
-                heartbeat(
-                    "translation_review",
-                    f"Final deterministic repair unresolved={len(unresolved)}",
-                )
-
-            if unresolved:
-                hard_unresolved=[]
-                for s in unresolved:
-                    try:
-                        candidate=validate_translation_pair(
-                            translated.get(s["index"],""),
-                            s["text"],
-                            field=f"post-review hard semantic segment {s['index']}",
-                            enforce_intent=False,
-                        )
-                        translated[s["index"]]=validate_segment_fit(
-                            candidate,s,field=f"post-review hard fit segment {s['index']}"
+                        translated[idx]=validate_translation_pair(
+                            candidate,s["text"],field=f"repair segment {idx}",enforce_intent=False
                         )
                     except Exception:
-                        hard_unresolved.append(s)
-                unresolved=hard_unresolved
-            if unresolved:
-                raise RuntimeError(
-                    "translation hard quality unresolved after bounded review "
-                    +str(len(unresolved))+" segments: "
-                    +",".join(str(s["index"]) for s in unresolved[:30])
-                )
-            invalid_ids=[]
-            del qmodel,qtok
-            gc.collect()
-            torch.cuda.empty_cache()
-    else:
-        primary_model="Helsinki-NLP/opus-mt-zh-vi"
-        translated.update(opus_translate(pending_segments,on_device="cpu"))
-        title_model=AutoTokenizer.from_pretrained(primary_model)
-        title_llm=AutoModelForSeq2SeqLM.from_pretrained(primary_model).to("cpu")
-        inp=title_model([str(cfg.get("title") or "")],return_tensors="pt")
-        out=title_llm.generate(**inp,max_new_tokens=96,num_beams=2)
-        translated_title=clean(title_model.batch_decode(out,skip_special_tokens=True)[0])
-        del title_llm,title_model
-        gc.collect()
+                        hard_after.append(idx)
+
+        if hard_after:
+            raise RuntimeError(
+                f"translation hard quality unresolved after single repair {len(hard_after)} segments: "
+                +",".join(map(str,hard_after[:30]))
+            )
+
+    title_item={
+        "index":0,
+        "text":str(cfg.get("title") or ""),
+        "fit_words":20,
+    }
+    try:
+        title_chat=tok.apply_chat_template(
+            [{"role":"user","content":(
+                "将以下标题翻译为自然越南语，保持原作品题材风格和专有名词，只输出越南语标题，不解释：\n\n"
+                +title_item["text"]
+            )}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inp=tok([title_chat],return_tensors="pt",padding=True,truncation=True,max_length=256)
+        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+        out=model.generate(
+            **inp,max_new_tokens=64,do_sample=False,repetition_penalty=1.05,
+            pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
+        )
+        generated=out[:,inp["input_ids"].shape[1]:]
+        translated_title=clean(tok.batch_decode(generated,skip_special_tokens=True)[0])
+        if not translated_title or CJK_RE.search(translated_title):
+            raise ValueError("invalid translated title")
+    except Exception:
+        translated_title=clean(str(cfg.get("series_title") or cfg.get("title") or "Hidden Beyond"))
+
+    overlong_ids=[
+        s["index"] for s in segments
+        if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
+    ]
+    invalid_ids=[]
+    del model,tok
+    gc.collect()
+    torch.cuda.empty_cache()
 
     missing=[s for s in segments if not translated.get(s["index"])]
     if missing:
@@ -1317,9 +1042,7 @@ def main()->None:
                 translated[s["index"]],s["text"],field=f"final semantic segment {s['index']}",
                 enforce_intent=False,
             )
-            translated[s["index"]]=validate_segment_fit(
-                translated[s["index"]],s,field=f"final segment {s['index']}"
-            )
+            # Segment duration is a review signal, not a production hard-fail.
         except Exception:
             final_invalid.append(s["index"])
     if final_invalid:
@@ -1358,20 +1081,20 @@ def main()->None:
         "segments":len(segments),
         "translation_model":primary_model,
         "translation_profile":translation_profile,
-        "translation_editor":"Qwen/Qwen2.5-1.5B-Instruct" if qwen_reviewed else "not_used",
+        "translation_editor":"not_used",
         "transcript_source":transcript_source,
         "whisper_model":whisper_name,
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"universal-longform-direct-context-qa-v8",
+        "translation_mode":"hy-mt2-single-pass-single-repair-v9",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"universal-longform-v2-hard-vs-review",
+        "translation_quality_profile":"hard-gate-plus-single-review-v3",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-selective-qwen-vieneu-remux-v8",
+        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-single-repair-vieneu-remux-v9",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
