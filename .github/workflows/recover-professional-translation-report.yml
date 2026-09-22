@@ -1,0 +1,79 @@
+name: Recover Professional Translation Report
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/professional-translation/recover.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Recover persisted Kaggle report
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install -e .
+          test -n "$KAGGLE_API_TOKEN"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          cfg=json.loads(Path("hidden_beyond/professional-translation/recover.json").read_text(encoding="utf-8"))
+          slug=str(cfg["slug"]).strip()
+          filename=str(cfg.get("filename") or "professional-translation-report.json").strip()
+          worker=KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+          )
+          try:
+              log=worker.logs(slug)
+              Path("recovered-kaggle.log").write_text(log,encoding="utf-8")
+          except Exception as exc:
+              Path("recovered-kaggle.log").write_text("LOG_RECOVERY_ERROR "+repr(exc)+"\n",encoding="utf-8")
+
+          raw=worker.download_output_file(slug,filename)
+          Path("professional-translation-report.json").write_bytes(raw)
+          report=json.loads(raw.decode("utf-8"))
+          Path("recovery-summary.json").write_text(json.dumps({
+              "source_run_id":cfg.get("source_run_id"),
+              "slug":slug,
+              "ok":report.get("ok"),
+              "cases":report.get("cases"),
+              "hard_failed":report.get("hard_failed"),
+              "critical":report.get("critical"),
+              "major":report.get("major"),
+              "minor":report.get("minor"),
+          },ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+          print(json.dumps(report,ensure_ascii=False))
+          PY
+
+      - name: Preserve recovered evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-professional-translation-report
+          path: |
+            professional-translation-report.json
+            recovery-summary.json
+            recovered-kaggle.log
+          if-no-files-found: warn
+          retention-days: 7
