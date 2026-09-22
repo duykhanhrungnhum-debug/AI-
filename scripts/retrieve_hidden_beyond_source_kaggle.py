@@ -58,9 +58,11 @@ def main():
     wanted={"source.mp4","source-metadata.json"}
     urls={}
     started=time.monotonic()
+    permission_denied_streak=0
     for attempt in range(1,121):
         try:
             meta=worker.output_metadata(slug)
+            permission_denied_streak=0
             files=meta.get("files") if isinstance(meta,dict) else []
             urls={}
             for item in files or []:
@@ -74,7 +76,17 @@ def main():
             if wanted.issubset(urls):
                 break
         except Exception as exc:
-            print("SOURCE_CPU_WATCH_ERROR",attempt,repr(exc),flush=True)
+            detail=repr(exc)
+            print("SOURCE_CPU_WATCH_ERROR",attempt,detail,flush=True)
+            if "403" in detail and ("kernels.get" in detail or "Permission" in detail):
+                permission_denied_streak+=1
+                if permission_denied_streak>=3:
+                    raise SystemExit(
+                        "Kaggle private output API denied kernels.get three times; "
+                        "stop immediately instead of polling. Use direct storage handoff."
+                    )
+            else:
+                permission_denied_streak=0
         if time.monotonic()-started>1200:
             break
         time.sleep(10)
