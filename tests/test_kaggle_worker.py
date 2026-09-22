@@ -52,6 +52,27 @@ def test_kaggle_worker_submits_private_gpu_script_with_bearer_token(monkeypatch)
     assert submission.version_number == 3
 
 
+
+def test_kaggle_worker_uses_kernel_data_sources_for_kernel_outputs(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse({"versionNumber": 1, "kernelId": 1})
+
+    monkeypatch.setattr("ai_agent.core.kaggle_worker.urlopen", fake_urlopen)
+    worker = KaggleGpuWorker(api_token="KGAT_secret", username="testuser")
+    worker.submit_script(
+        slug="gpu-smoke",
+        title="GPU Smoke",
+        source="print('ok')",
+        kernel_sources=["sourceuser/source-kernel"],
+    )
+
+    assert captured["payload"]["kernelDataSources"] == ["sourceuser/source-kernel"]
+    assert "kernelSources" not in captured["payload"]
+
+
 def test_kaggle_worker_reads_kernel_status(monkeypatch):
     def fake_urlopen(request, timeout):
         assert "userName=testuser" in request.full_url
