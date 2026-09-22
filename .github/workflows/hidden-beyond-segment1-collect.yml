@@ -1,0 +1,61 @@
+name: Hidden Beyond Segment1 Collect
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/segment1_collect.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Collect existing probe output without resubmitting GPU
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"],username=os.environ["KAGGLE_USERNAME"],timeout=120)
+          slug="hidden-beyond-segment1-probe"
+          last=None
+          for i in range(40):
+              try:
+                  data=w.download_output_file(slug,"segment1-probe-result.json")
+                  Path("segment1-probe-result.json").write_bytes(data)
+                  result=json.loads(data.decode("utf-8"))
+                  print("SEGMENT1_COLLECTED",json.dumps(result,ensure_ascii=False),flush=True)
+                  raise SystemExit(0 if result.get("ok") else 2)
+              except FileNotFoundError as exc:
+                  last=exc
+                  print("WAIT_OUTPUT",i+1,repr(exc),flush=True)
+              except Exception as exc:
+                  last=exc
+                  print("OUTPUT_READ_ERROR",i+1,repr(exc),flush=True)
+                  if "403" in repr(exc):
+                      raise
+              time.sleep(30)
+          raise RuntimeError("probe output unavailable: "+repr(last))
+          PY
+      - name: Preserve probe result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-segment1-collected
+          path: segment1-probe-result.json
+          if-no-files-found: warn
+          retention-days: 7
