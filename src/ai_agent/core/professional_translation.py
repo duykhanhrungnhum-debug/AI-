@@ -38,6 +38,9 @@ PROFESSIONAL_ZH_VI_PHRASES = {
     "你还知道回来": "ngươi còn biết đường về",
     "不是你想的那样": "không phải như ngươi nghĩ",
     "你不帮就算了": "ngươi không giúp thì thôi",
+    "天道不公": "Thiên đạo bất công",
+    "筑基之前": "Trước khi Trúc Cơ",
+    "开辟丹田": "khai mở đan điền",
 }
 
 
