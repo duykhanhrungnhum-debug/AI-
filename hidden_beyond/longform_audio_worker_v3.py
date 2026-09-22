@@ -694,6 +694,29 @@ def upload_to_youtube(url:str,path:Path)->str:
     return video_id
 
 def main()->None:
+    if BOT2_MODE:
+        mounted_pattern=str(JOB.get("mounted_source_glob") or "/kaggle/input/**/source.mp4")
+        deadline=time.monotonic()+60.0
+        matches=[]
+        while time.monotonic()<deadline:
+            matches=[Path(p) for p in glob.glob(mounted_pattern,recursive=True) if Path(p).is_file()]
+            if len(matches)==1:
+                break
+            time.sleep(5)
+        if len(matches)!=1:
+            visible=[str(p) for p in Path("/kaggle/input").rglob("*") if p.is_file()][:80]
+            raise RuntimeError(
+                f"expected exactly one mounted source, found {len(matches)} for {mounted_pattern}; "
+                f"visible_files={visible}"
+            )
+        mounted=matches[0]
+        if mounted.stat().st_size<1_000_000:
+            raise RuntimeError(f"mounted source unexpectedly small: {mounted.stat().st_size}")
+        if SOURCE.exists() or SOURCE.is_symlink():
+            SOURCE.unlink()
+        SOURCE.symlink_to(mounted)
+        heartbeat("source_ready",f"Mounted source ready bytes={mounted.stat().st_size} path={mounted}")
+
     heartbeat("installing","Installing optimized local AI runtime")
     deps=[
         "faster-whisper>=1.1,<2",
@@ -720,19 +743,7 @@ def main()->None:
     source_video_id=str(cfg["source_video_id"])
 
     pipeline_started=time.monotonic()
-    if BOT2_MODE:
-        mounted_pattern=str(JOB.get("mounted_source_glob") or "/kaggle/input/*/source.mp4")
-        matches=[Path(p) for p in glob.glob(mounted_pattern) if Path(p).is_file()]
-        if len(matches)!=1:
-            raise RuntimeError(f"expected exactly one mounted source, found {len(matches)} for {mounted_pattern}")
-        mounted=matches[0]
-        if mounted.stat().st_size<1_000_000:
-            raise RuntimeError(f"mounted source unexpectedly small: {mounted.stat().st_size}")
-        if SOURCE.exists() or SOURCE.is_symlink():
-            SOURCE.unlink()
-        SOURCE.symlink_to(mounted)
-        heartbeat("source_ready",f"Mounted source ready bytes={mounted.stat().st_size}")
-    else:
+    if not BOT2_MODE:
         heartbeat("source_download","Downloading source once on the direct worker")
         client_sets=[None,"android_vr,web_safari","tv,mweb"]
         last_source_error=""
