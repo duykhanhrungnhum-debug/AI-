@@ -43,6 +43,18 @@ def has_ngram_loop(value:str)->bool:
             if gram and words[i+n:i+2*n]==gram and words[i+2*n:i+3*n]==gram:
                 return True
     return False
+
+def collapse_cjk_asr_repetition(value:str)->str:
+    """Collapse obvious consecutive CJK ASR loops while preserving emphasis twice."""
+    value=clean(value)
+    for _ in range(3):
+        before=value
+        for width in range(8,1,-1):
+            pattern=re.compile(rf"((?:[\u3400-\u4dbf\u4e00-\u9fff]{{{width}}}))\1{{2,}}")
+            value=pattern.sub(lambda m:m.group(1)*2,value)
+        if value==before:
+            break
+    return value
 TAG_RE=re.compile(r"<[^>]+>")
 DIALOGUE_GLOSSARY={
     "自寻死路":"tự tìm đường chết",
@@ -773,6 +785,8 @@ def main()->None:
         heartbeat("transcribed",f"ASR ready: {len(raw)} raw cues")
 
     segments=raw
+    for s in segments:
+        s["text"]=collapse_cjk_asr_repetition(s.get("text",""))
     if len(segments)<10:
         raise RuntimeError(f"too few transcript segments: {len(segments)}")
     for i,s in enumerate(segments,1):
@@ -1107,7 +1121,7 @@ def main()->None:
         "tts_voice":voice_mode,
         "translation_mode":"hy-mt2-single-pass-single-repair-v9",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"reason-aware-single-repair-v6",
+        "translation_quality_profile":"asr-dedup-reason-aware-single-repair-v7",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
