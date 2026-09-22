@@ -107,7 +107,7 @@ class KaggleGpuWorker:
         if machine_shape is not None:
             payload["machineShape"] = machine_shape
         if kernel_sources:
-            payload["kernelSources"] = [str(x).strip() for x in kernel_sources if str(x).strip()]
+            payload["kernelDataSources"] = [str(x).strip() for x in kernel_sources if str(x).strip()]
         data = {}
         for attempt in range(1, self.submission_retry_attempts + 1):
             data = self._request_json("POST", "/kernels/push", payload=payload)
