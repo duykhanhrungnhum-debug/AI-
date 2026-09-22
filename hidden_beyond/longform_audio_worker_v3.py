@@ -4,6 +4,7 @@ from __future__ import annotations
 # __JOB_CONFIG_INJECT__
 
 import gc
+import glob
 import hashlib
 import html
 import json
@@ -29,6 +30,7 @@ META=WORK/"metadata.json"
 API=JOB["callback_base"].rstrip("/")
 JOB_ID=JOB["job_id"]
 JOB_TOKEN=JOB["job_token"]
+BOT2_MODE=str(JOB.get("mode") or "").lower()=="bot2"
 _stage={"name":"starting","message":"GPU worker starting"}
 _stop=threading.Event()
 
@@ -85,14 +87,34 @@ STYLE={
 
 def post(path:str,payload:dict)->dict:
     data=json.dumps(payload,ensure_ascii=False).encode()
+    token_header="x-bot2-token" if BOT2_MODE else "x-job-token"
     req=Request(
         API+path,
         data=data,
-        headers={"content-type":"application/json","x-job-token":JOB_TOKEN},
+        headers={"content-type":"application/json",token_header:JOB_TOKEN},
         method="POST",
     )
     with urlopen(req,timeout=120) as r:
         return json.loads(r.read().decode())
+
+def bot2_stage_name(stage:str)->str:
+    if stage in {"installing","starting"}:
+        return "gpu_submitted"
+    if stage in {"caption_probe","extracting_audio","transcribing","transcribed"}:
+        return "asr"
+    if stage in {"translating","packaging_translation"}:
+        return "translating"
+    if stage=="translation_repair":
+        return "translation_repair"
+    if stage in {"tts_loading","tts"}:
+        return "tts"
+    if stage in {"mixing","evidence"}:
+        return "mixing"
+    if stage in {"youtube_upload","youtube_uploaded"}:
+        return stage
+    if stage=="source_ready":
+        return "source_ready"
+    return "gpu_submitted"
 
 def infer_translation_profile(cfg:dict,segments:list[dict],existing:dict)->dict:
     profile=dict(existing or {})
@@ -162,7 +184,15 @@ def heartbeat(stage:str,message:str)->None:
     _stage["name"]=stage
     _stage["message"]=message
     try:
-        post("/heartbeat",{"job_id":JOB_ID,"stage":stage,"message":message})
+        if BOT2_MODE:
+            post("/worker-stage",{
+                "source_video_id":str(JOB["source_video_id"]),
+                "stage":bot2_stage_name(stage),
+                "message":message,
+                "gpu_kernel_ref":str(JOB.get("gpu_kernel_ref") or ""),
+            })
+        else:
+            post("/heartbeat",{"job_id":JOB_ID,"stage":stage,"message":message})
         print("HB_HEARTBEAT",stage,message,flush=True)
     except Exception as exc:
         print("HB_HEARTBEAT_ERROR",stage,repr(exc),flush=True)
@@ -683,52 +713,69 @@ def main()->None:
     from faster_whisper import BatchedInferencePipeline, WhisperModel
     from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
-    cfg=post("/worker-config",{"job_id":JOB_ID})
+    cfg=dict(JOB.get("config") or {}) if BOT2_MODE else post("/worker-config",{"job_id":JOB_ID})
     device="cuda" if torch.cuda.is_available() else "cpu"
     compute="float16" if device=="cuda" else "int8"
     source_video_id=str(cfg["source_video_id"])
 
     pipeline_started=time.monotonic()
-    heartbeat("source_download","Downloading source once on the direct worker")
-    client_sets=[None,"android_vr,web_safari","tv,mweb"]
-    last_source_error=""
-    for attempt,clients in enumerate(client_sets,1):
+    if BOT2_MODE:
+        mounted_pattern=str(JOB.get("mounted_source_glob") or "/kaggle/input/*/source.mp4")
+        matches=[Path(p) for p in glob.glob(mounted_pattern) if Path(p).is_file()]
+        if len(matches)!=1:
+            raise RuntimeError(f"expected exactly one mounted source, found {len(matches)} for {mounted_pattern}")
+        mounted=matches[0]
+        if mounted.stat().st_size<1_000_000:
+            raise RuntimeError(f"mounted source unexpectedly small: {mounted.stat().st_size}")
         if SOURCE.exists():
             SOURCE.unlink()
-        cmd=[
-            sys.executable,"-m","yt_dlp","--no-playlist",
-            "--retries","5","--fragment-retries","5",
-            "--remote-components","ejs:github",
-        ]
-        if shutil.which("node"):
-            cmd += ["--js-runtimes","node"]
-        if clients:
-            cmd += ["--extractor-args",f"youtube:player_client={clients}"]
-        cmd += [
-            "-f","bv*[height<=720]+ba/b[height<=720]/b",
-            "--merge-output-format","mp4","-o",str(SOURCE),str(cfg["source_url"]),
-        ]
-        proc=subprocess.run(cmd,text=True,capture_output=True)
-        if proc.returncode==0 and SOURCE.exists() and SOURCE.stat().st_size>=1_000_000:
-            heartbeat(
-                "source_ready",
-                f"Source ready attempt={attempt} clients={clients or 'default'} bytes={SOURCE.stat().st_size}",
-            )
-            break
-        tail=(proc.stderr or proc.stdout or "").strip()[-1200:]
-        last_source_error=tail or f"yt-dlp exit={proc.returncode}"
-        heartbeat(
-            "source_retry",
-            f"Source attempt {attempt}/{len(client_sets)} failed clients={clients or 'default'}; retrying bounded fallback",
-        )
-        if attempt<len(client_sets):
-            time.sleep(12*attempt)
+        shutil.copy2(mounted,SOURCE)
+        heartbeat("source_ready",f"Mounted source ready bytes={SOURCE.stat().st_size}")
     else:
-        raise RuntimeError("source download failed after bounded retries: "+last_source_error)
+        heartbeat("source_download","Downloading source once on the direct worker")
+        client_sets=[None,"android_vr,web_safari","tv,mweb"]
+        last_source_error=""
+        for attempt,clients in enumerate(client_sets,1):
+            if SOURCE.exists():
+                SOURCE.unlink()
+            cmd=[
+                sys.executable,"-m","yt_dlp","--no-playlist",
+                "--retries","5","--fragment-retries","5",
+                "--remote-components","ejs:github",
+            ]
+            if shutil.which("node"):
+                cmd += ["--js-runtimes","node"]
+            if clients:
+                cmd += ["--extractor-args",f"youtube:player_client={clients}"]
+            cmd += [
+                "-f","bv*[height<=720]+ba/b[height<=720]/b",
+                "--merge-output-format","mp4","-o",str(SOURCE),str(cfg["source_url"]),
+            ]
+            proc=subprocess.run(cmd,text=True,capture_output=True)
+            if proc.returncode==0 and SOURCE.exists() and SOURCE.stat().st_size>=1_000_000:
+                heartbeat(
+                    "source_ready",
+                    f"Source ready attempt={attempt} clients={clients or 'default'} bytes={SOURCE.stat().st_size}",
+                )
+                break
+            tail=(proc.stderr or proc.stdout or "").strip()[-1200:]
+            last_source_error=tail or f"yt-dlp exit={proc.returncode}"
+            heartbeat(
+                "source_retry",
+                f"Source attempt {attempt}/{len(client_sets)} failed clients={clients or 'default'}; retrying bounded fallback",
+            )
+            if attempt<len(client_sets):
+                time.sleep(12*attempt)
+        else:
+            raise RuntimeError("source download failed after bounded retries: "+last_source_error)
 
     transcript_started=time.monotonic()
-    heartbeat("caption_probe","Checking source captions before ASR")
-    caption_result=try_youtube_captions(source_video_id)
+    if BOT2_MODE:
+        caption_result=None
+        heartbeat("extracting_audio","Bot2 mounted source verified; using local ASR")
+    else:
+        heartbeat("caption_probe","Checking source captions before ASR")
+        caption_result=try_youtube_captions(source_video_id)
 
     if caption_result:
         raw,caption_kind,caption_lang,transcript_media_duration=caption_result
@@ -1158,19 +1205,27 @@ def main()->None:
     meta=render_voice_and_video(segments,meta)
     META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
 
-    heartbeat("evidence","Uploading small subtitle and metadata evidence")
-    upload(cfg["subtitle_upload_url"],SRT,"text/plain")
-    upload(cfg["metadata_upload_url"],META,"application/json")
+    if not BOT2_MODE:
+        heartbeat("evidence","Uploading small subtitle and metadata evidence")
+        upload(cfg["subtitle_upload_url"],SRT,"text/plain")
+        upload(cfg["metadata_upload_url"],META,"application/json")
 
     video_id=upload_to_youtube(str(cfg["youtube_upload_url"]),OUT)
     heartbeat("youtube_uploaded",f"YouTube accepted video id={video_id}")
-    result=post("/complete",{
-        "job_id":JOB_ID,
-        "youtube_video_id":video_id,
-        "translated_title":translated_title,
-        "translation_profile":translation_profile,
-    })
-    print("HB_DIRECT_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
+    if BOT2_MODE:
+        result=post("/worker-complete",{
+            "source_video_id":source_video_id,
+            "youtube_video_id":video_id,
+        })
+        print("HB_BOT2_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
+    else:
+        result=post("/complete",{
+            "job_id":JOB_ID,
+            "youtube_video_id":video_id,
+            "translated_title":translated_title,
+            "translation_profile":translation_profile,
+        })
+        print("HB_DIRECT_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
 
 if __name__=="__main__":
     thread=threading.Thread(target=heartbeat_loop,daemon=True)
@@ -1180,7 +1235,14 @@ if __name__=="__main__":
     except Exception as exc:
         print("HB_AI_FAIL",repr(exc),flush=True)
         try:
-            post("/fail",{"job_id":JOB_ID,"error":repr(exc)})
+            if BOT2_MODE:
+                post("/worker-fail",{
+                    "source_video_id":str(JOB["source_video_id"]),
+                    "stage":bot2_stage_name(_stage["name"]),
+                    "error":repr(exc),
+                })
+            else:
+                post("/fail",{"job_id":JOB_ID,"error":repr(exc)})
         except Exception as fail_exc:
             print("HB_FAIL_REPORT_ERROR",repr(fail_exc),flush=True)
         raise
