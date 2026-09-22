@@ -177,7 +177,68 @@ def prepare_segment_cache_keys(segments:list[dict],profile:dict)->None:
             CACHE_MODEL_KEY,profile_sig,context_hash,str(start_ms),str(end_ms),clean(s["text"])
         ])
         s["source_context_hash"]=context_hash
+        s["source_hash"]=hashlib.sha256(clean(s["text"]).encode("utf-8")).hexdigest()
         s["segment_key"]=hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+def safe_series_memory_source(source:str)->bool:
+    value=clean(source)
+    cjk=len(CJK_RE.findall(value))
+    if cjk<6:
+        return False
+    # Do not blindly reuse context-sensitive pronoun/dialogue lines across episodes.
+    if any(x in value for x in ("我","你","您","他","她","它","咱","本座","老夫","为师","師父","师父")):
+        return False
+    return True
+
+def load_series_memory(segments:list[dict],profile:dict)->dict[int,str]:
+    candidates=[s for s in segments if safe_series_memory_source(s["text"])]
+    hashes=[s["source_hash"] for s in candidates]
+    found={}
+    for off in range(0,len(hashes),200):
+        resp=cache_post("/memory/load",{
+            "source_hashes":hashes[off:off+200],
+            "profile_version":int(profile.get("profile_version") or 1),
+            "model_key":CACHE_MODEL_KEY,
+        })
+        for row in resp.get("entries") or []:
+            found[str(row.get("source_hash"))]=str(row.get("translation") or "")
+    out={}
+    for s in candidates:
+        value=found.get(s["source_hash"])
+        if not value:
+            continue
+        try:
+            candidate=validate_translation_pair(value,s["text"],field=f"series memory {s['index']}")
+            candidate=validate_segment_fit(candidate,s,field=f"series memory fit {s['index']}")
+            out[s["index"]]=candidate
+        except Exception:
+            continue
+    return out
+
+def store_series_memory(segments:list[dict],translated:dict[int,str],profile:dict)->int:
+    eligible=[s for s in segments if safe_series_memory_source(s["text"])]
+    stored=0
+    for off in range(0,len(eligible),200):
+        batch=[]
+        for s in eligible[off:off+200]:
+            vi=clean(translated.get(s["index"],""))
+            if not vi:
+                continue
+            batch.append({
+                "source_hash":s["source_hash"],
+                "source_text":s["text"],
+                "translation":vi,
+                "qa_state":"passed",
+                "first_source_video_id":str(s.get("source_video_id") or ""),
+            })
+        if batch:
+            resp=cache_post("/memory/store",{
+                "profile_version":int(profile.get("profile_version") or 1),
+                "model_key":CACHE_MODEL_KEY,
+                "entries":batch,
+            })
+            stored+=int(resp.get("stored") or 0)
+    return stored
 
 def load_segment_cache(segments:list[dict],profile:dict)->dict[int,str]:
     keys=[s["segment_key"] for s in segments]
@@ -710,15 +771,20 @@ def main()->None:
     prepare_segment_cache_keys(segments,translation_profile)
     cached_translations=load_segment_cache(segments,translation_profile)
     cache_hits=len(cached_translations)
-    pending_segments=[s for s in segments if s["index"] not in cached_translations]
+    after_segment_cache=[s for s in segments if s["index"] not in cached_translations]
+    series_memory=load_series_memory(after_segment_cache,translation_profile)
+    series_memory_hits=len(series_memory)
+    pending_segments=[s for s in after_segment_cache if s["index"] not in series_memory]
     cache_misses=len(pending_segments)
     heartbeat(
         "translation_cache",
-        f"Segment cache ready: hit={cache_hits} miss={cache_misses} profile={translation_profile.get('genre','general')}",
+        f"Reuse ready: segment_hit={cache_hits} series_memory_hit={series_memory_hits} "
+        f"translate={cache_misses} profile={translation_profile.get('genre','general')}",
     )
 
     translation_started=time.monotonic()
     translated=dict(cached_translations)
+    translated.update(series_memory)
     invalid_ids=[]
     qwen_reviewed=0
     fallback_segments=0
@@ -1138,6 +1204,7 @@ def main()->None:
         s["vi"]=translated[s["index"]]
 
     cache_stored=store_segment_cache(segments,translated,translation_profile)
+    series_memory_stored=store_series_memory(segments,translated,translation_profile)
     translation_seconds=round(time.monotonic()-translation_started,2)
     heartbeat(
         "packaging_translation",
@@ -1163,8 +1230,10 @@ def main()->None:
         "translation_profile":translation_profile,
         "segment_cache_model_key":CACHE_MODEL_KEY,
         "segment_cache_hits":cache_hits,
-        "segment_cache_misses":cache_misses,
+        "series_memory_hits":series_memory_hits,
+        "translation_segments_computed":cache_misses,
         "segment_cache_stored":cache_stored,
+        "series_memory_stored":series_memory_stored,
         "translation_editor":"Qwen/Qwen2.5-1.5B-Instruct" if qwen_reviewed else "not_used",
         "transcript_source":transcript_source,
         "whisper_model":whisper_name,
