@@ -1,0 +1,24 @@
+name: Hidden Beyond Read Old Meta Raw
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/read_old_meta_raw.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read timed segment 1 from old metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl --fail-with-body -sS "https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hb-old-meta-first" -o meta.txt
+          echo "TIMED_SEGMENTS_START"
+          grep -n -A 45 '"timed_segments"' meta.txt | head -n 55
+          echo "TIMED_SEGMENTS_END"
