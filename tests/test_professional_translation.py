@@ -41,6 +41,13 @@ def test_professional_prompt_contains_context_glossary_and_fidelity_rules():
     assert "不得遗漏关键含义" in prompt
     assert "〖背景信息〗" in prompt
     assert "前文越南语译文" in prompt
+    assert "ta/ngươi/nàng/hắn/bổn tọa" in prompt
+    assert "解释性长句" in prompt
+
+
+def test_professional_prompt_uses_learned_phrase_memory():
+    prompt=build_professional_prompt("这是筑基丹",brief())
+    assert "筑基丹 翻译成 đan dược Trúc Cơ" in prompt
 
 
 def test_rejects_hallucinated_policy_refusal():
