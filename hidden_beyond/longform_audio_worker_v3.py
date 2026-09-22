@@ -566,7 +566,7 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
     import soundfile as sf
     from vieneu import Vieneu
 
-    voice_name=str(meta.get("voice_name") or "Minh Quân Pro")
+    voice_name=str(meta.get("voice_name") or "Ngọc Linh")
     segdir=WORK/"tts"
     segdir.mkdir(exist_ok=True)
     max_tempo=float((meta.get("style") or {}).get("max_tempo",1.16))
@@ -606,7 +606,8 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
 
             original=max(0.01,wav_duration(raw))
             next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+1.2
-            slot=max(0.25,next_start-min_pause-float(s["start"]))
+            slot_end=min(next_start-min_pause,float(s["end"])+0.18)
+            slot=max(0.25,slot_end-float(s["start"]))
             fit=raw
             if original>slot+0.08:
                 retimed+=1
@@ -657,8 +658,8 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
 
     heartbeat("mixing","Mixing Vietnamese voice with original video; copying video stream")
     mix=(
-        "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35,volume=0.88[orig];"
-        "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.04,asplit=2[sc][voice];"
+        "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35,volume=0.62[orig];"
+        "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.06,asplit=2[sc][voice];"
         "[orig][sc]sidechaincompress=threshold=0.010:ratio=14:attack=8:release=240:makeup=1[duck];"
         "[duck][voice]amix=inputs=2:weights='0.68 1':normalize=0,loudnorm=I=-18.0:TP=-2.5:LRA=6,"
         "alimiter=limit=0.94[outa]"
@@ -852,7 +853,8 @@ def main()->None:
         s["index"]=i
         s["slot"]=max(0.30,float(s["end"])-float(s["start"]))
         next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+max(1.2,float(STYLE["max_extra_gap"]))+float(STYLE["min_pause_between_cues"])
-        available_end=next_start-float(STYLE["min_pause_between_cues"])
+        speech_tail=float(s["end"])+0.18
+        available_end=min(next_start-float(STYLE["min_pause_between_cues"]),speech_tail)
         s["tts_slot"]=max(0.25,available_end-float(s["start"]))
         s["max_words"]=max(2,int(math.floor(s["tts_slot"]*STYLE["words_per_second"]+0.5)))
         s["fit_words"]=fit_word_limit(s)
@@ -922,11 +924,29 @@ def main()->None:
 
     def context_for(s:dict)->str:
         idx=s["index"]
-        parts=[]
-        for j in (idx-2,idx-1,idx+1,idx+2):
+        before=[]
+        after=[]
+        for j in range(max(1,idx-4),idx):
             if j in by_index:
-                parts.append(by_index[j].get("text",""))
-        return clean(" ".join(parts))
+                before.append(f"{j}:{clean(by_index[j].get('text',''))}")
+        for j in range(idx+1,min(len(segments),idx+4)+1):
+            if j in by_index:
+                after.append(f"{j}:{clean(by_index[j].get('text',''))}")
+        prior_vi=[]
+        for j in range(max(1,idx-3),idx):
+            if translated.get(j):
+                prior_vi.append(f"{j}:{clean(translated[j])}")
+        title=clean(str(cfg.get("series_title") or cfg.get("title") or ""))
+        parts=[]
+        if title:
+            parts.append("作品="+title)
+        if before:
+            parts.append("前文="+" | ".join(before))
+        if prior_vi:
+            parts.append("已译前文="+" | ".join(prior_vi))
+        if after:
+            parts.append("后文="+" | ".join(after))
+        return "\n".join(parts)
 
     def prompt_for(s:dict, *, repair:bool=False, current:str="", failure_reason:str="")->str:
         terms=glossary_pairs(s["text"])
@@ -959,8 +979,8 @@ def main()->None:
             +"〖背景信息〗\n"+context_for(s)+"\n"
             +"〖翻译要求〗\n"
             +"1. 忠实传达原意，不添加原文没有的信息，不遗漏关键含义。\n"
-            +"2. 保持人物关系、否定、数字、疑问和情绪强度。\n"
-            +"3. 称呼、专有名词和术语在同一系列中保持一致。\n"
+            +"2. 必须先结合前后文判断谁对谁说话、人物身份、辈分、关系和当前事件，再翻译本句；不得只按字面孤立翻译。\n"
+            +"3. 保持人物关系、否定、数字、疑问、因果和情绪强度；称呼、专有名词和术语在同一系列中保持一致。\n"
             +"4. "+profile_prompt_rule(translation_profile)+"\n"
             +f"5. 尽量简洁，目标不超过 {limit} 个越南语词，适合配音。\n"
             +"6. 只输出越南语译文，不解释。\n"
@@ -973,7 +993,7 @@ def main()->None:
     review_ids=set()
     hard_invalid=set()
     hard_reasons={}
-    batch_size=8
+    batch_size=6
     cursor=0
     with torch.inference_mode():
         while cursor<len(segments):
@@ -1156,7 +1176,7 @@ def main()->None:
     )
 
     voice_mode="vieneu-v3-turbo-onnx-int8"
-    voice_name="Minh Quân Pro"
+    voice_name="Ngọc Linh"
     lines=[]
     for i,s in enumerate(segments,1):
         lines += [str(i),f"{ts(s['start'])} --> {ts(s['end'])}",s["vi"],""]
@@ -1178,14 +1198,14 @@ def main()->None:
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"hy-mt2-single-pass-single-repair-v9",
-        "timing_mode":"speech-segment-sync",
+        "translation_mode":"hy-mt2-context-window-single-repair-v10",
+        "timing_mode":"source-speech-window-sync-v2",
         "translation_quality_profile":"asr-dedup-reason-aware-single-repair-v7",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-single-repair-vieneu-remux-v9",
+        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-context-v10-vieneu-remux",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
