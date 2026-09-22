@@ -695,9 +695,7 @@ def upload_to_youtube(url:str,path:Path)->str:
 
 def main()->None:
     heartbeat("installing","Installing optimized local AI runtime")
-    run([
-        sys.executable,"-m","pip","install","--quiet",
-        "yt-dlp>=2026.1",
+    deps=[
         "faster-whisper>=1.1,<2",
         "transformers>=5.6,<6",
         "accelerate<2",
@@ -707,7 +705,10 @@ def main()->None:
         "vieneu>=3.8.1,<4",
         "soundfile>=0.13,<1",
         "numpy",
-    ])
+    ]
+    if not BOT2_MODE:
+        deps.insert(0,"yt-dlp>=2026.1")
+    run([sys.executable,"-m","pip","install","--quiet",*deps])
 
     import torch
     from faster_whisper import BatchedInferencePipeline, WhisperModel
@@ -727,10 +728,10 @@ def main()->None:
         mounted=matches[0]
         if mounted.stat().st_size<1_000_000:
             raise RuntimeError(f"mounted source unexpectedly small: {mounted.stat().st_size}")
-        if SOURCE.exists():
+        if SOURCE.exists() or SOURCE.is_symlink():
             SOURCE.unlink()
-        shutil.copy2(mounted,SOURCE)
-        heartbeat("source_ready",f"Mounted source ready bytes={SOURCE.stat().st_size}")
+        SOURCE.symlink_to(mounted)
+        heartbeat("source_ready",f"Mounted source ready bytes={mounted.stat().st_size}")
     else:
         heartbeat("source_download","Downloading source once on the direct worker")
         client_sets=[None,"android_vr,web_safari","tv,mweb"]
