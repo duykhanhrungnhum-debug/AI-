@@ -964,6 +964,7 @@ def main()->None:
             f"Single targeted repair pass: {len(repair_items)} of {len(segments)} segments",
         )
         hard_after=[]
+        hard_after_details={}
         with torch.inference_mode():
             for off in range(0,len(repair_items),4):
                 batch=repair_items[off:off+4]
@@ -994,13 +995,22 @@ def main()->None:
                         translated[idx]=validate_translation_pair(
                             candidate,s["text"],field=f"repair segment {idx}",enforce_intent=False
                         )
-                    except Exception:
+                    except Exception as exc:
                         hard_after.append(idx)
+                        hard_after_details[idx]={
+                            "reason":str(exc),
+                            "source":clean(s["text"])[:160],
+                            "output":candidate[:160],
+                        }
 
         if hard_after:
+            detail=" | ".join(
+                f"{idx}:{hard_after_details.get(idx,{})}"
+                for idx in hard_after[:3]
+            )
             raise RuntimeError(
                 f"translation hard quality unresolved after single repair {len(hard_after)} segments: "
-                +",".join(map(str,hard_after[:30]))
+                +",".join(map(str,hard_after[:30]))+"; details="+detail
             )
 
     title_item={
