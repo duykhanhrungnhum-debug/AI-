@@ -46,8 +46,11 @@ def test_professional_prompt_contains_context_glossary_and_fidelity_rules():
 
 
 def test_professional_prompt_uses_learned_phrase_memory():
-    prompt=build_professional_prompt("这是筑基丹",brief())
+    prompt=build_professional_prompt("这是筑基丹，天道不公。筑基之前不可强行开辟丹田。",brief())
     assert "筑基丹 翻译成 đan dược Trúc Cơ" in prompt
+    assert "天道不公 翻译成 Thiên đạo bất công" in prompt
+    assert "筑基之前 翻译成 Trước khi Trúc Cơ" in prompt
+    assert "开辟丹田 翻译成 khai mở đan điền" in prompt
 
 
 def test_rejects_hallucinated_policy_refusal():
