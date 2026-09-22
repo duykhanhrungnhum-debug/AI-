@@ -233,33 +233,33 @@ def has_vi_question_marker(value:str)->bool:
     return any(marker in words for marker in QUESTION_VI)
 
 def validate_translation_pair(text:str,source:str,*,field:str,enforce_intent:bool=True)->str:
-    """Validate translation integrity.
-
-    Hard failures are deterministic defects that can safely block production.
-    Negation/question checks are heuristic review signals: they trigger repair
-    while models are available, but they must not create an endless hard-fail
-    loop after bounded review.
-    """
+    """Hard production gate: only deterministic translation defects."""
     value=validate_vi(text,source,field=field)
-    src_cjk=len(CJK_RE.findall(source))
-    words=vi_word_count(value)
-    if src_cjk and words>max(10,math.ceil(src_cjk*2.6)+3):
-        raise ValueError(f"{field} extreme expansion")
-    if src_cjk>=10 and words<max(2,math.floor(src_cjk/6)):
-        raise ValueError(f"{field} extreme omission")
     low=value.casefold()
-    if not any(term in source for term in META_SOURCE_ZH):
-        if any(term in low for term in META_HALLUCINATION_VI):
-            raise ValueError(f"{field} meta hallucination")
-    if enforce_intent:
-        if any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI):
-            raise ValueError(f"{field} lost negation")
-        if any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value):
-            raise ValueError(f"{field} lost question intent")
     for zh,vi in glossary_pairs(source):
         if vi.casefold() not in low:
             raise ValueError(f"{field} missing glossary {zh}")
     return value
+
+def translation_review_reasons(text:str,source:str)->list[str]:
+    """Heuristic quality signals. They request one repair pass but never hard-stop by themselves."""
+    value=clean(text)
+    reasons=[]
+    src_cjk=len(CJK_RE.findall(source))
+    words=vi_word_count(value)
+    if src_cjk and words>max(10,math.ceil(src_cjk*2.6)+3):
+        reasons.append("extreme_expansion")
+    if src_cjk>=10 and words<max(2,math.floor(src_cjk/6)):
+        reasons.append("extreme_omission")
+    low=value.casefold()
+    if not any(term in source for term in META_SOURCE_ZH):
+        if any(term in low for term in META_HALLUCINATION_VI):
+            reasons.append("meta_hallucination")
+    if any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI):
+        reasons.append("negation")
+    if any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value):
+        reasons.append("question")
+    return reasons
 
 def fit_word_limit(segment:dict)->int:
     slot=max(0.25,float(segment.get("tts_slot") or (float(segment["end"])-float(segment["start"]))))
@@ -887,10 +887,7 @@ def main()->None:
         )
 
     def soft_intent_review(source:str,value:str)->bool:
-        low=clean(value).casefold()
-        lost_neg=any(term in source for term in NEGATION_ZH) and not any(term in low for term in NEGATION_VI)
-        lost_q=any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value)
-        return lost_neg or lost_q
+        return bool(translation_review_reasons(value,source))
 
     review_ids=set()
     hard_invalid=set()
@@ -1089,7 +1086,7 @@ def main()->None:
         "tts_voice":voice_mode,
         "translation_mode":"hy-mt2-single-pass-single-repair-v9",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"hard-gate-plus-single-review-v3",
+        "translation_quality_profile":"deterministic-hard-gate-single-review-v4",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
