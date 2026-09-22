@@ -3,5 +3,5 @@
   "source_video_id": "vaY4URFw0cg",
   "force_reprocess": true,
   "version_label": "V2",
-  "retry_nonce": "2026-09-22-v2-structural-hard-gate"
+  "retry_nonce": "2026-09-22-v2-asr-dedup-final"
 }
