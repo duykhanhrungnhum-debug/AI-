@@ -64,6 +64,7 @@ jobs:
                   sys.executable,"-m","yt_dlp","-v","--no-playlist",
                   "--retries","1","--fragment-retries","1",
                   "--remote-components","ejs:github",
+                  "--js-runtimes","node",
                   "--extractor-args","youtube:player_client=mweb",
                   "--download-sections","*0-20",
                   "-f","b[height<=480]/b",
