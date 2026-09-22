@@ -1,0 +1,38 @@
+name: Hidden Beyond Source Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/source-probe.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Kaggle CPU source probe
+        run: |
+          set -Eeuo pipefail
+          test -n "$KAGGLE_API_TOKEN"
+          python -m pip install -e .
+          python scripts/submit_hidden_beyond_source_probe.py --config hidden_beyond/source-probe.json --out source-probe-output
+      - name: Preserve probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidden-beyond-source-probe
+          path: source-probe-output/source-probe.json
+          if-no-files-found: warn
+          retention-days: 7
