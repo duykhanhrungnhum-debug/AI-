@@ -1,0 +1,27 @@
+{
+  "certification": "professional-zh-vi-v1",
+  "version": "v5",
+  "status": "VERIFIED",
+  "verified_at": "2026-09-22T01:28:08Z",
+  "git_commit": "cfdaa50689444ca0ee158912cef76df2a17695f7",
+  "github_actions_run_id": 35675274512,
+  "github_actions_url": "https://github.com/duykhanhrungnhum-debug/AI-/actions/runs/35675274512",
+  "benchmark_run_id": "3bb74f53-d4e8-437f-9d18-624c276f8b12",
+  "cases": 32,
+  "hard_failed": 0,
+  "critical": 0,
+  "major": 0,
+  "minor": 1,
+  "minor_max": 3,
+  "professional_passed": 32,
+  "translator": "tencent/Hy-MT2-7B",
+  "reviewer": "Qwen/Qwen2.5-7B-Instruct",
+  "gpu": "Tesla T4",
+  "notes": [
+    "Recovered v3 failure evidence without a GPU rerun.",
+    "Added persistent failure reports so future failed certifications retain detailed evidence.",
+    "Added xianxia register/phrase memory and concise-dialogue rules.",
+    "Added reviewer-hallucination guard for invalid severe reviews.",
+    "No further certification rerun is required after v5."
+  ]
+}
