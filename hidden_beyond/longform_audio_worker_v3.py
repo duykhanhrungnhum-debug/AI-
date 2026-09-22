@@ -1039,13 +1039,12 @@ def main()->None:
                                 invalid_reason[s["index"]]=str(exc)
                 still_invalid=repaired
 
-            if still_invalid:
-                ids=[s["index"] for s in still_invalid]
-                raise RuntimeError(
-                    f"translation semantic quality unresolved after targeted repair {len(ids)} segments: "
-                    +",".join(map(str,ids[:30]))
+            invalid_ids=[s["index"] for s in still_invalid]
+            if invalid_ids:
+                heartbeat(
+                    "translation_review",
+                    f"{len(invalid_ids)} semantic QA risks remain after Hy-MT repair; forwarding only these cues to Qwen editor",
                 )
-            invalid_ids=[]
 
         del model,tok
         gc.collect()
@@ -1055,14 +1054,15 @@ def main()->None:
             s["index"] for s in segments
             if translated.get(s["index"]) and vi_word_count(translated[s["index"]])>s["fit_words"]
         ]
-        review_ids=sorted(set(overlong_ids))
+        review_ids=sorted(set(overlong_ids+invalid_ids))
         if review_ids:
             # Qwen is an editor only. It is never the bulk translator.
             review_set=set(review_ids)
+            invalid_set=set(invalid_ids)
             review_items=[s for s in segments if s["index"] in review_set]
             heartbeat(
                 "translation_review",
-                f"Reviewing {len(review_items)} segments: invalid={len(invalid_ids)} overlong={len(overlong_ids)}",
+                f"Reviewing {len(review_items)} segments: semantic={len(invalid_ids)} overlong={len(overlong_ids)}",
             )
             editor_name="Qwen/Qwen2.5-1.5B-Instruct"
             qtok=AutoTokenizer.from_pretrained(editor_name)
@@ -1081,12 +1081,23 @@ def main()->None:
                     for s in batch:
                         current=clean(translated.get(s["index"],""))
                         required=", ".join(vi for _,vi in glossary_pairs(s["text"]))
-                        prompts.append(
-                            f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
-                            "Giữ nguyên nghĩa, tên riêng và số liệu; không thêm ý, không giải thích. "
-                            +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
-                            +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
-                        )
+                        if s["index"] in invalid_set:
+                            prompts.append(
+                                f"Dịch lại chính xác câu tiếng Trung sau sang tiếng Việt tự nhiên, tối đa {s['fit_words']} từ để lồng tiếng. "
+                                "Giữ nguyên nghĩa, phủ định, câu hỏi, số liệu, tên riêng và quan hệ nhân vật; "
+                                "không thêm ý, không giải thích. "
+                                +(f"Bắt buộc dùng các thuật ngữ: {required}. " if required else "")
+                                +"Chỉ trả một câu tiếng Việt.\n"
+                                +"Nguyên văn Trung: "+s["text"]+"\n"
+                                +"Bản trước cần sửa: "+current
+                            )
+                        else:
+                            prompts.append(
+                                f"Rút gọn câu tiếng Việt sau còn tối đa {s['fit_words']} từ để lồng tiếng. "
+                                "Giữ nguyên nghĩa, tên riêng và số liệu; không thêm ý, không giải thích. "
+                                +(f"Bắt buộc giữ đúng các thuật ngữ: {required}. " if required else "")
+                                +"Chỉ trả một câu tiếng Việt ngắn gọn.\n"+current
+                            )
                     chats=[
                         qtok.apply_chat_template(
                             [{"role":"user","content":p}],
@@ -1105,8 +1116,11 @@ def main()->None:
                     vis=qtok.batch_decode(gen,skip_special_tokens=True)
                     for s,vi in zip(batch,vis,strict=True):
                         try:
+                            candidate=validate_translation_pair(
+                                vi,s["text"],field=f"review semantic segment {s['index']}"
+                            )
                             translated[s["index"]]=validate_segment_fit(
-                                vi,s,field=f"review segment {s['index']}"
+                                candidate,s,field=f"review segment {s['index']}"
                             )
                             qwen_reviewed+=1
                         except Exception:
@@ -1224,6 +1238,13 @@ def main()->None:
                     f"Final deterministic repair unresolved={len(unresolved)}",
                 )
 
+            if unresolved:
+                raise RuntimeError(
+                    "translation quality unresolved after Qwen editor "
+                    +str(len(unresolved))+" segments: "
+                    +",".join(str(s["index"]) for s in unresolved[:30])
+                )
+            invalid_ids=[]
             del qmodel,qtok
             gc.collect()
             torch.cuda.empty_cache()
