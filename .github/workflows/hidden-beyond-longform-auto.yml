@@ -52,6 +52,7 @@ jobs:
           echo "bootstrap" > orchestrator-stage.txt
           test -n "$KAGGLE_API_TOKEN"
           python -m pip install -e .
+          python -m pip install --quiet "yt-dlp>=2026.1"
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           jq . hidden_beyond/longform/auto.json
@@ -74,15 +75,40 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "retrieve_source_artifact" > orchestrator-stage.txt
-          SOURCE_RUN_ID="$(jq -r '.source_run_id' hidden_beyond/longform/auto.json)"
-          test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != "null"
+          echo "retrieve_source" > orchestrator-stage.txt
+          SOURCE_RUN_ID="$(jq -r '.source_run_id // ""' hidden_beyond/longform/auto.json)"
+          SOURCE_VIDEO_ID="$(jq -r '.source_video_id' hidden_beyond/longform/auto.json)"
+          SOURCE_URL="$(jq -r '.source_url // ""' hidden_beyond/longform/auto.json)"
           mkdir -p source-input
-          gh run download "$SOURCE_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name hidden-beyond-full-source             --dir source-input
+
+          ARTIFACT_OK=0
+          if [ -n "$SOURCE_RUN_ID" ] && [ "$SOURCE_RUN_ID" != "null" ]; then
+            set +e
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY"               --name hidden-beyond-full-source --dir source-input
+            RC=$?
+            set -e
+            if [ "$RC" = "0" ] && [ -s source-input/source.mp4 ]; then
+              ARTIFACT_OK=1
+              echo "SOURCE_REUSE artifact_run=$SOURCE_RUN_ID"
+            else
+              rm -f source-input/source.mp4
+              echo "SOURCE_ARTIFACT_UNAVAILABLE run=$SOURCE_RUN_ID fallback=direct_download"
+            fi
+          fi
+
+          if [ "$ARTIFACT_OK" != "1" ]; then
+            if [ -z "$SOURCE_URL" ] || [ "$SOURCE_URL" = "null" ]; then
+              test -n "$SOURCE_VIDEO_ID" && test "$SOURCE_VIDEO_ID" != "null"
+              SOURCE_URL="https://www.youtube.com/watch?v=$SOURCE_VIDEO_ID"
+            fi
+            python -m yt_dlp --no-playlist --retries 5 --fragment-retries 5               -f "bv*[height<=720]+ba/b[height<=720]/b"               --merge-output-format mp4 -o source-input/source.mp4 "$SOURCE_URL"
+            echo "SOURCE_DOWNLOADED_DIRECT url=$SOURCE_URL"
+          fi
+
           test -s source-input/source.mp4
           ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 source-input/source.mp4 | grep -q video
           ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 source-input/source.mp4 | grep -q audio
-          echo "SOURCE_ARTIFACT_READY bytes=$(stat -c%s source-input/source.mp4)"
+          echo "SOURCE_READY bytes=$(stat -c%s source-input/source.mp4)"
 
       - name: Extract compact AI input audio
         shell: bash
