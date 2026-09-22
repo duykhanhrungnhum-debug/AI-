@@ -32,6 +32,12 @@ PROFESSIONAL_ZH_VI_PHRASES = {
     "自寻死路": "tự tìm đường chết",
     "别给脸不要脸": "đừng có không biết điều",
     "一成": "một thành",
+    "筑基丹": "đan dược Trúc Cơ",
+    "不要命": "liều mạng",
+    "竟敢": "lại dám",
+    "你还知道回来": "ngươi còn biết đường về",
+    "不是你想的那样": "không phải như ngươi nghĩ",
+    "你不帮就算了": "ngươi không giúp thì thôi",
 }
 
 
@@ -126,7 +132,9 @@ def build_professional_prompt(
         raise ValueError("source_text is required")
 
     parts: list[str] = []
-    glossary = [(k, v) for k, v in brief.glossary.items() if k in source]
+    merged_glossary = dict(PROFESSIONAL_ZH_VI_PHRASES)
+    merged_glossary.update(brief.glossary)
+    glossary = [(k, v) for k, v in merged_glossary.items() if k in source]
     if glossary:
         parts.append("参考下面的固定术语翻译：")
         parts.extend(f"{src} 翻译成 {dst}" for src, dst in glossary)
@@ -146,6 +154,13 @@ def build_professional_prompt(
         "人物称呼、专有名词、境界、功法和术语在全文中保持一致。",
         "疑问句、否定句、命令、讽刺、情绪强度必须保留。",
     ]
+    domain_hint = f"{brief.domain} {brief.register} {brief.style}".casefold()
+    if any(x in domain_hint for x in ("xianxia", "cultivation", "tu tiên", "tiên hiệp")):
+        constraints.extend((
+            "修仙/仙侠古风对白默认保持古风人物称谓：ta/ngươi/nàng/hắn/bổn tọa；除非背景明确是现代语境，不得擅自改成 tôi/anh/bạn。",
+            "越南语对白应简洁、像影视台词；原文简短时不要改写成解释性长句。",
+            "辱骂、挑衅、责备等语气强度要用自然越南语保留，不可弱化成中性表达。",
+        ))
     if brief.no_explanation:
         constraints.append("只输出译文，不要解释、注释、免责声明或元话语。")
     if brief.preserve_numbers:
