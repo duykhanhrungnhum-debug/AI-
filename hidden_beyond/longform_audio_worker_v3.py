@@ -4,6 +4,7 @@ from __future__ import annotations
 # __JOB_CONFIG_INJECT__
 
 import gc
+import hashlib
 import html
 import json
 import math
@@ -21,6 +22,8 @@ SRT=WORK/"vi.srt"
 META=WORK/"metadata.json"
 
 API=JOB["callback_base"].rstrip("/")
+CACHE_API="https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-segment-cache-api"
+CACHE_MODEL_KEY="hy-mt2-7b-longform-v1"
 JOB_ID=JOB["job_id"]
 JOB_TOKEN=JOB["job_token"]
 _stage={"name":"starting","message":"GPU worker starting"}
@@ -43,6 +46,7 @@ DIALOGUE_GLOSSARY={
     "别给脸不要脸":"đừng có không biết điều",
     "一成":"một thành",
 }
+ACTIVE_PROFILE={}
 FANTASY_GLOSSARY={
     "修仙":"tu tiên","修士":"tu sĩ","灵气":"linh khí","靈氣":"linh khí","灵力":"linh lực","靈力":"linh lực",
     "灵根":"linh căn","靈根":"linh căn","炼气":"Luyện Khí","練氣":"Luyện Khí","筑基":"Trúc Cơ","築基":"Trúc Cơ",
@@ -74,6 +78,158 @@ def post(path:str,payload:dict)->dict:
     )
     with urlopen(req,timeout=120) as r:
         return json.loads(r.read().decode())
+
+def cache_post(path:str,payload:dict)->dict:
+    body={"job_id":JOB_ID,**payload}
+    data=json.dumps(body,ensure_ascii=False).encode()
+    req=Request(
+        CACHE_API.rstrip("/")+path,
+        data=data,
+        headers={"content-type":"application/json","x-job-token":JOB_TOKEN},
+        method="POST",
+    )
+    with urlopen(req,timeout=120) as r:
+        return json.loads(r.read().decode())
+
+def infer_translation_profile(cfg:dict,segments:list[dict],existing:dict)->dict:
+    profile=dict(existing or {})
+    if str(profile.get("genre") or "auto").lower()!="auto":
+        return profile
+    sample=" ".join([
+        str(cfg.get("series_title") or ""),
+        str(cfg.get("title") or ""),
+        *[str(x.get("text") or "") for x in segments[:220]],
+    ])
+    families={
+        "xianxia":("修仙","修士","灵气","灵根","炼气","筑基","金丹","元婴","渡劫","宗门","师尊","法宝","飞升","天道"),
+        "historical":("皇上","皇帝","王爷","将军","公主","朝廷","江湖","武林","门派","掌门","大侠","少侠"),
+        "modern":("公司","老板","总裁","手机","微信","学校","医院","办公室","同事","经理","互联网"),
+        "crime":("警察","凶手","案件","尸体","侦探","证据","嫌疑人","法医","调查","犯罪"),
+    }
+    scores={name:sum(sample.count(term) for term in terms) for name,terms in families.items()}
+    genre,max_score=max(scores.items(),key=lambda kv:kv[1])
+    if max_score<2:
+        genre="general"
+    rules={
+        "xianxia":[
+            "Giữ sắc thái tiên hiệp/cổ phong nhưng tiếng Việt phải tự nhiên.",
+            "Suy luận xưng hô theo vai vế; ưu tiên ta/ngươi/nàng/hắn khi đúng ngữ cảnh.",
+        ],
+        "historical":[
+            "Dùng thoại Việt cổ trang tự nhiên, không hiện đại hóa xưng hô tùy tiện.",
+            "Giữ chức tước, vai vế và quan hệ nhân vật nhất quán.",
+        ],
+        "modern":[
+            "Dùng tiếng Việt hiện đại tự nhiên; xưng hô theo tuổi, quan hệ và hoàn cảnh.",
+            "Không mang cách xưng hô cổ trang sang bối cảnh hiện đại.",
+        ],
+        "crime":[
+            "Ưu tiên chính xác thông tin, bằng chứng, thời gian, số liệu và quan hệ nhân vật.",
+            "Giữ nhịp thoại hiện đại, rõ ràng và căng thẳng khi nguồn có sắc thái đó.",
+        ],
+        "general":[
+            "Dùng tiếng Việt điện ảnh tự nhiên và trung tính.",
+            "Suy luận xưng hô theo ngữ cảnh, không áp một phong cách cố định.",
+        ],
+    }
+    profile.update({
+        "profile_version":int(profile.get("profile_version") or 1),
+        "profile_key":"auto-"+genre,
+        "genre":genre,
+        "register":"natural cinematic Vietnamese",
+        "pronoun_policy":"infer_from_relationship_and_context",
+        "style_rules":rules[genre],
+        "detected_from":"title_plus_first_220_segments",
+    })
+    return profile
+
+def profile_prompt_rule(profile:dict)->str:
+    genre=str(profile.get("genre") or "general").lower()
+    if genre=="xianxia":
+        return "使用自然、专业的仙侠/修仙影视越南语对白；按人物关系保持古风称谓和辈分一致，不得把所有人物机械翻成同一种称呼。"
+    if genre=="historical":
+        return "使用自然的越南语古装影视对白；保持身份、官职、辈分和称谓一致，不得随意现代化。"
+    if genre=="modern":
+        return "使用自然、口语化的现代越南语；根据年龄、关系和场景选择 tôi/anh/em/bạn 等称谓，不得套用古装称谓。"
+    if genre=="crime":
+        return "使用准确、简洁的现代越南语悬疑/刑侦对白；证据、时间、数字、身份和因果关系必须精确。"
+    return "使用自然、专业、适合影视对白的越南语；根据人物关系和场景自动选择称谓，不得套用固定题材风格。"
+
+def prepare_segment_cache_keys(segments:list[dict],profile:dict)->None:
+    profile_sig=json.dumps({
+        "profile_key":profile.get("profile_key"),
+        "profile_version":profile.get("profile_version"),
+        "genre":profile.get("genre"),
+        "register":profile.get("register"),
+        "pronoun_policy":profile.get("pronoun_policy"),
+        "glossary":profile.get("glossary") or {},
+        "style_rules":profile.get("style_rules") or [],
+    },ensure_ascii=False,sort_keys=True,separators=(",",":"))
+    for pos,s in enumerate(segments):
+        neighbours=[]
+        for j in range(max(0,pos-2),min(len(segments),pos+3)):
+            neighbours.append(clean(segments[j].get("text","")))
+        context="\n".join(neighbours)
+        context_hash=hashlib.sha256(context.encode("utf-8")).hexdigest()
+        start_ms=int(round(float(s["start"])*1000))
+        end_ms=int(round(float(s["end"])*1000))
+        payload="|".join([
+            CACHE_MODEL_KEY,profile_sig,context_hash,str(start_ms),str(end_ms),clean(s["text"])
+        ])
+        s["source_context_hash"]=context_hash
+        s["segment_key"]=hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+def load_segment_cache(segments:list[dict],profile:dict)->dict[int,str]:
+    keys=[s["segment_key"] for s in segments]
+    found={}
+    for off in range(0,len(keys),200):
+        resp=cache_post("/load",{
+            "segment_keys":keys[off:off+200],
+            "profile_version":int(profile.get("profile_version") or 1),
+            "model_key":CACHE_MODEL_KEY,
+        })
+        for row in resp.get("entries") or []:
+            found[str(row.get("segment_key"))]=str(row.get("translation") or "")
+    out={}
+    for s in segments:
+        value=found.get(s["segment_key"])
+        if not value:
+            continue
+        try:
+            candidate=validate_translation_pair(value,s["text"],field=f"cached segment {s['index']}")
+            candidate=validate_segment_fit(candidate,s,field=f"cached fit segment {s['index']}")
+            out[s["index"]]=candidate
+        except Exception:
+            continue
+    return out
+
+def store_segment_cache(segments:list[dict],translated:dict[int,str],profile:dict)->int:
+    stored=0
+    for off in range(0,len(segments),200):
+        batch=[]
+        for s in segments[off:off+200]:
+            vi=clean(translated.get(s["index"],""))
+            if not vi:
+                continue
+            batch.append({
+                "segment_key":s["segment_key"],
+                "segment_index":s["index"],
+                "start_ms":int(round(float(s["start"])*1000)),
+                "end_ms":int(round(float(s["end"])*1000)),
+                "source_text":s["text"],
+                "source_context_hash":s["source_context_hash"],
+                "translation":vi,
+                "translation_hash":hashlib.sha256(vi.encode("utf-8")).hexdigest(),
+                "qa_state":"passed",
+            })
+        if batch:
+            resp=cache_post("/store",{
+                "profile_version":int(profile.get("profile_version") or 1),
+                "model_key":CACHE_MODEL_KEY,
+                "entries":batch,
+            })
+            stored+=int(resp.get("stored") or 0)
+    return stored
 
 def heartbeat(stage:str,message:str)->None:
     _stage["name"]=stage
@@ -196,12 +352,14 @@ def validate_segment_fit(text:str,segment:dict,*,field:str)->str:
 def glossary_pairs(text:str)->list[tuple[str,str]]:
     pairs=[]
     seen=set()
-    for table in (DIALOGUE_GLOSSARY,FANTASY_GLOSSARY):
+    profile_glossary=ACTIVE_PROFILE.get("glossary") or {}
+    tables=(DIALOGUE_GLOSSARY,FANTASY_GLOSSARY,profile_glossary)
+    for table in tables:
         for zh,vi in table.items():
             if zh in text and vi not in seen:
                 pairs.append((zh,vi))
                 seen.add(vi)
-    return pairs[:10]
+    return pairs[:12]
 
 def split_words_to_dialogue(words:list[dict])->list[dict]:
     """Create short dubbing cues from Whisper word timestamps.
@@ -543,8 +701,24 @@ def main()->None:
     if too_long:
         raise RuntimeError(f"dialogue segmentation has {too_long} cues longer than 6.2s")
 
+    profile_response=cache_post("/profile",{})
+    translation_profile=infer_translation_profile(cfg,segments,profile_response.get("profile") or {})
+    global ACTIVE_PROFILE
+    ACTIVE_PROFILE=translation_profile
+    if str((profile_response.get("profile") or {}).get("genre") or "auto").lower()=="auto":
+        cache_post("/profile/update",{"profile":translation_profile})
+    prepare_segment_cache_keys(segments,translation_profile)
+    cached_translations=load_segment_cache(segments,translation_profile)
+    cache_hits=len(cached_translations)
+    pending_segments=[s for s in segments if s["index"] not in cached_translations]
+    cache_misses=len(pending_segments)
+    heartbeat(
+        "translation_cache",
+        f"Segment cache ready: hit={cache_hits} miss={cache_misses} profile={translation_profile.get('genre','general')}",
+    )
+
     translation_started=time.monotonic()
-    translated={}
+    translated=dict(cached_translations)
     invalid_ids=[]
     qwen_reviewed=0
     fallback_segments=0
@@ -580,7 +754,7 @@ def main()->None:
 
     if device=="cuda":
         primary_model="tencent/Hy-MT2-7B"
-        heartbeat("translating",f"Loading {primary_model}; batch translation for {len(segments)} segments")
+        heartbeat("translating",f"Loading {primary_model}; translating {len(pending_segments)} uncached / {len(segments)} total segments")
         tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
         tok.padding_side="left"
         if tok.pad_token_id is None:
@@ -618,9 +792,10 @@ def main()->None:
                 "〖翻译要求〗\n"
                 "1. 忠实传达原意，不得添加原文没有的信息，不得遗漏关键含义。\n"
                 "2. 先保证准确，再保证越南语自然；不得改变人物关系、否定、数字、疑问或情绪强度。\n"
-                "3. 人物称呼、专有名词、修仙境界、功法和术语必须前后一致。\n"
-                "4. 使用自然、专业、适合仙侠影视对白的越南语；不要逐字硬译。\n"
-                "5. 只输出待翻译文本的越南语译文，不要解释、注释、免责声明或元话语。\n"
+                "3. 人物称呼、专有名词、术语必须在同一系列中前后一致。\n"
+                "4. "+profile_prompt_rule(translation_profile)+"\n"
+                "5. 原文简短时译文也应简洁，以便自然配音；不要写成解释性长句。\n"
+                "6. 只输出待翻译文本的越南语译文，不要解释、注释、免责声明或元话语。\n"
                 "〖待翻译文本〗\n"+s["text"]+"\n"
                 "请结合背景信息将待翻译文本准确翻译为越南语。"
             )
@@ -630,13 +805,13 @@ def main()->None:
         cursor=0
         budget_seconds=15*60
         with torch.inference_mode():
-            while cursor<len(segments):
+            while cursor<len(pending_segments):
                 if time.monotonic()-translation_started>=budget_seconds:
                     fast_path_used=True
                     raise RuntimeError(
-                        f"Hy-MT2-7B translation exceeded quality budget at {cursor}/{len(segments)}"
+                        f"Hy-MT2-7B translation exceeded quality budget at {cursor}/{len(pending_segments)}"
                     )
-                batch=segments[cursor:cursor+batch_size]
+                batch=pending_segments[cursor:cursor+batch_size]
                 chats=[
                     tok.apply_chat_template(
                         [{"role":"user","content":prompt_for(s)}],
@@ -683,10 +858,10 @@ def main()->None:
                 cursor+=len(batch)
                 elapsed=max(0.001,time.monotonic()-translation_started)
                 rate=cursor/elapsed
-                pct=cursor*100.0/len(segments)
+                pct=cursor*100.0/max(1,len(pending_segments))
                 heartbeat(
                     "translating",
-                    f"Hy-MT2 {cursor}/{len(segments)} ({pct:.1f}%); {rate:.1f} seg/s; invalid={len(invalid_ids)}",
+                    f"Hy-MT2 uncached {cursor}/{len(pending_segments)} ({pct:.1f}%); {rate:.1f} seg/s; invalid={len(invalid_ids)}",
                 )
 
         title_item={
@@ -697,7 +872,7 @@ def main()->None:
         try:
             title_chat=tok.apply_chat_template(
                 [{"role":"user","content":(
-                    "将以下标题翻译为越南语，保持仙侠作品风格和专有名词，只输出越南语标题，不要解释：\n\n"
+                    "将以下标题翻译为自然越南语，保持原作品题材风格和专有名词，只输出越南语标题，不要解释：\n\n"
                     +title_item["text"]
                 )}],
                 tokenize=False,
@@ -720,8 +895,8 @@ def main()->None:
         gc.collect()
         torch.cuda.empty_cache()
 
-        if cursor<len(segments):
-            remaining=segments[cursor:]
+        if cursor<len(pending_segments):
+            remaining=pending_segments[cursor:]
             translated.update(opus_translate(remaining,on_device="cuda"))
 
         if invalid_ids:
@@ -925,7 +1100,7 @@ def main()->None:
             torch.cuda.empty_cache()
     else:
         primary_model="Helsinki-NLP/opus-mt-zh-vi"
-        translated.update(opus_translate(segments,on_device="cpu"))
+        translated.update(opus_translate(pending_segments,on_device="cpu"))
         title_model=AutoTokenizer.from_pretrained(primary_model)
         title_llm=AutoModelForSeq2SeqLM.from_pretrained(primary_model).to("cpu")
         inp=title_model([str(cfg.get("title") or "")],return_tensors="pt")
@@ -962,6 +1137,7 @@ def main()->None:
     for s in segments:
         s["vi"]=translated[s["index"]]
 
+    cache_stored=store_segment_cache(segments,translated,translation_profile)
     translation_seconds=round(time.monotonic()-translation_started,2)
     heartbeat(
         "packaging_translation",
@@ -984,20 +1160,25 @@ def main()->None:
         "translated_title":translated_title,
         "segments":len(segments),
         "translation_model":primary_model,
+        "translation_profile":translation_profile,
+        "segment_cache_model_key":CACHE_MODEL_KEY,
+        "segment_cache_hits":cache_hits,
+        "segment_cache_misses":cache_misses,
+        "segment_cache_stored":cache_stored,
         "translation_editor":"Qwen/Qwen2.5-1.5B-Instruct" if qwen_reviewed else "not_used",
         "transcript_source":transcript_source,
         "whisper_model":whisper_name,
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"professional-hymt2-7b-context-terminology-semantic-qa-v5",
+        "translation_mode":"universal-longform-segment-cache-context-qa-v6",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"professional-v1",
+        "translation_quality_profile":"universal-longform-v1",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"caption-first-asr-hymt2-7b-professional-brief-semantic-guard-qwen-compress-only-cpu-tts-v5",
+        "gpu_efficiency_mode":"caption-first-batched-asr-segment-cache-universal-profile-hymt2-selective-qwen-cpu-tts-v6",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
