@@ -2,6 +2,7 @@
 from __future__ import annotations
 import gc,json,math,re,shutil,subprocess,sys,time
 from pathlib import Path
+from urllib.request import Request,urlopen
 
 WORK=Path("/kaggle/working")
 RESULT=WORK/"segment1-probe-result.json"
@@ -197,3 +198,10 @@ result={
 }
 RESULT.write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
 print("SEGMENT1_PROBE_RESULT",json.dumps(result,ensure_ascii=False),flush=True)
+
+callback="https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hb-segment-probe-callback"
+payload=json.dumps({"probe_id":"ec2ee722-9494-4067-a931-a53ba67ef534","result":result},ensure_ascii=False).encode("utf-8")
+req=Request(callback,data=payload,headers={"content-type":"application/json"},method="POST")
+with urlopen(req,timeout=60) as r:
+    body=r.read().decode("utf-8",errors="replace")
+    print("SEGMENT1_CALLBACK",r.status,body,flush=True)
