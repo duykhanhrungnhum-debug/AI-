@@ -855,17 +855,25 @@ def main()->None:
                 parts.append(by_index[j].get("text",""))
         return clean(" ".join(parts))
 
-    def prompt_for(s:dict, *, repair:bool=False, current:str="")->str:
+    def prompt_for(s:dict, *, repair:bool=False, current:str="", failure_reason:str="")->str:
         terms=glossary_pairs(s["text"])
         term_text=""
         if terms:
             term_text="固定术语："+"；".join(f"{zh}={vi}" for zh,vi in terms)+"\n"
         limit=int(s.get("fit_words") or 18)
         if repair:
+            structural_rule=""
+            if "still contains CJK" in failure_reason:
+                structural_rule="上一版仍含中文字符；修正版只能输出越南语，不得包含任何中文汉字。\n"
+            elif "repetition loop" in failure_reason:
+                structural_rule="上一版出现重复循环；修正版不得重复词句。\n"
+            elif " empty" in failure_reason or failure_reason.endswith("empty"):
+                structural_rule="上一版为空；必须输出非空的越南语译文。\n"
             return (
                 term_text
                 +"请重新翻译下面一句中文为自然、准确、简洁的越南语影视对白。\n"
                 +"必须忠实原意，不添加信息，不遗漏否定、疑问、数字、人物关系和专有名词。\n"
+                +structural_rule
                 +profile_prompt_rule(translation_profile)+"\n"
                 +f"尽量控制在 {limit} 个越南语词以内，但不要为了缩短而改变原意。\n"
                 +f"上下文：{context_for(s)}\n"
@@ -891,6 +899,7 @@ def main()->None:
 
     review_ids=set()
     hard_invalid=set()
+    hard_reasons={}
     batch_size=8
     cursor=0
     with torch.inference_mode():
@@ -929,8 +938,9 @@ def main()->None:
                     translated[idx]=validate_translation_pair(
                         candidate,s["text"],field=f"segment {idx}",enforce_intent=False
                     )
-                except Exception:
+                except Exception as exc:
                     hard_invalid.add(idx)
+                    hard_reasons[idx]=str(exc)
                     review_ids.add(idx)
                 if soft_intent_review(s["text"],candidate):
                     review_ids.add(idx)
@@ -960,7 +970,8 @@ def main()->None:
                 chats=[
                     tok.apply_chat_template(
                         [{"role":"user","content":prompt_for(
-                            s,repair=True,current=translated.get(s["index"],"")
+                            s,repair=True,current=translated.get(s["index"],""),
+                            failure_reason=hard_reasons.get(s["index"],"")
                         )}],
                         tokenize=False,
                         add_generation_prompt=True,
@@ -1086,7 +1097,7 @@ def main()->None:
         "tts_voice":voice_mode,
         "translation_mode":"hy-mt2-single-pass-single-repair-v9",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"structural-hard-gate-semantic-single-review-v5",
+        "translation_quality_profile":"reason-aware-single-repair-v6",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
