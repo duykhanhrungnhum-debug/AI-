@@ -1,6 +1,6 @@
 {
   "series_id": 2,
   "source_video_id": "vaY4URFw0cg",
-  "force_reprocess": false,
-  "version_label": ""
+  "force_reprocess": true,
+  "version_label": "V2"
 }
