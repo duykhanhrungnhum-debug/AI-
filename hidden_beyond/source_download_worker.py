@@ -26,12 +26,11 @@ def post(path:str,payload:dict)->dict:
     with urlopen(req,timeout=120) as r:
         return json.loads(r.read().decode())
 
-def upload_file(url:str,path:Path)->None:
-    data=path.read_bytes()
-    req=Request(url,data=data,headers={"content-type":"video/mp4","x-upsert":"true"},method="PUT")
-    with urlopen(req,timeout=900) as r:
+def upload_bytes(url:str,data:bytes)->None:
+    req=Request(url,data=data,headers={"content-type":"application/octet-stream","x-upsert":"true"},method="PUT")
+    with urlopen(req,timeout=300) as r:
         if r.status not in (200,201):
-            raise RuntimeError(f"source upload failed {r.status}")
+            raise RuntimeError(f"source part upload failed {r.status}")
 
 def main():
     subprocess.run(
@@ -82,8 +81,29 @@ def main():
         "retriever":"kaggle-cpu-yt-dlp-ejs",
     }
     META.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    post("/heartbeat",{"handoff_id":CONFIG["handoff_id"],"message":"source_downloaded_uploading"})
-    upload_file(CONFIG["upload_url"],OUT)
+    post("/heartbeat",{"handoff_id":CONFIG["handoff_id"],"message":"source_downloaded_preparing_parts"})
+    chunk_size=32*1024*1024
+    total_size=OUT.stat().st_size
+    part_count=(total_size+chunk_size-1)//chunk_size
+    prepared=post("/prepare-parts",{
+        "handoff_id":CONFIG["handoff_id"],
+        "part_count":part_count,
+        "total_size":total_size,
+        "chunk_size":chunk_size,
+    })
+    parts=prepared.get("parts") or []
+    if len(parts)!=part_count:
+        raise RuntimeError(f"handoff part URL count mismatch: {len(parts)} != {part_count}")
+    with OUT.open("rb") as fh:
+        for i,item in enumerate(parts):
+            data=fh.read(chunk_size)
+            if not data:
+                raise RuntimeError(f"source chunk missing at {i}")
+            upload_bytes(str(item["upload_url"]),data)
+            post("/heartbeat",{
+                "handoff_id":CONFIG["handoff_id"],
+                "message":f"uploaded_source_part_{i+1}_of_{part_count}",
+            })
     result=post("/complete",{"handoff_id":CONFIG["handoff_id"],"metadata":report})
     print("SOURCE_DOWNLOAD_OK",json.dumps(report,ensure_ascii=False),flush=True)
     print("SOURCE_HANDOFF_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
