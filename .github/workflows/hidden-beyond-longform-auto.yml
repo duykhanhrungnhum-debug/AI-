@@ -52,7 +52,6 @@ jobs:
           echo "bootstrap" > orchestrator-stage.txt
           test -n "$KAGGLE_API_TOKEN"
           python -m pip install -e .
-          python -m pip install --quiet "yt-dlp[default]>=2026.1"
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           jq . hidden_beyond/longform/auto.json
@@ -100,9 +99,12 @@ jobs:
             if [ -z "$SOURCE_URL" ] || [ "$SOURCE_URL" = "null" ]; then
               test -n "$SOURCE_VIDEO_ID" && test "$SOURCE_VIDEO_ID" != "null"
               SOURCE_URL="https://www.youtube.com/watch?v=$SOURCE_VIDEO_ID"
+              tmp="$(mktemp)"
+              jq --arg source_url "$SOURCE_URL" '.source_url=$source_url' hidden_beyond/longform/auto.json > "$tmp"
+              mv "$tmp" hidden_beyond/longform/auto.json
             fi
-            python -m yt_dlp --no-playlist --retries 5 --fragment-retries 5 --js-runtimes node --remote-components ejs:github               -f "bv*[height<=720]+ba/b[height<=720]/b"               --merge-output-format mp4 -o source-input/source.mp4 "$SOURCE_URL"
-            echo "SOURCE_DOWNLOADED_DIRECT url=$SOURCE_URL"
+            python scripts/retrieve_hidden_beyond_source_kaggle.py               --config hidden_beyond/longform/auto.json               --output source-input/source.mp4
+            echo "SOURCE_DOWNLOADED_KAGGLE_CPU url=$SOURCE_URL"
           fi
 
           test -s source-input/source.mp4
@@ -481,6 +483,7 @@ jobs:
             benchmark-report.json
             benchmark-complete.json
             pipeline-start-epoch.txt
+            source-input/source-metadata.json
             orchestrator-stage.txt
             supervisor-decision.json
             supervisor-recover.json
