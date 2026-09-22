@@ -57,6 +57,9 @@ GLOSSARY={
  "天道":"thiên đạo","飞升":"phi thăng","境界":"cảnh giới","丹田":"đan điền","灵石":"linh thạch",
  "道侣":"đạo lữ","青云宗":"Thanh Vân Tông","本座":"bổn tọa",
  "自寻死路":"tự tìm đường chết","别给脸不要脸":"đừng có không biết điều","一成":"một thành",
+ "筑基丹":"đan dược Trúc Cơ","不要命":"liều mạng","竟敢":"lại dám",
+ "你还知道回来":"ngươi còn biết đường về","不是你想的那样":"không phải như ngươi nghĩ",
+ "你不帮就算了":"ngươi không giúp thì thôi",
 }
 META=("không thể thực hiện yêu cầu","không thể đáp ứng yêu cầu","vi phạm bản quyền","chính sách nội dung","đội phim","đoàn phim","quay phim")
 CJK_RE=re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -109,7 +112,10 @@ def prompt(case):
       "2. 先保证准确，再保证越南语自然；不得改变人物关系、否定、数字、疑问或情绪强度。\n"
       "3. 人物称呼、专有名词、修仙境界、功法和术语必须前后一致。\n"
       "4. 使用自然、专业、适合影视对白的越南语；避免生硬逐字翻译。\n"
-      "5. 只输出译文，不要解释、注释、免责声明或元话语。\n"
+      "5. 修仙/仙侠对白默认保持古风称谓 ta/ngươi/nàng/hắn/bổn tọa；除非背景明确为现代语境，不得擅自改成 tôi/anh/bạn。\n"
+      "6. 原文简短时译文也应简洁；不要把名词或短句扩写成解释性长句。\n"
+      "7. 辱骂、挑衅、责备等语气强度必须自然保留，不可弱化。\n"
+      "8. 只输出译文，不要解释、注释、免责声明或元话语。\n"
       "〖待翻译文本〗\n"+src
     )
 
@@ -175,7 +181,10 @@ def main():
               "MAJOR: bỏ/thêm ý đáng kể, sai thuật ngữ/xưng hô/ngữ cảnh. "
               "MINOR: câu hơi cứng hoặc lựa chọn từ chưa tối ưu nhưng nghĩa vẫn đúng. "
               "PASS: đúng nghĩa, tự nhiên, phù hợp ngữ cảnh. "
-              "Không phạt chỉ vì khác câu tham khảo nếu nghĩa tương đương. "
+              "Không phạt chỉ vì khác câu tham khảo nếu nghĩa tương đương và câu tiếng Việt đã tự nhiên. "
+              "Trong bối cảnh tu tiên/tiên hiệp, ưu tiên nhất quán xưng hô cổ phong ta/ngươi/nàng/hắn/bổn tọa; không tự đề xuất đổi sang tôi/anh/bạn nếu ngữ cảnh không yêu cầu. "
+              "Bản sửa đề xuất tuyệt đối không được thêm sự kiện hay thông tin chỉ có trong phần NGỮ CẢNH mà không có trong câu nguồn. "
+              "Chỉ chấm MINOR khi có một lỗi cụ thể về độ tự nhiên, sắc thái hoặc register; không chấm MINOR chỉ vì khác cách diễn đạt tham khảo. "
               "Với thành ngữ/khẩu ngữ, đánh giá theo chức năng ngữ dụng và sắc thái; không yêu cầu giữ hình ảnh ẩn dụ từng chữ nếu tiếng Việt tự nhiên đã truyền đúng ý. "
               "Chỉ trả JSON một dòng: {\"severity\":\"PASS|MINOR|MAJOR|CRITICAL\",\"reason\":\"...\",\"correction\":\"...\"}.\n"
               f"NGỮ CẢNH: {case.get('context','')}\n"
