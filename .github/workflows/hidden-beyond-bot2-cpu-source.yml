@@ -1,0 +1,100 @@
+name: Hidden Beyond Bot2 CPU Source Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/bot2_cpu_source.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Submit old-style CPU source downloader
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import os,textwrap
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          source=textwrap.dedent("""
+          import json,subprocess,sys
+          from pathlib import Path
+          from urllib.request import Request,urlopen
+
+          URL="https://www.youtube.com/watch?v=vaY4URFw0cg"
+          ok=False
+          error=""
+          size=0
+          title=None
+          try:
+              subprocess.check_call([sys.executable,"-m","pip","install","--quiet","yt-dlp"])
+              meta=subprocess.check_output([
+                  sys.executable,"-m","yt_dlp",
+                  "--no-playlist","--skip-download","--dump-single-json",URL
+              ],text=True,stderr=subprocess.STDOUT)
+              d=json.loads(meta)
+              title=d.get("title")
+              subprocess.check_call([
+                  sys.executable,"-m","yt_dlp",
+                  "--no-playlist","--retries","5","--fragment-retries","5",
+                  "-f","bv*[height<=480]+ba/b[height<=480]/b",
+                  "--merge-output-format","mp4",
+                  "-o","/kaggle/working/source.mp4",URL
+              ])
+              p=Path("/kaggle/working/source.mp4")
+              size=p.stat().st_size if p.exists() else 0
+              ok=size>1000000
+          except Exception as exc:
+              error=repr(exc)
+
+          result={
+              "probe_id":"2b6a6625-9ad7-4b5b-8e0e-f80f6d56f5aa",
+              "ok":ok,
+              "probe":"old_cpu_source_download",
+              "source_bytes":size,
+              "title":title,
+              "error":error,
+          }
+          req=Request(
+              "https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hb-source-mount-probe",
+              data=json.dumps(result,ensure_ascii=False).encode("utf-8"),
+              headers={"content-type":"application/json"},
+              method="POST",
+          )
+          with urlopen(req,timeout=60) as r:
+              print("CALLBACK",r.status,r.read().decode("utf-8",errors="replace"))
+          print("CPU_SOURCE_PROBE",json.dumps(result,ensure_ascii=False),flush=True)
+          if not ok:
+              raise SystemExit(1)
+          """)
+
+          w=KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+          )
+          sub=w.submit_script(
+              slug="hidden-beyond-bot2-cpu-source-probe",
+              title="Hidden Beyond Bot2 CPU Source Probe",
+              source=source,
+              enable_internet=True,
+              enable_gpu=False,
+              is_private=True,
+          )
+          print("BOT2_CPU_SOURCE_PROBE_SUBMITTED",sub.ref,sub.version_number)
+          PY
