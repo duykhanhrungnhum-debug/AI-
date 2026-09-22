@@ -199,6 +199,7 @@ def ts(sec:float)->str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 def validate_vi(text:str,source:str,*,field:str)->str:
+    """Deterministic hard gate only: defects that are unambiguously unusable for Vietnamese dubbing."""
     value=clean(text)
     if not value:
         raise ValueError(f"{field} empty")
@@ -206,9 +207,6 @@ def validate_vi(text:str,source:str,*,field:str)->str:
         raise ValueError(f"{field} still contains CJK")
     if REPEAT_RE.search(value) or has_ngram_loop(value):
         raise ValueError(f"{field} has repetition loop")
-    for number in re.findall(r"\d+",source):
-        if number not in value:
-            raise ValueError(f"{field} lost number {number}")
     return value
 
 def vi_word_count(value:str)->int:
@@ -234,12 +232,7 @@ def has_vi_question_marker(value:str)->bool:
 
 def validate_translation_pair(text:str,source:str,*,field:str,enforce_intent:bool=True)->str:
     """Hard production gate: only deterministic translation defects."""
-    value=validate_vi(text,source,field=field)
-    low=value.casefold()
-    for zh,vi in glossary_pairs(source):
-        if vi.casefold() not in low:
-            raise ValueError(f"{field} missing glossary {zh}")
-    return value
+    return validate_vi(text,source,field=field)
 
 def translation_review_reasons(text:str,source:str)->list[str]:
     """Heuristic quality signals. They request one repair pass but never hard-stop by themselves."""
@@ -259,6 +252,13 @@ def translation_review_reasons(text:str,source:str)->list[str]:
         reasons.append("negation")
     if any(term in source for term in QUESTION_ZH) and not has_vi_question_marker(value):
         reasons.append("question")
+    source_numbers=re.findall(r"\d+",source)
+    target_numbers=re.findall(r"\d+",value)
+    if source_numbers and source_numbers!=target_numbers:
+        reasons.append("number_surface_mismatch")
+    for zh,vi in glossary_pairs(source):
+        if vi.casefold() not in low:
+            reasons.append("glossary_"+zh)
     return reasons
 
 def fit_word_limit(segment:dict)->int:
@@ -1086,7 +1086,7 @@ def main()->None:
         "tts_voice":voice_mode,
         "translation_mode":"hy-mt2-single-pass-single-repair-v9",
         "timing_mode":"speech-segment-sync",
-        "translation_quality_profile":"deterministic-hard-gate-single-review-v4",
+        "translation_quality_profile":"structural-hard-gate-semantic-single-review-v5",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
