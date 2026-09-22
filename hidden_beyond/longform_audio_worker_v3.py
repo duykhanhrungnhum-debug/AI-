@@ -510,55 +510,82 @@ def wav_duration(path:Path)->float:
 
 def render_voice_and_video(segments:list[dict],meta:dict)->dict:
     import numpy as np
-    from piper import PiperVoice
-    from piper.config import SynthesisConfig
+    import soundfile as sf
+    from vieneu import Vieneu
 
-    voice_name=str(meta.get("voice_name") or "vi_VN-vais1000-medium")
-    voices=WORK/"piper-voices"
+    voice_name=str(meta.get("voice_name") or "Minh Quân Pro")
     segdir=WORK/"tts"
-    voices.mkdir(exist_ok=True)
     segdir.mkdir(exist_ok=True)
-    model_file=voices/(voice_name+".onnx")
-    if not model_file.exists():
-        run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
-    voice=PiperVoice.load(str(model_file),use_cuda=False)
-    syn=SynthesisConfig(length_scale=float(meta.get("piper_length_scale") or 0.86))
     max_tempo=float((meta.get("style") or {}).get("max_tempo",1.16))
     min_pause=float((meta.get("style") or {}).get("min_pause_between_cues",0.20))
+
+    heartbeat("tts_loading",f"Loading VieNeu-TTS v3 Turbo ONNX int8 voice={voice_name}")
+    tts=Vieneu(mode="v3turbo",backend="onnx",precision="int8")
+    available={voice_id for _,voice_id in tts.list_preset_voices()}
+    if voice_name not in available:
+        raise RuntimeError(f"VieNeu preset voice not available: {voice_name}")
 
     fitted=[]
     retimed=0
     hard_trim=0
     started=time.monotonic()
-    for i,s in enumerate(segments,1):
-        raw=segdir/f"raw-{i:05d}.wav"
-        with wave.open(str(raw),"wb") as wf:
-            voice.synthesize_wav(clean(s["vi"]),wf,syn_config=syn)
-        original=max(0.01,wav_duration(raw))
-        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+1.2
-        slot=max(0.25,next_start-min_pause-float(s["start"]))
-        fit=raw
-        if original>slot+0.08:
-            retimed+=1
-            tempo=min(max_tempo,max(1.0,original/slot))
-            fit=segdir/f"fit-{i:05d}.wav"
-            run([
-                "ffmpeg","-y","-v","error","-i",str(raw),
-                "-af",f"atempo={tempo:.6f},afade=t=out:st={max(0.0,slot-0.05):.3f}:d=0.05",
-                "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fit),
-            ])
-            if wav_duration(fit)>slot+0.08:
-                trimmed=segdir/f"trim-{i:05d}.wav"
+    batch_size=24
+
+    for off in range(0,len(segments),batch_size):
+        batch=segments[off:off+batch_size]
+        texts=[clean(s["vi"]) for s in batch]
+        audios=tts.infer_batch(
+            texts,
+            voice=voice_name,
+            max_batch_size=batch_size,
+            apply_watermark=False,
+        )
+        if len(audios)!=len(batch):
+            raise RuntimeError(f"VieNeu batch output mismatch {len(audios)} != {len(batch)}")
+
+        for s,audio in zip(batch,audios,strict=True):
+            i=int(s["index"])
+            raw=segdir/f"raw-{i:05d}.wav"
+            arr=np.asarray(audio,dtype=np.float32)
+            if arr.size<100:
+                raise RuntimeError(f"VieNeu empty audio segment {i}")
+            sf.write(str(raw),arr,tts.sample_rate,subtype="PCM_16")
+
+            original=max(0.01,wav_duration(raw))
+            next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+1.2
+            slot=max(0.25,next_start-min_pause-float(s["start"]))
+            fit=raw
+            if original>slot+0.08:
+                retimed+=1
+                tempo=min(max_tempo,max(1.0,original/slot))
+                fit=segdir/f"fit-{i:05d}.wav"
                 run([
-                    "ffmpeg","-y","-v","error","-i",str(fit),
-                    "-af",f"atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06",
-                    "-ar","22050","-ac","1","-c:a","pcm_s16le",str(trimmed),
+                    "ffmpeg","-y","-v","error","-i",str(raw),
+                    "-af",f"atempo={tempo:.6f},afade=t=out:st={max(0.0,slot-0.05):.3f}:d=0.05",
+                    "-ar","48000","-ac","1","-c:a","pcm_s16le",str(fit),
                 ])
-                fit=trimmed
-                hard_trim+=1
-        fitted.append((s,fit))
-        if i%100==0 or i==len(segments):
-            heartbeat("tts",f"TTS {i}/{len(segments)} retimed={retimed} hard_trim={hard_trim}")
+                if wav_duration(fit)>slot+0.08:
+                    trimmed=segdir/f"trim-{i:05d}.wav"
+                    run([
+                        "ffmpeg","-y","-v","error","-i",str(fit),
+                        "-af",f"atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06",
+                        "-ar","48000","-ac","1","-c:a","pcm_s16le",str(trimmed),
+                    ])
+                    fit=trimmed
+                    hard_trim+=1
+            fitted.append((s,fit))
+
+        done=min(off+len(batch),len(segments))
+        elapsed=max(0.001,time.monotonic()-started)
+        rate=done/elapsed
+        remain=(len(segments)-done)/rate if rate>0 else 0
+        heartbeat(
+            "tts",
+            f"VieNeu {done}/{len(segments)} eta={remain/60:.1f}m retimed={retimed} hard_trim={hard_trim}",
+        )
+
+    del tts
+    gc.collect()
 
     with wave.open(str(fitted[0][1]),"rb") as wf:
         rate=wf.getframerate()
@@ -568,19 +595,19 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
         with wave.open(str(path),"rb") as wf:
             data=np.frombuffer(wf.readframes(wf.getnframes()),dtype="<i2").astype(np.float32)
         pos=max(0,int(round(float(s["start"])*rate)))
-        end=min(len(canvas),pos+len(data))
+        stop=min(len(canvas),pos+len(data))
         if pos<len(canvas):
-            canvas[pos:end]+=data[:end-pos]
+            canvas[pos:stop]+=data[:stop-pos]
     canvas=np.clip(canvas,-32768,32767).astype("<i2")
     with wave.open(str(VOICE),"wb") as wf:
         wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(rate); wf.writeframes(canvas.tobytes())
 
-    heartbeat("mixing","Mixing Vietnamese voice with original video; video stream is copied")
+    heartbeat("mixing","Mixing Vietnamese voice with original video; copying video stream")
     mix=(
-        "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35,volume=0.92[orig];"
-        "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.00,asplit=2[sc][voice];"
+        "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35,volume=0.88[orig];"
+        "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.04,asplit=2[sc][voice];"
         "[orig][sc]sidechaincompress=threshold=0.010:ratio=14:attack=8:release=240:makeup=1[duck];"
-        "[duck][voice]amix=inputs=2:weights='0.74 1':normalize=0,loudnorm=I=-18.5:TP=-2.5:LRA=6,"
+        "[duck][voice]amix=inputs=2:weights='0.68 1':normalize=0,loudnorm=I=-18.0:TP=-2.5:LRA=6,"
         "alimiter=limit=0.94[outa]"
     )
     run([
@@ -590,6 +617,11 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
     ])
     if not OUT.exists() or OUT.stat().st_size<1_000_000:
         raise RuntimeError("final video missing or unexpectedly small")
+
+    meta["tts_engine"]="VieNeu-TTS-v3-Turbo"
+    meta["tts_backend"]="onnx-int8"
+    meta["tts_voice"]=voice_name
+    meta["tts_sample_rate"]=48000
     meta["retimed_segments"]=retimed
     meta["hard_trim_segments"]=hard_trim
     meta["voice_render_seconds"]=round(time.monotonic()-started,2)
@@ -619,7 +651,8 @@ def main()->None:
         "bitsandbytes>=0.45,<1",
         "sentencepiece",
         "sacremoses",
-        "piper-tts>=1.3,<2",
+        "vieneu>=3.8.1,<4",
+        "soundfile>=0.13,<1",
         "numpy",
     ])
 
@@ -1177,8 +1210,8 @@ def main()->None:
         f"Translation complete: {len(segments)}/{len(segments)} (100%) in {translation_seconds:.1f}s; packaging for CPU TTS",
     )
 
-    voice_mode="piper-vais1000-fast-cpu-v3"
-    voice_name="vi_VN-vais1000-medium"
+    voice_mode="vieneu-v3-turbo-onnx-int8"
+    voice_name="Minh Quân Pro"
     lines=[]
     for i,s in enumerate(segments,1):
         lines += [str(i),f"{ts(s['start'])} --> {ts(s['end'])}",s["vi"],""]
@@ -1207,7 +1240,7 @@ def main()->None:
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-selective-qwen-piper-remux-v7",
+        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-selective-qwen-vieneu-remux-v8",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
