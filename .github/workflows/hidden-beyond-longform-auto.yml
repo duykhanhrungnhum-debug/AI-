@@ -52,7 +52,7 @@ jobs:
           echo "bootstrap" > orchestrator-stage.txt
           test -n "$KAGGLE_API_TOKEN"
           python -m pip install -e .
-          python -m pip install --quiet "yt-dlp>=2026.1"
+          python -m pip install --quiet "yt-dlp[default]>=2026.1"
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           jq . hidden_beyond/longform/auto.json
