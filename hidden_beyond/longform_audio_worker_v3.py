@@ -821,7 +821,7 @@ def main()->None:
 
     if device=="cuda":
         primary_model="tencent/Hy-MT2-7B"
-        heartbeat("translating",f"Loading {primary_model}; translating {len(pending_segments)} uncached / {len(segments)} total segments")
+        heartbeat("translating",f"Loading {primary_model}; translating {len(pending_segments)} segments")
         tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
         tok.padding_side="left"
         if tok.pad_token_id is None:
@@ -899,10 +899,7 @@ def main()->None:
                     out=model.generate(
                         **inp,
                         max_new_tokens=96,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.6,
-                        top_k=20,
+                        do_sample=False,
                         repetition_penalty=1.05,
                         use_cache=True,
                         pad_token_id=tok.pad_token_id,
@@ -928,7 +925,7 @@ def main()->None:
                 pct=cursor*100.0/max(1,len(pending_segments))
                 heartbeat(
                     "translating",
-                    f"Hy-MT2 uncached {cursor}/{len(pending_segments)} ({pct:.1f}%); {rate:.1f} seg/s; invalid={len(invalid_ids)}",
+                    f"Hy-MT2 {cursor}/{len(pending_segments)} ({pct:.1f}%); {rate:.1f} seg/s; invalid={len(invalid_ids)}",
                 )
 
         title_item={
@@ -958,10 +955,6 @@ def main()->None:
         except Exception:
             translated_title=clean(str(cfg.get("series_title") or cfg.get("title") or "Hidden Beyond"))
 
-        del model,tok
-        gc.collect()
-        torch.cuda.empty_cache()
-
         if cursor<len(pending_segments):
             remaining=pending_segments[cursor:]
             translated.update(opus_translate(remaining,on_device="cuda"))
@@ -974,20 +967,89 @@ def main()->None:
                 f"Primary translation flagged {len(invalid_items)} semantic/content risks; deterministic MT fallback",
             )
             translated.update(opus_translate(invalid_items,on_device="cpu"))
+
             still_invalid=[]
+            invalid_reason={}
             for s in invalid_items:
                 try:
                     translated[s["index"]]=validate_translation_pair(
                         translated.get(s["index"],""),s["text"],field=f"fallback verified segment {s['index']}"
                     )
-                except Exception:
-                    still_invalid.append(s["index"])
+                except Exception as exc:
+                    still_invalid.append(s)
+                    invalid_reason[s["index"]]=str(exc)
+
+            # Repair only the small set that still fails semantic QA.
+            # Reuse the already-loaded primary model: no extra model/service and no full-video retry loop.
+            for repair_round in range(2):
+                if not still_invalid:
+                    break
+                heartbeat(
+                    "translation_repair",
+                    f"Targeted Hy-MT repair round {repair_round+1}: {len(still_invalid)} segments",
+                )
+                repaired=[]
+                with torch.inference_mode():
+                    for off in range(0,len(still_invalid),4):
+                        batch=still_invalid[off:off+4]
+                        chats=[]
+                        for s in batch:
+                            idx=s["index"]
+                            context_parts=[]
+                            for j in (idx-2,idx-1,idx+1,idx+2):
+                                if j in by_index:
+                                    context_parts.append(by_index[j].get("text",""))
+                            context=clean(" ".join(context_parts))
+                            terms=glossary_pairs(s["text"])
+                            required="; ".join(f"{zh}={vi}" for zh,vi in terms)
+                            current=clean(translated.get(idx,""))
+                            reason=invalid_reason.get(idx,"semantic QA failed")
+                            prompt=(
+                                "请重新翻译下面一句中文为自然、准确、简洁的越南语影视对白。\n"
+                                "必须保持原意，不添加信息，不遗漏否定、疑问、数字、人物关系和专有名词。\n"
+                                +profile_prompt_rule(translation_profile)+"\n"
+                                +(f"固定术语：{required}\n" if required else "")
+                                +f"上下文：{context}\n"
+                                +f"上一版越南语：{current}\n"
+                                +f"上一版失败原因：{reason}\n"
+                                +"只输出修正后的越南语一句话，不解释。\n"
+                                +f"原文：{s['text']}"
+                            )
+                            chats.append(tok.apply_chat_template(
+                                [{"role":"user","content":prompt}],
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            ))
+                        inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=512)
+                        inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+                        out=model.generate(
+                            **inp,max_new_tokens=96,do_sample=False,repetition_penalty=1.06,
+                            use_cache=True,pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
+                        )
+                        gen=out[:,inp["input_ids"].shape[1]:]
+                        vis=tok.batch_decode(gen,skip_special_tokens=True)
+                        for s,vi in zip(batch,vis,strict=True):
+                            try:
+                                candidate=validate_translation_pair(
+                                    vi,s["text"],field=f"semantic repair segment {s['index']}"
+                                )
+                                translated[s["index"]]=candidate
+                            except Exception as exc:
+                                repaired.append(s)
+                                invalid_reason[s["index"]]=str(exc)
+                still_invalid=repaired
+
             if still_invalid:
+                ids=[s["index"] for s in still_invalid]
                 raise RuntimeError(
-                    f"translation semantic quality unresolved {len(still_invalid)} segments: "
-                    +",".join(map(str,still_invalid[:30]))
+                    f"translation semantic quality unresolved after targeted repair {len(ids)} segments: "
+                    +",".join(map(str,ids[:30]))
                 )
             invalid_ids=[]
+
+        del model,tok
+        gc.collect()
+        torch.cuda.empty_cache()
 
         overlong_ids=[
             s["index"] for s in segments
