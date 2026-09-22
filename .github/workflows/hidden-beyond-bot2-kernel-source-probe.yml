@@ -1,0 +1,83 @@
+name: Hidden Beyond Bot2 Kernel Source Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/bot2_kernel_source_probe.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Submit CPU mount probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import os,textwrap
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          source=textwrap.dedent("""
+          import json
+          from pathlib import Path
+          from urllib.request import Request,urlopen
+
+          root=Path("/kaggle/input")
+          files=[]
+          for p in root.rglob("*"):
+              if p.is_file():
+                  try:
+                      size=p.stat().st_size
+                  except Exception:
+                      size=-1
+                  files.append({"path":str(p),"size":size})
+          matches=[x for x in files if x["path"].endswith("/source.mp4") or x["path"].endswith("source.mp4")]
+          result={
+              "probe_id":"2b6a6625-9ad7-4b5b-8e0e-f80f6d56f5aa",
+              "ok":bool(matches),
+              "source_matches":matches[:5],
+              "input_file_count":len(files),
+              "sample_files":files[:30],
+          }
+          data=json.dumps(result,ensure_ascii=False).encode("utf-8")
+          req=Request(
+              "https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hb-source-mount-probe",
+              data=data,
+              headers={"content-type":"application/json"},
+              method="POST",
+          )
+          with urlopen(req,timeout=60) as r:
+              print("CALLBACK",r.status,r.read().decode("utf-8",errors="replace"))
+          print("MOUNT_PROBE",json.dumps(result,ensure_ascii=False))
+          """)
+
+          w=KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+          )
+          sub=w.submit_script(
+              slug="hidden-beyond-bot2-kernel-source-probe",
+              title="Hidden Beyond Bot2 Kernel Source Probe",
+              source=source,
+              kernel_sources=["duykhanhta/hidden-beyond-source-download-smoke"],
+              enable_internet=True,
+              enable_gpu=False,
+              is_private=True,
+          )
+          print("BOT2_KERNEL_SOURCE_PROBE_SUBMITTED",sub.ref,sub.version_number)
+          PY
