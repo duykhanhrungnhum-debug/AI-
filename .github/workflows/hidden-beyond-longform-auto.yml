@@ -25,6 +25,7 @@ jobs:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
       LONGFORM_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-upload-api
+      SEGMENT_CACHE_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-segment-cache-api
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +55,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           jq . hidden_beyond/longform/auto.json
+          date +%s > pipeline-start-epoch.txt
+
+      - name: Resolve publish / benchmark mode
+        id: run_mode
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PUBLISH="$(jq -r '.publish // true' hidden_beyond/longform/auto.json)"
+          if [ "$PUBLISH" != "true" ] && [ "$PUBLISH" != "false" ]; then
+            echo "::error title=Invalid publish mode::publish must be true or false"
+            exit 1
+          fi
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "RUN_MODE publish=$PUBLISH"
 
       - name: Retrieve source video once
         shell: bash
@@ -203,13 +218,21 @@ jobs:
           test -s ai-output/metadata.json
           jq . ai-output/metadata.json
 
+      - name: Restore TTS segment cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/hidden-beyond-tts
+          key: hidden-beyond-tts-${{ runner.os }}-${{ hashFiles('ai-output/metadata.json') }}
+          restore-keys: |
+            hidden-beyond-tts-${{ runner.os }}-
+
       - name: Render Vietnamese voice on CPU
         shell: bash
         run: |
           set -Eeuo pipefail
           echo "render_voice_cpu" > orchestrator-stage.txt
           python -m pip install --quiet "piper-tts>=1.3,<2" numpy
-          python scripts/render_hidden_beyond_voice_cpu.py               --metadata ai-output/metadata.json               --output ai-output/voice.mp3
+          python scripts/render_hidden_beyond_voice_cpu.py               --metadata ai-output/metadata.json               --output ai-output/voice.mp3               --cache-dir .cache/hidden-beyond-tts
           test -s ai-output/voice.mp3
           ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 ai-output/voice.mp3 | grep -q audio
           echo "CPU_VOICE_READY bytes=$(stat -c%s ai-output/voice.mp3)"
@@ -256,7 +279,56 @@ jobs:
           print(f"FINAL_MEDIA_VERIFIED source={a:.3f}s output={b:.3f}s")
           PY
 
+      - name: Record long-form benchmark metrics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          END="$(date +%s)"
+          START="$(cat pipeline-start-epoch.txt)"
+          SRC_DUR="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 source-input/source.mp4)"
+          WALL="$((END-START))"
+          python - "$SRC_DUR" "$WALL" <<'PY'
+          import json,sys
+          from pathlib import Path
+          duration=float(sys.argv[1]); wall=float(sys.argv[2])
+          m=json.loads(Path("ai-output/metadata.json").read_text())
+          report={
+            "source_duration_seconds":round(duration,3),
+            "pipeline_wall_seconds":round(wall,3),
+            "pipeline_realtime_factor":round(wall/max(duration,0.001),4),
+            "transcript_seconds":m.get("transcript_seconds"),
+            "gpu_translation_seconds":m.get("gpu_translation_seconds"),
+            "gpu_worker_seconds_to_package":m.get("gpu_worker_seconds_to_package"),
+            "voice_render_seconds":m.get("voice_render_seconds"),
+            "segment_cache_hits":m.get("segment_cache_hits",0),
+            "series_memory_hits":m.get("series_memory_hits",0),
+            "translation_segments_computed":m.get("translation_segments_computed"),
+            "tts_cache_hits":m.get("tts_cache_hits",0),
+            "tts_cache_misses":m.get("tts_cache_misses",0),
+            "segments":m.get("segments"),
+            "profile":m.get("translation_profile"),
+            "publish":False,
+          }
+          Path("benchmark-report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
+          print("LONGFORM_BENCHMARK",json.dumps(report,ensure_ascii=False))
+          PY
+
+      - name: Mark benchmark job complete without upload
+        if: steps.run_mode.outputs.publish != 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "benchmark_complete" > orchestrator-stage.txt
+          JOB_ID="$(cat job-id.txt)"
+          JOB_TOKEN="$(jq -r '.job_token' start.json)"
+          jq -n --arg job_id "$JOB_ID" '{job_id:$job_id}' > benchmark-complete-body.json
+          curl --fail-with-body -sS -X POST "$SEGMENT_CACHE_API/benchmark-complete"             -H "x-job-token: $JOB_TOKEN" -H "content-type: application/json"             --data-binary @benchmark-complete-body.json > benchmark-complete.json
+          cat benchmark-complete.json
+          test "$(jq -r '.job.stage' benchmark-complete.json)" = "benchmark_complete"
+          echo "HIDDEN_BEYOND_BENCHMARK_ONLY_DONE"
+
       - name: Upload exactly this episode to YouTube
+        if: steps.run_mode.outputs.publish == 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -271,6 +343,7 @@ jobs:
           echo "YOUTUBE_UPLOAD_DONE id=$VIDEO_ID"
 
       - name: Verify YouTube accepted and processed video
+        if: steps.run_mode.outputs.publish == 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -311,6 +384,7 @@ jobs:
           exit 1
 
       - name: Attach playlist and complete tracked job
+        if: steps.run_mode.outputs.publish == 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -378,6 +452,9 @@ jobs:
             youtube-upload.json
             video-status.json
             complete.json
+            benchmark-report.json
+            benchmark-complete.json
+            pipeline-start-epoch.txt
             orchestrator-stage.txt
             supervisor-decision.json
             supervisor-recover.json
