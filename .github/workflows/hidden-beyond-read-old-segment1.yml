@@ -1,0 +1,32 @@
+name: Hidden Beyond Read Old Segment1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hidden_beyond/read_old_segment1.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read first cue from old successful SRT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl --fail-with-body -sS "https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/hb-old-srt-first" -o old.srt
+          python - <<'PY'
+          from pathlib import Path
+          text=Path("old.srt").read_text(encoding="utf-8",errors="replace")
+          blocks=[b.strip() for b in text.strip().split("\n\n") if b.strip()]
+          if not blocks:
+              raise SystemExit("no subtitle blocks")
+          first=blocks[0]
+          print("OLD_SEGMENT1_BLOCK_START")
+          print(first)
+          print("OLD_SEGMENT1_BLOCK_END")
+          PY
