@@ -77,6 +77,10 @@ jobs:
               exit 0
             fi
             if [ "$STATE" = "failed" ]; then
+              jq '.run.benchmark_report // {}' bench-status.json > professional-translation-report.json
+              jq '.run.translated_metadata // {}' bench-status.json > professional-translation-metadata.json
+              echo "PRO_CERT_FAILURE_REPORT"
+              jq . professional-translation-report.json
               echo "::error title=Professional translation certification failed::$MSG"
               exit 1
             fi
@@ -94,6 +98,7 @@ jobs:
             bench-start.json
             bench-status.json
             professional-translation-report.json
+            professional-translation-metadata.json
             professional-translation-submission.json
           if-no-files-found: warn
           retention-days: 7
