@@ -9,21 +9,24 @@ import html
 import json
 import math
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import wave
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 WORK=Path("/kaggle/working")
+SOURCE=WORK/"source.mp4"
 AUDIO=WORK/"source-audio.mp3"
+VOICE=WORK/"vietnamese-voice.wav"
+OUT=WORK/"processed.mp4"
 SRT=WORK/"vi.srt"
 META=WORK/"metadata.json"
 
 API=JOB["callback_base"].rstrip("/")
-CACHE_API="https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/longform-segment-cache-api"
-CACHE_MODEL_KEY="hy-mt2-7b-longform-v1"
 JOB_ID=JOB["job_id"]
 JOB_TOKEN=JOB["job_token"]
 _stage={"name":"starting","message":"GPU worker starting"}
@@ -72,18 +75,6 @@ def post(path:str,payload:dict)->dict:
     data=json.dumps(payload,ensure_ascii=False).encode()
     req=Request(
         API+path,
-        data=data,
-        headers={"content-type":"application/json","x-job-token":JOB_TOKEN},
-        method="POST",
-    )
-    with urlopen(req,timeout=120) as r:
-        return json.loads(r.read().decode())
-
-def cache_post(path:str,payload:dict)->dict:
-    body={"job_id":JOB_ID,**payload}
-    data=json.dumps(body,ensure_ascii=False).encode()
-    req=Request(
-        CACHE_API.rstrip("/")+path,
         data=data,
         headers={"content-type":"application/json","x-job-token":JOB_TOKEN},
         method="POST",
@@ -154,143 +145,6 @@ def profile_prompt_rule(profile:dict)->str:
     if genre=="crime":
         return "使用准确、简洁的现代越南语悬疑/刑侦对白；证据、时间、数字、身份和因果关系必须精确。"
     return "使用自然、专业、适合影视对白的越南语；根据人物关系和场景自动选择称谓，不得套用固定题材风格。"
-
-def prepare_segment_cache_keys(segments:list[dict],profile:dict)->None:
-    profile_sig=json.dumps({
-        "profile_key":profile.get("profile_key"),
-        "profile_version":profile.get("profile_version"),
-        "genre":profile.get("genre"),
-        "register":profile.get("register"),
-        "pronoun_policy":profile.get("pronoun_policy"),
-        "glossary":profile.get("glossary") or {},
-        "style_rules":profile.get("style_rules") or [],
-    },ensure_ascii=False,sort_keys=True,separators=(",",":"))
-    for pos,s in enumerate(segments):
-        neighbours=[]
-        for j in range(max(0,pos-2),min(len(segments),pos+3)):
-            neighbours.append(clean(segments[j].get("text","")))
-        context="\n".join(neighbours)
-        context_hash=hashlib.sha256(context.encode("utf-8")).hexdigest()
-        start_ms=int(round(float(s["start"])*1000))
-        end_ms=int(round(float(s["end"])*1000))
-        payload="|".join([
-            CACHE_MODEL_KEY,profile_sig,context_hash,str(start_ms),str(end_ms),clean(s["text"])
-        ])
-        s["source_context_hash"]=context_hash
-        s["source_hash"]=hashlib.sha256(clean(s["text"]).encode("utf-8")).hexdigest()
-        s["segment_key"]=hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-def safe_series_memory_source(source:str)->bool:
-    value=clean(source)
-    cjk=len(CJK_RE.findall(value))
-    if cjk<6:
-        return False
-    # Do not blindly reuse context-sensitive pronoun/dialogue lines across episodes.
-    if any(x in value for x in ("我","你","您","他","她","它","咱","本座","老夫","为师","師父","师父")):
-        return False
-    return True
-
-def load_series_memory(segments:list[dict],profile:dict)->dict[int,str]:
-    candidates=[s for s in segments if safe_series_memory_source(s["text"])]
-    hashes=[s["source_hash"] for s in candidates]
-    found={}
-    for off in range(0,len(hashes),200):
-        resp=cache_post("/memory/load",{
-            "source_hashes":hashes[off:off+200],
-            "profile_version":int(profile.get("profile_version") or 1),
-            "model_key":CACHE_MODEL_KEY,
-        })
-        for row in resp.get("entries") or []:
-            found[str(row.get("source_hash"))]=str(row.get("translation") or "")
-    out={}
-    for s in candidates:
-        value=found.get(s["source_hash"])
-        if not value:
-            continue
-        try:
-            candidate=validate_translation_pair(value,s["text"],field=f"series memory {s['index']}")
-            candidate=validate_segment_fit(candidate,s,field=f"series memory fit {s['index']}")
-            out[s["index"]]=candidate
-        except Exception:
-            continue
-    return out
-
-def store_series_memory(segments:list[dict],translated:dict[int,str],profile:dict)->int:
-    eligible=[s for s in segments if safe_series_memory_source(s["text"])]
-    stored=0
-    for off in range(0,len(eligible),200):
-        batch=[]
-        for s in eligible[off:off+200]:
-            vi=clean(translated.get(s["index"],""))
-            if not vi:
-                continue
-            batch.append({
-                "source_hash":s["source_hash"],
-                "source_text":s["text"],
-                "translation":vi,
-                "qa_state":"passed",
-                "first_source_video_id":str(s.get("source_video_id") or ""),
-            })
-        if batch:
-            resp=cache_post("/memory/store",{
-                "profile_version":int(profile.get("profile_version") or 1),
-                "model_key":CACHE_MODEL_KEY,
-                "entries":batch,
-            })
-            stored+=int(resp.get("stored") or 0)
-    return stored
-
-def load_segment_cache(segments:list[dict],profile:dict)->dict[int,str]:
-    keys=[s["segment_key"] for s in segments]
-    found={}
-    for off in range(0,len(keys),200):
-        resp=cache_post("/load",{
-            "segment_keys":keys[off:off+200],
-            "profile_version":int(profile.get("profile_version") or 1),
-            "model_key":CACHE_MODEL_KEY,
-        })
-        for row in resp.get("entries") or []:
-            found[str(row.get("segment_key"))]=str(row.get("translation") or "")
-    out={}
-    for s in segments:
-        value=found.get(s["segment_key"])
-        if not value:
-            continue
-        try:
-            candidate=validate_translation_pair(value,s["text"],field=f"cached segment {s['index']}")
-            candidate=validate_segment_fit(candidate,s,field=f"cached fit segment {s['index']}")
-            out[s["index"]]=candidate
-        except Exception:
-            continue
-    return out
-
-def store_segment_cache(segments:list[dict],translated:dict[int,str],profile:dict)->int:
-    stored=0
-    for off in range(0,len(segments),200):
-        batch=[]
-        for s in segments[off:off+200]:
-            vi=clean(translated.get(s["index"],""))
-            if not vi:
-                continue
-            batch.append({
-                "segment_key":s["segment_key"],
-                "segment_index":s["index"],
-                "start_ms":int(round(float(s["start"])*1000)),
-                "end_ms":int(round(float(s["end"])*1000)),
-                "source_text":s["text"],
-                "source_context_hash":s["source_context_hash"],
-                "translation":vi,
-                "translation_hash":hashlib.sha256(vi.encode("utf-8")).hexdigest(),
-                "qa_state":"passed",
-            })
-        if batch:
-            resp=cache_post("/store",{
-                "profile_version":int(profile.get("profile_version") or 1),
-                "model_key":CACHE_MODEL_KEY,
-                "entries":batch,
-            })
-            stored+=int(resp.get("stored") or 0)
-    return stored
 
 def heartbeat(stage:str,message:str)->None:
     _stage["name"]=stage
@@ -650,6 +504,110 @@ def try_youtube_captions(source_video_id:str):
         print("HB_CAPTION_FALLBACK",repr(exc),flush=True)
         return None
 
+def wav_duration(path:Path)->float:
+    with wave.open(str(path),"rb") as w:
+        return w.getnframes()/w.getframerate()
+
+def render_voice_and_video(segments:list[dict],meta:dict)->dict:
+    import numpy as np
+    from piper import PiperVoice
+    from piper.config import SynthesisConfig
+
+    voice_name=str(meta.get("voice_name") or "vi_VN-vais1000-medium")
+    voices=WORK/"piper-voices"
+    segdir=WORK/"tts"
+    voices.mkdir(exist_ok=True)
+    segdir.mkdir(exist_ok=True)
+    model_file=voices/(voice_name+".onnx")
+    if not model_file.exists():
+        run([sys.executable,"-m","piper.download_voices",voice_name,"--download-dir",str(voices)])
+    voice=PiperVoice.load(str(model_file),use_cuda=False)
+    syn=SynthesisConfig(length_scale=float(meta.get("piper_length_scale") or 0.86))
+    max_tempo=float((meta.get("style") or {}).get("max_tempo",1.16))
+    min_pause=float((meta.get("style") or {}).get("min_pause_between_cues",0.20))
+
+    fitted=[]
+    retimed=0
+    hard_trim=0
+    started=time.monotonic()
+    for i,s in enumerate(segments,1):
+        raw=segdir/f"raw-{i:05d}.wav"
+        with wave.open(str(raw),"wb") as wf:
+            voice.synthesize_wav(clean(s["vi"]),wf,syn_config=syn)
+        original=max(0.01,wav_duration(raw))
+        next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+1.2
+        slot=max(0.25,next_start-min_pause-float(s["start"]))
+        fit=raw
+        if original>slot+0.08:
+            retimed+=1
+            tempo=min(max_tempo,max(1.0,original/slot))
+            fit=segdir/f"fit-{i:05d}.wav"
+            run([
+                "ffmpeg","-y","-v","error","-i",str(raw),
+                "-af",f"atempo={tempo:.6f},afade=t=out:st={max(0.0,slot-0.05):.3f}:d=0.05",
+                "-ar","22050","-ac","1","-c:a","pcm_s16le",str(fit),
+            ])
+            if wav_duration(fit)>slot+0.08:
+                trimmed=segdir/f"trim-{i:05d}.wav"
+                run([
+                    "ffmpeg","-y","-v","error","-i",str(fit),
+                    "-af",f"atrim=duration={slot:.3f},afade=t=out:st={max(0.0,slot-0.06):.3f}:d=0.06",
+                    "-ar","22050","-ac","1","-c:a","pcm_s16le",str(trimmed),
+                ])
+                fit=trimmed
+                hard_trim+=1
+        fitted.append((s,fit))
+        if i%100==0 or i==len(segments):
+            heartbeat("tts",f"TTS {i}/{len(segments)} retimed={retimed} hard_trim={hard_trim}")
+
+    with wave.open(str(fitted[0][1]),"rb") as wf:
+        rate=wf.getframerate()
+    duration=max(float(s["end"]) for s in segments)+1.0
+    canvas=np.zeros(max(1,int(math.ceil(duration*rate))),dtype=np.float32)
+    for s,path in fitted:
+        with wave.open(str(path),"rb") as wf:
+            data=np.frombuffer(wf.readframes(wf.getnframes()),dtype="<i2").astype(np.float32)
+        pos=max(0,int(round(float(s["start"])*rate)))
+        end=min(len(canvas),pos+len(data))
+        if pos<len(canvas):
+            canvas[pos:end]+=data[:end-pos]
+    canvas=np.clip(canvas,-32768,32767).astype("<i2")
+    with wave.open(str(VOICE),"wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(rate); wf.writeframes(canvas.tobytes())
+
+    heartbeat("mixing","Mixing Vietnamese voice with original video; video stream is copied")
+    mix=(
+        "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=35,volume=0.92[orig];"
+        "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=1.00,asplit=2[sc][voice];"
+        "[orig][sc]sidechaincompress=threshold=0.010:ratio=14:attack=8:release=240:makeup=1[duck];"
+        "[duck][voice]amix=inputs=2:weights='0.74 1':normalize=0,loudnorm=I=-18.5:TP=-2.5:LRA=6,"
+        "alimiter=limit=0.94[outa]"
+    )
+    run([
+        "ffmpeg","-y","-v","error","-i",str(SOURCE),"-i",str(VOICE),
+        "-filter_complex",mix,"-map","0:v:0","-map","[outa]",
+        "-c:v","copy","-c:a","aac","-b:a","160k","-movflags","+faststart","-shortest",str(OUT),
+    ])
+    if not OUT.exists() or OUT.stat().st_size<1_000_000:
+        raise RuntimeError("final video missing or unexpectedly small")
+    meta["retimed_segments"]=retimed
+    meta["hard_trim_segments"]=hard_trim
+    meta["voice_render_seconds"]=round(time.monotonic()-started,2)
+    meta["final_video_bytes"]=OUT.stat().st_size
+    return meta
+
+def upload_to_youtube(url:str,path:Path)->str:
+    heartbeat("youtube_upload",f"Uploading final video directly from worker bytes={path.stat().st_size}")
+    p=subprocess.run([
+        "curl","--fail-with-body","--retry","3","--retry-all-errors","--retry-delay","3",
+        "-sS","-X","PUT",url,"-H","content-type: video/mp4","--data-binary","@"+str(path),
+    ],capture_output=True,text=True,check=True)
+    body=json.loads(p.stdout or "{}")
+    video_id=str(body.get("id") or "").strip()
+    if not video_id:
+        raise RuntimeError("youtube upload response missing video id: "+(p.stdout or "")[:1000])
+    return video_id
+
 def main()->None:
     heartbeat("installing","Installing optimized local AI runtime")
     run([
@@ -661,6 +619,8 @@ def main()->None:
         "bitsandbytes>=0.45,<1",
         "sentencepiece",
         "sacremoses",
+        "piper-tts>=1.3,<2",
+        "numpy",
     ])
 
     import torch
@@ -673,6 +633,23 @@ def main()->None:
     source_video_id=str(cfg["source_video_id"])
 
     pipeline_started=time.monotonic()
+    heartbeat("source_download","Downloading source once on the direct worker")
+    cmd=[
+        sys.executable,"-m","yt_dlp","--no-playlist",
+        "--retries","5","--fragment-retries","5",
+        "--remote-components","ejs:github",
+    ]
+    if shutil.which("node"):
+        cmd += ["--js-runtimes","node"]
+    cmd += [
+        "-f","bv*[height<=720]+ba/b[height<=720]/b",
+        "--merge-output-format","mp4","-o",str(SOURCE),str(cfg["source_url"]),
+    ]
+    run(cmd)
+    if not SOURCE.exists() or SOURCE.stat().st_size<1_000_000:
+        raise RuntimeError("source download missing or unexpectedly small")
+    heartbeat("source_ready",f"Source ready bytes={SOURCE.stat().st_size}")
+
     transcript_started=time.monotonic()
     heartbeat("caption_probe","Checking source captions before ASR")
     caption_result=try_youtube_captions(source_video_id)
@@ -686,10 +663,13 @@ def main()->None:
         asr_word_count=0
         heartbeat("transcribed",f"Source captions ready: {len(raw)} cues; ASR skipped")
     else:
-        heartbeat("fetching_input","No usable Chinese captions; fetching compressed source audio")
-        download(cfg["input_audio_url"],AUDIO)
+        heartbeat("extracting_audio","No usable Chinese captions; extracting compact audio locally")
+        run([
+            "ffmpeg","-y","-v","error","-i",str(SOURCE),
+            "-vn","-ac","1","-ar","16000","-c:a","libmp3lame","-b:a","48k",str(AUDIO),
+        ])
         if AUDIO.stat().st_size<100000:
-            raise RuntimeError("input audio is unexpectedly small")
+            raise RuntimeError("extracted source audio is unexpectedly small")
         whisper_name="large-v3-turbo" if device=="cuda" else "small"
         transcript_source=f"faster_whisper_{whisper_name}"
         heartbeat("transcribing",f"Batched speech recognition on {device} with {whisper_name}")
@@ -762,29 +742,17 @@ def main()->None:
     if too_long:
         raise RuntimeError(f"dialogue segmentation has {too_long} cues longer than 6.2s")
 
-    profile_response=cache_post("/profile",{})
-    translation_profile=infer_translation_profile(cfg,segments,profile_response.get("profile") or {})
+    translation_profile=infer_translation_profile(cfg,segments,cfg.get("translation_profile") or {})
     global ACTIVE_PROFILE
     ACTIVE_PROFILE=translation_profile
-    if str((profile_response.get("profile") or {}).get("genre") or "auto").lower()=="auto":
-        cache_post("/profile/update",{"profile":translation_profile})
-    prepare_segment_cache_keys(segments,translation_profile)
-    cached_translations=load_segment_cache(segments,translation_profile)
-    cache_hits=len(cached_translations)
-    after_segment_cache=[s for s in segments if s["index"] not in cached_translations]
-    series_memory=load_series_memory(after_segment_cache,translation_profile)
-    series_memory_hits=len(series_memory)
-    pending_segments=[s for s in after_segment_cache if s["index"] not in series_memory]
-    cache_misses=len(pending_segments)
+    pending_segments=segments
     heartbeat(
-        "translation_cache",
-        f"Reuse ready: segment_hit={cache_hits} series_memory_hit={series_memory_hits} "
-        f"translate={cache_misses} profile={translation_profile.get('genre','general')}",
+        "translation_profile",
+        f"Profile ready: {translation_profile.get('genre','general')}; translating {len(segments)} segments",
     )
 
     translation_started=time.monotonic()
-    translated=dict(cached_translations)
-    translated.update(series_memory)
+    translated={}
     invalid_ids=[]
     qwen_reviewed=0
     fallback_segments=0
@@ -1203,8 +1171,6 @@ def main()->None:
     for s in segments:
         s["vi"]=translated[s["index"]]
 
-    cache_stored=store_segment_cache(segments,translated,translation_profile)
-    series_memory_stored=store_series_memory(segments,translated,translation_profile)
     translation_seconds=round(time.monotonic()-translation_started,2)
     heartbeat(
         "packaging_translation",
@@ -1228,26 +1194,20 @@ def main()->None:
         "segments":len(segments),
         "translation_model":primary_model,
         "translation_profile":translation_profile,
-        "segment_cache_model_key":CACHE_MODEL_KEY,
-        "segment_cache_hits":cache_hits,
-        "series_memory_hits":series_memory_hits,
-        "translation_segments_computed":cache_misses,
-        "segment_cache_stored":cache_stored,
-        "series_memory_stored":series_memory_stored,
         "translation_editor":"Qwen/Qwen2.5-1.5B-Instruct" if qwen_reviewed else "not_used",
         "transcript_source":transcript_source,
         "whisper_model":whisper_name,
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"universal-longform-segment-cache-context-qa-v6",
+        "translation_mode":"universal-longform-direct-context-qa-v7",
         "timing_mode":"speech-segment-sync",
         "translation_quality_profile":"universal-longform-v1",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
         "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "gpu_efficiency_mode":"caption-first-batched-asr-segment-cache-universal-profile-hymt2-selective-qwen-cpu-tts-v6",
+        "gpu_efficiency_mode":"single-worker-caption-first-batched-asr-hymt2-selective-qwen-piper-remux-v7",
         "transcript_seconds":transcript_seconds,
         "transcript_media_duration_seconds":round(transcript_media_duration,2),
         "transcript_last_end_seconds":round(transcript_last_end,2),
@@ -1275,17 +1235,23 @@ def main()->None:
     }
     META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
 
-    heartbeat("uploading_translation","Uploading translation artifacts; GPU work is done")
+    heartbeat("tts","Rendering Vietnamese voice on the same worker")
+    meta=render_voice_and_video(segments,meta)
+    META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+
+    heartbeat("evidence","Uploading small subtitle and metadata evidence")
     upload(cfg["subtitle_upload_url"],SRT,"text/plain")
     upload(cfg["metadata_upload_url"],META,"application/json")
-    result=post("/ai-complete",{
+
+    video_id=upload_to_youtube(str(cfg["youtube_upload_url"]),OUT)
+    heartbeat("youtube_uploaded",f"YouTube accepted video id={video_id}")
+    result=post("/complete",{
         "job_id":JOB_ID,
+        "youtube_video_id":video_id,
         "translated_title":translated_title,
-        "output_sha256":"",
-        "output_bytes":META.stat().st_size,
-        "voice_generated":False,
+        "translation_profile":translation_profile,
     })
-    print("HB_AI_COMPLETE_GPU_RELEASE",json.dumps(result,ensure_ascii=False),flush=True)
+    print("HB_DIRECT_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
 
 if __name__=="__main__":
     thread=threading.Thread(target=heartbeat_loop,daemon=True)
