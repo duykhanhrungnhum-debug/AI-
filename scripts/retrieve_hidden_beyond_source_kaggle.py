@@ -17,7 +17,7 @@ def main():
     config=json.loads(Path(args.config).read_text(encoding="utf-8"))
     handoff=json.loads(Path(args.handoff).read_text(encoding="utf-8"))
     required_cfg=("source_url","source_video_id")
-    required_handoff=("handoff_id","handoff_token","upload_url","callback_base")
+    required_handoff=("handoff_id","handoff_token","callback_base")
     missing=[k for k in required_cfg if not config.get(k)]
     missing += [k for k in required_handoff if not handoff.get(k)]
     if missing:
@@ -32,7 +32,6 @@ def main():
         "source_video_id":config["source_video_id"],
         "handoff_id":handoff["handoff_id"],
         "handoff_token":handoff["handoff_token"],
-        "upload_url":handoff["upload_url"],
         "callback_base":handoff["callback_base"],
     }
     source=template.replace(marker,"CONFIG = "+repr(payload),1)
