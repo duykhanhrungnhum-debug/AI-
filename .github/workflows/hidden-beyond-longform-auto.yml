@@ -138,10 +138,23 @@ jobs:
 
             OIDC="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hidden-beyond-source-handoff"               | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
             curl --fail-with-body -sS -X POST "$SOURCE_HANDOFF_API/download"               -H "Authorization: Bearer $OIDC" -H "content-type: application/json"               --data-binary @source-handoff-status-body.json > source-handoff-download.json
-            SOURCE_DOWNLOAD_URL="$(jq -r '.download_url' source-handoff-download.json)"
-            test -n "$SOURCE_DOWNLOAD_URL" && test "$SOURCE_DOWNLOAD_URL" != "null"
-            curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS               "$SOURCE_DOWNLOAD_URL" -o source-input/source.mp4
-            echo "SOURCE_DOWNLOADED_VIA_SUPABASE_HANDOFF url=$SOURCE_URL"
+            PART_COUNT="$(jq -r '.parts | length' source-handoff-download.json)"
+            test "$PART_COUNT" -gt 0
+            mkdir -p source-input/parts
+            for IDX in $(seq 0 $((PART_COUNT-1))); do
+              URL="$(jq -r --argjson i "$IDX" '.parts[$i].download_url' source-handoff-download.json)"
+              test -n "$URL" && test "$URL" != "null"
+              printf -v PART "source-input/parts/part-%05d.bin" "$IDX"
+              curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 -sS "$URL" -o "$PART"
+            done
+            cat source-input/parts/part-*.bin > source-input/source.mp4
+            EXPECTED_SIZE="$(jq -r '.metadata.size_bytes // .metadata.total_size // 0' source-handoff-download.json)"
+            ACTUAL_SIZE="$(stat -c%s source-input/source.mp4)"
+            if [ "$EXPECTED_SIZE" -gt 0 ] && [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
+              echo "::error title=Source reassembly size mismatch::expected=$EXPECTED_SIZE actual=$ACTUAL_SIZE"
+              exit 1
+            fi
+            echo "SOURCE_DOWNLOADED_VIA_SUPABASE_HANDOFF parts=$PART_COUNT bytes=$ACTUAL_SIZE url=$SOURCE_URL"
           fi
 
           test -s source-input/source.mp4
