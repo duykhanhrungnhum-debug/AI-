@@ -464,4 +464,4 @@ class KaggleBatchVideoProvider:
             print("AI_AGENT_VIDEO_BATCH_OK")
             print(json.dumps(report, indent=2))
             """
-        ).strip() + "\\n"
+        ).strip() + "\n"
