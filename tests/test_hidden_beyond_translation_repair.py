@@ -101,3 +101,12 @@ def test_worker_persists_and_reuses_asr_checkpoint():
 def test_asr_checkpoint_cursor_does_not_become_translation_cursor():
     source = WORKER.read_text(encoding="utf-8")
     assert 'payload["cursor"]=stored_cursor if stored_phase in {"translating","translation_complete"} else 0' in source
+
+
+def test_worker_prefers_cpu_acquired_captions():
+    source = WORKER.read_text(encoding="utf-8")
+    assert 'mounted.parent.glob("source-caption*.json3")' in source
+    assert '"CPU-acquired captions ready:' in source
+    assert '"CPU source captions reused:' in source
+    assert 'transcript_source="cpu_source_caption_json3"' in source
+    assert 'whisper_name="skipped-cpu-caption"' in source
