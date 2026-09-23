@@ -37,11 +37,15 @@ def main() -> int:
     except Exception as exc:
         report["output_metadata_error"] = str(exc)
 
-    try:
-        logs = worker.logs(slug)
-        report["log_tail"] = logs[-12000:]
-    except Exception as exc:
-        report["logs_error"] = str(exc)
+    if status.terminal:
+        try:
+            logs = worker.logs(slug)
+            report["log_tail"] = logs[-12000:]
+        except Exception as exc:
+            report["logs_error"] = str(exc)
+    else:
+        report["log_tail"] = ""
+        report["logs_note"] = "log stream skipped while kernel is non-terminal"
 
     output_dir = Path(os.environ.get("OUTPUT_DIR", "kaggle-kernel-status-output"))
     output_dir.mkdir(parents=True, exist_ok=True)
