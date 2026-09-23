@@ -62,3 +62,14 @@ def test_worker_has_translation_checkpoint_resume_contract():
     assert "cursor-last_checkpoint_cursor>=300" in source
     assert "\"translation_complete\"" in source
 
+
+
+def test_worker_splits_gpu_translation_and_cpu_tts():
+    source = WORKER.read_text(encoding="utf-8")
+    assert 'WORKER_PHASE=str(JOB.get("phase") or "full")' in source
+    assert 'WORKER_PHASE=="translation_only"' in source
+    assert 'WORKER_PHASE=="tts_only"' in source
+    assert '"segments_data"' in source
+    assert '"translation_complete"' in source
+    assert '"compute_stage":"cpu_tts_mix_upload"' in source
+    assert 'enable_gpu' not in source  # worker itself never decides Kaggle accelerator
