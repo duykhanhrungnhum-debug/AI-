@@ -33,9 +33,9 @@ def main() -> int:
         kernel_slug="ai-agent-video-smoke",
         poll_interval=20,
         max_poll_attempts=180,
-        inference_steps=8,
+        inference_steps=4,
         guidance_scale=5.0,
-        min_video_bytes=20_000,
+        min_video_bytes=5_000,
     )
     request = SceneVideoRequest(
         scene_id="smoke-001",
@@ -48,10 +48,10 @@ def main() -> int:
             "subtitles, text, watermark, logo, static image, blurry, distorted objects, "
             "deformed anatomy, duplicate objects, low quality"
         ),
-        width=832,
-        height=480,
-        num_frames=17,
-        fps=16,
+        width=480,
+        height=272,
+        num_frames=9,
+        fps=8,
         seed=20260923,
     )
     result = provider.generate_with_retries([request], max_rounds=1)
