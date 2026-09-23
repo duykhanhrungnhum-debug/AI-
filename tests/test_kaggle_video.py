@@ -95,3 +95,26 @@ def test_provider_rejects_duplicate_scene_ids():
     request = SceneVideoRequest(scene_id="same", prompt="motion")
     with pytest.raises(ValueError, match="unique"):
         provider.generate_batch([request, request])
+
+
+def test_worker_source_compiles_before_kaggle_submission():
+    provider = KaggleBatchVideoProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        max_poll_attempts=1,
+        inference_steps=8,
+        min_video_bytes=32,
+    )
+    request = SceneVideoRequest(
+        scene_id="compile-1",
+        prompt="A realistic food stall with subtle motion.",
+        width=832,
+        height=480,
+        num_frames=17,
+        fps=16,
+        seed=1,
+    )
+
+    source = provider._build_worker_source((request,))
+    compile(source, "kaggle-video-worker.py", "exec")
+    assert source.startswith("from __future__ import annotations")
