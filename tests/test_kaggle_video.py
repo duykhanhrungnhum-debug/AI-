@@ -118,3 +118,57 @@ def test_worker_source_compiles_before_kaggle_submission():
     source = provider._build_worker_source((request,))
     compile(source, "kaggle-video-worker.py", "exec")
     assert source.startswith("from __future__ import annotations")
+
+
+def test_worker_preencodes_prompts_on_cpu_before_gpu_offload():
+    provider = KaggleBatchVideoProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        max_poll_attempts=1,
+        inference_steps=4,
+        min_video_bytes=32,
+    )
+    request = SceneVideoRequest(
+        scene_id="memory-1",
+        prompt="A lantern sways in a quiet food stall.",
+        width=480,
+        height=272,
+        num_frames=9,
+        fps=8,
+        seed=3,
+    )
+
+    source = provider._build_worker_source((request,))
+    encode_at = source.index("pipe.encode_prompt(")
+    release_at = source.index("pipe.text_encoder = None")
+    offload_at = source.index("pipe.enable_model_cpu_offload()")
+    generate_at = source.index("frames = pipe(")
+
+    assert "device=cpu_device" in source
+    assert 'torch.Generator(device="cpu")' in source
+    assert encode_at < release_at < offload_at < generate_at
+    assert "CUBLAS_STATUS_ALLOC_FAILED" in source
+    assert '"diffusers==0.35.2"' in source
+
+
+class FailingWorker(FakeWorker):
+    def status(self, slug):
+        return KaggleKernelStatus("ERROR", "")
+
+    def logs(self, slug):
+        return "old-prefix-" + ("x" * 9000) + "-ACTUAL-TERMINAL-ERROR"
+
+
+def test_failure_reporting_keeps_terminal_log_tail():
+    provider = KaggleBatchVideoProvider(
+        worker=FailingWorker(),
+        poll_interval=0,
+        max_poll_attempts=1,
+    )
+    with pytest.raises(RuntimeError) as exc:
+        provider._wait()
+
+    message = str(exc.value)
+    assert "ACTUAL-TERMINAL-ERROR" in message
+    assert "old-prefix-" not in message
+    assert "...[tail]" in message
