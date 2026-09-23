@@ -84,3 +84,20 @@ def test_completed_checkpoint_reuses_same_video_same_segment_count():
     assert 'HB_CHECKPOINT_RESUME cursor' in source
     assert 'len(translated)==int(segment_count)' in source
     assert 'all(str(i) in translated for i in range(1,int(segment_count)+1))' in source
+
+
+def test_worker_persists_and_reuses_asr_checkpoint():
+    source = WORKER.read_text(encoding="utf-8")
+    assert '"asr_complete"' in source
+    assert '"ASR checkpoint saved:' in source
+    assert '"ASR checkpoint reused:' in source
+    assert 'pre_segments=list(pre_payload.get("segments_data") or [])' in source
+    assert 'if not pre_segments:' in source
+    assert 'if not pre_translation_complete:' in source
+    assert '"transcript_meta"' in source
+    assert 'candidate=clean(s.get("vi","")) or translated_cache.get(s["index"],"")' in source
+
+
+def test_asr_checkpoint_cursor_does_not_become_translation_cursor():
+    source = WORKER.read_text(encoding="utf-8")
+    assert 'payload["cursor"]=stored_cursor if stored_phase in {"translating","translation_complete"} else 0' in source
