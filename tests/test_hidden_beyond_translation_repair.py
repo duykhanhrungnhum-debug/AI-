@@ -119,3 +119,11 @@ def test_translation_batch_prefers_gpu_throughput_without_quality_change():
     assert "batch_size=max(4,batch_size//2)" in source
     assert "do_sample=False" in source
     assert "cursor-last_checkpoint_cursor>=100" in source
+
+
+def test_overlong_dialogue_cues_are_split_not_fatal():
+    source = WORKER.read_text(encoding="utf-8")
+    assert "def enforce_max_cue_duration(" in source
+    assert "Normalized {overlong_before} overlong dialogue cues before checkpointing" in source
+    assert "segments=enforce_max_cue_duration(segments,max_seconds=6.0)" in source
+    assert "dialogue segmentation has {too_long} cues longer than 6.2s" in source
