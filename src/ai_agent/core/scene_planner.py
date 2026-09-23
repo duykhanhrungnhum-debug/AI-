@@ -30,8 +30,7 @@ class ScenePlanner:
         self.provider = provider
         self.max_scenes = max_scenes
 
-    def plan(self, script: str, *, visual_style: str = "cinematic realistic") -> VisualScenePlan:
-        assert_core_invariants()
+    def plan(\n        self,\n        script: str,\n        *,\n        visual_style: str = "cinematic realistic",\n        composition: str = "16:9 widescreen",\n    ) -> VisualScenePlan:\n        assert_core_invariants()
         script = script.strip()
         visual_style = visual_style.strip()
         if not script:
