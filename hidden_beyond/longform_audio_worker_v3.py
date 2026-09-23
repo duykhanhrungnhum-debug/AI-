@@ -31,6 +31,7 @@ API=JOB["callback_base"].rstrip("/")
 JOB_ID=JOB["job_id"]
 JOB_TOKEN=JOB["job_token"]
 BOT2_MODE=str(JOB.get("mode") or "").lower()=="bot2"
+WORKER_REVISION=str(JOB.get("worker_revision") or "").strip()
 _stage={"name":"starting","message":"GPU worker starting"}
 _stop=threading.Event()
 
@@ -219,6 +220,61 @@ def heartbeat(stage:str,message:str)->None:
 def heartbeat_loop()->None:
     while not _stop.wait(60):
         heartbeat(_stage["name"],_stage["message"])
+
+def translation_segment_signature(segments:list[dict])->str:
+    material="\n".join(
+        f"{int(s.get('index') or 0)}|{clean(s.get('text',''))}"
+        for s in segments
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+def load_translation_checkpoint(segment_signature:str)->dict:
+    if not BOT2_MODE or not WORKER_REVISION:
+        return {}
+    try:
+        result=post("/translation-checkpoint-get",{
+            "source_video_id":str(JOB["source_video_id"]),
+            "worker_revision":WORKER_REVISION,
+        })
+        if not result.get("found"):
+            return {}
+        payload=result.get("payload") or {}
+        if str(payload.get("segment_signature") or "")!=segment_signature:
+            print("HB_CHECKPOINT_IGNORED signature_mismatch",flush=True)
+            return {}
+        return payload
+    except Exception as exc:
+        print("HB_CHECKPOINT_LOAD_ERROR",repr(exc),flush=True)
+        return {}
+
+def save_translation_checkpoint(
+    phase:str,
+    cursor:int,
+    segment_signature:str,
+    translated:dict,
+    review_ids:set,
+    hard_reasons:dict,
+    translation_profile:dict,
+)->None:
+    if not BOT2_MODE or not WORKER_REVISION:
+        return
+    try:
+        post("/translation-checkpoint-save",{
+            "source_video_id":str(JOB["source_video_id"]),
+            "worker_revision":WORKER_REVISION,
+            "phase":phase,
+            "cursor":int(cursor),
+            "payload":{
+                "segment_signature":segment_signature,
+                "translated":{str(k):v for k,v in translated.items()},
+                "review_ids":sorted(int(x) for x in review_ids),
+                "hard_reasons":{str(k):str(v) for k,v in hard_reasons.items()},
+                "translation_profile":translation_profile,
+            },
+        })
+        print("HB_CHECKPOINT_SAVED",phase,cursor,flush=True)
+    except Exception as exc:
+        print("HB_CHECKPOINT_SAVE_ERROR",repr(exc),flush=True)
 
 def download(url:str,path:Path)->None:
     req=Request(url,headers={"User-Agent":"Hidden-Beyond-AI/4.0"})
@@ -910,7 +966,38 @@ def main()->None:
     )
 
     translation_started=time.monotonic()
+    segment_signature=translation_segment_signature(segments)
+    checkpoint=load_translation_checkpoint(segment_signature)
     translated={}
+    review_ids=set()
+    hard_reasons={}
+    resume_cursor=0
+    if checkpoint:
+        try:
+            translated={
+                int(k):clean(v)
+                for k,v in dict(checkpoint.get("translated") or {}).items()
+                if clean(v)
+            }
+            review_ids={int(x) for x in (checkpoint.get("review_ids") or [])}
+            hard_reasons={int(k):str(v) for k,v in dict(checkpoint.get("hard_reasons") or {}).items()}
+            resume_cursor=max(0,min(len(segments),int(checkpoint.get("cursor") or 0)))
+            if any(i not in translated for i in range(1,resume_cursor+1)):
+                raise ValueError("checkpoint translated prefix incomplete")
+            if checkpoint.get("translation_profile"):
+                translation_profile=dict(checkpoint["translation_profile"])
+                ACTIVE_PROFILE=translation_profile
+            heartbeat(
+                "translating",
+                f"Resuming translation checkpoint {resume_cursor}/{len(segments)}; "
+                f"review={len(review_ids)} hard={len(hard_reasons)}",
+            )
+        except Exception as exc:
+            print("HB_CHECKPOINT_INVALID",repr(exc),flush=True)
+            translated={}
+            review_ids=set()
+            hard_reasons={}
+            resume_cursor=0
     qwen_reviewed=0
     fallback_segments=0
     structural_rescue_segments=0
@@ -1037,11 +1124,10 @@ def main()->None:
     def soft_intent_review(source:str,value:str)->bool:
         return bool(translation_review_reasons(value,source))
 
-    review_ids=set()
-    hard_invalid=set()
-    hard_reasons={}
+    hard_invalid=set(hard_reasons)
     batch_size=6
-    cursor=0
+    cursor=resume_cursor
+    last_checkpoint_cursor=resume_cursor
     with torch.inference_mode():
         while cursor<len(segments):
             batch=segments[cursor:cursor+batch_size]
@@ -1088,6 +1174,12 @@ def main()->None:
                     review_ids.add(idx)
 
             cursor+=len(batch)
+            if cursor==len(segments) or cursor-last_checkpoint_cursor>=300:
+                save_translation_checkpoint(
+                    "translating",cursor,segment_signature,translated,
+                    review_ids,hard_reasons,translation_profile,
+                )
+                last_checkpoint_cursor=cursor
             elapsed=max(0.001,time.monotonic()-translation_started)
             heartbeat(
                 "translating",
@@ -1202,6 +1294,11 @@ def main()->None:
                     f"{len(rescue_failed)} segments: "
                     +",".join(map(str,rescue_failed[:30]))+"; details="+detail
                 )
+
+    save_translation_checkpoint(
+        "translation_complete",len(segments),segment_signature,translated,
+        set(),{},translation_profile,
+    )
 
     title_item={
         "index":0,
