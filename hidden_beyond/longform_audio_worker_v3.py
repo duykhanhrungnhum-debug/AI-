@@ -253,7 +253,7 @@ def load_translation_checkpoint(segment_signature:str,segment_count:int)->dict:
     stored_phase=str(result.get("phase") or "")
     # Cursor/phase live beside payload in the API response. Carry them into the
     # in-memory checkpoint so resume logic does not silently fall back to 0.
-    payload["cursor"]=stored_cursor
+    payload["cursor"]=stored_cursor if stored_phase in {"translating","translation_complete"} else 0
     payload["phase"]=stored_phase
 
     stored_signature=str(payload.get("segment_signature") or "")
@@ -839,13 +839,45 @@ def main()->None:
         SOURCE.symlink_to(mounted)
         heartbeat("source_ready",f"Mounted source ready bytes={mounted.stat().st_size} path={mounted}")
 
-    heartbeat("installing","Installing optimized local runtime")
+    cfg=dict(JOB.get("config") or {}) if BOT2_MODE else post("/worker-config",{"job_id":JOB_ID})
+    source_video_id=str(cfg["source_video_id"])
+    pipeline_started=time.monotonic()
+
+    precheckpoint=(
+        fetch_translation_checkpoint()
+        if BOT2_MODE and WORKER_PHASE=="translation_only"
+        else {}
+    )
+    pre_payload=dict(precheckpoint.get("payload") or {}) if precheckpoint else {}
+    pre_segments=list(pre_payload.get("segments_data") or [])
+    pre_translated=dict(pre_payload.get("translated") or {})
+    pre_phase=str(precheckpoint.get("phase") or "")
+    pre_cursor=int(precheckpoint.get("cursor") or 0)
+    pre_translation_complete=(
+        pre_phase=="translation_complete"
+        and pre_cursor>0
+        and len(pre_translated)>=pre_cursor
+    )
+
+    heartbeat("installing","Installing only the runtime required by the next unfinished stage")
     if BOT2_MODE and WORKER_PHASE=="tts_only":
         deps=[
             "vieneu>=3.8.1,<4",
             "soundfile>=0.13,<1",
             "numpy",
         ]
+    elif BOT2_MODE and WORKER_PHASE=="translation_only":
+        deps=["soundfile>=0.13,<1","numpy"]
+        if not pre_segments:
+            deps.insert(0,"faster-whisper>=1.1,<2")
+        if not pre_translation_complete:
+            deps += [
+                "transformers>=5.6,<6",
+                "accelerate<2",
+                "bitsandbytes>=0.45,<1",
+                "sentencepiece",
+                "sacremoses",
+            ]
     else:
         deps=[
             "faster-whisper>=1.1,<2",
@@ -861,16 +893,17 @@ def main()->None:
         deps.insert(0,"yt-dlp>=2026.1")
     run([sys.executable,"-m","pip","install","--quiet",*deps])
 
-    cfg=dict(JOB.get("config") or {}) if BOT2_MODE else post("/worker-config",{"job_id":JOB_ID})
-    source_video_id=str(cfg["source_video_id"])
-    pipeline_started=time.monotonic()
-
     if BOT2_MODE and WORKER_PHASE=="tts_only":
         checkpoint=fetch_translation_checkpoint()
         if not checkpoint.get("found"):
             raise RuntimeError("translation checkpoint missing for CPU TTS")
         payload=checkpoint.get("payload") or {}
         segments=list(payload.get("segments_data") or [])
+        translated_cache={
+            int(k):clean(v)
+            for k,v in dict(payload.get("translated") or {}).items()
+            if clean(v)
+        }
         if not segments:
             raise RuntimeError("translation checkpoint has no timed segments for CPU TTS")
         for s in segments:
@@ -878,7 +911,8 @@ def main()->None:
             s["start"]=float(s["start"])
             s["end"]=float(s["end"])
             s["text"]=clean(s.get("text",""))
-            s["vi"]=validate_vi(s.get("vi",""),s["text"],field=f"cpu tts segment {s['index']}")
+            candidate=clean(s.get("vi","")) or translated_cache.get(s["index"],"")
+            s["vi"]=validate_vi(candidate,s["text"],field=f"cpu tts segment {s['index']}")
             s["tts_slot"]=float(s.get("tts_slot") or max(0.25,s["end"]-s["start"]))
             s["max_words"]=int(s.get("max_words") or max(2,math.ceil(s["tts_slot"]*3.0)))
             s["fit_words"]=int(s.get("fit_words") or fit_word_limit(s))
@@ -921,8 +955,10 @@ def main()->None:
         return
 
     import torch
-    from faster_whisper import BatchedInferencePipeline, WhisperModel
-    from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
+    if not pre_segments:
+        from faster_whisper import BatchedInferencePipeline, WhisperModel
+    if not pre_translation_complete:
+        from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
     device="cuda" if torch.cuda.is_available() else "cpu"
     compute="float16" if device=="cuda" else "int8"
@@ -965,66 +1001,90 @@ def main()->None:
             raise RuntimeError("source download failed after bounded retries: "+last_source_error)
 
     transcript_started=time.monotonic()
-    if BOT2_MODE:
-        caption_result=None
-        heartbeat("extracting_audio","Bot2 mounted source verified; using local ASR")
+    transcript_meta=dict(pre_payload.get("transcript_meta") or {}) if pre_payload else {}
+    if BOT2_MODE and WORKER_PHASE=="translation_only" and pre_segments:
+        raw=[
+            {
+                "start":float(x["start"]),
+                "end":float(x["end"]),
+                "text":clean(x.get("text","")),
+            }
+            for x in pre_segments
+        ]
+        transcript_media_duration=float(
+            transcript_meta.get("media_duration")
+            or max(float(x["end"]) for x in raw)
+        )
+        transcript_source=str(transcript_meta.get("source") or "checkpoint_asr")
+        whisper_name=str(transcript_meta.get("whisper_model") or "checkpoint-skipped")
+        detected_language=str(transcript_meta.get("detected_language") or "zh")
+        language_probability=transcript_meta.get("language_probability")
+        asr_word_count=int(transcript_meta.get("asr_word_count") or 0)
+        heartbeat(
+            "transcribed",
+            f"ASR checkpoint reused: {len(raw)} cues; no speech-recognition GPU work",
+        )
     else:
-        heartbeat("caption_probe","Checking source captions before ASR")
-        caption_result=try_youtube_captions(source_video_id)
-
-    if caption_result:
-        raw,caption_kind,caption_lang,transcript_media_duration=caption_result
-        transcript_source=f"youtube_{caption_kind}_{caption_lang}"
-        whisper_name="skipped-caption-available"
-        detected_language="zh"
-        language_probability=None
-        asr_word_count=0
-        heartbeat("transcribed",f"Source captions ready: {len(raw)} cues; ASR skipped")
-    else:
-        heartbeat("extracting_audio","No usable Chinese captions; extracting compact audio locally")
-        run([
-            "ffmpeg","-y","-v","error","-i",str(SOURCE),
-            "-vn","-ac","1","-ar","16000","-c:a","libmp3lame","-b:a","48k",str(AUDIO),
-        ])
-        if AUDIO.stat().st_size<100000:
-            raise RuntimeError("extracted source audio is unexpectedly small")
-        whisper_name="large-v3-turbo" if device=="cuda" else "small"
-        transcript_source=f"faster_whisper_{whisper_name}"
-        heartbeat("transcribing",f"Batched speech recognition on {device} with {whisper_name}")
-        whisper=WhisperModel(whisper_name,device=device,compute_type=compute)
-        if device=="cuda":
-            transcriber=BatchedInferencePipeline(model=whisper)
-            seg_iter,info=transcriber.transcribe(
-                str(AUDIO),
-                language="zh",
-                vad_filter=True,
-                batch_size=16,
-                beam_size=1,
-                condition_on_previous_text=False,
-                word_timestamps=True,
-                vad_parameters={"min_silence_duration_ms":240,"speech_pad_ms":80},
-            )
+        if BOT2_MODE:
+            caption_result=None
+            heartbeat("extracting_audio","Bot2 mounted source verified; using local ASR")
         else:
-            seg_iter,info=whisper.transcribe(
-                str(AUDIO),
-                language="zh",
-                vad_filter=True,
-                beam_size=2,
-                condition_on_previous_text=False,
-                word_timestamps=True,
-                vad_parameters={"min_silence_duration_ms":240,"speech_pad_ms":80},
-            )
-        raw,asr_word_count=collect_whisper_segments(seg_iter)
-        detected_language=info.language
-        language_probability=float(info.language_probability or 0)
-        transcript_media_duration=float(getattr(info,"duration",0) or 0)
-        del whisper
-        if device=="cuda":
-            del transcriber
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        heartbeat("transcribed",f"ASR ready: {len(raw)} raw cues")
+            heartbeat("caption_probe","Checking source captions before ASR")
+            caption_result=try_youtube_captions(source_video_id)
+
+        if caption_result:
+            raw,caption_kind,caption_lang,transcript_media_duration=caption_result
+            transcript_source=f"youtube_{caption_kind}_{caption_lang}"
+            whisper_name="skipped-caption-available"
+            detected_language="zh"
+            language_probability=None
+            asr_word_count=0
+            heartbeat("transcribed",f"Source captions ready: {len(raw)} cues; ASR skipped")
+        else:
+            heartbeat("extracting_audio","No usable Chinese captions; extracting compact audio locally")
+            run([
+                "ffmpeg","-y","-v","error","-i",str(SOURCE),
+                "-vn","-ac","1","-ar","16000","-c:a","libmp3lame","-b:a","48k",str(AUDIO),
+            ])
+            if AUDIO.stat().st_size<100000:
+                raise RuntimeError("extracted source audio is unexpectedly small")
+            whisper_name="large-v3-turbo" if device=="cuda" else "small"
+            transcript_source=f"faster_whisper_{whisper_name}"
+            heartbeat("transcribing",f"Batched speech recognition on {device} with {whisper_name}")
+            whisper=WhisperModel(whisper_name,device=device,compute_type=compute)
+            if device=="cuda":
+                transcriber=BatchedInferencePipeline(model=whisper)
+                seg_iter,info=transcriber.transcribe(
+                    str(AUDIO),
+                    language="zh",
+                    vad_filter=True,
+                    batch_size=16,
+                    beam_size=1,
+                    condition_on_previous_text=False,
+                    word_timestamps=True,
+                    vad_parameters={"min_silence_duration_ms":240,"speech_pad_ms":80},
+                )
+            else:
+                seg_iter,info=whisper.transcribe(
+                    str(AUDIO),
+                    language="zh",
+                    vad_filter=True,
+                    beam_size=2,
+                    condition_on_previous_text=False,
+                    word_timestamps=True,
+                    vad_parameters={"min_silence_duration_ms":240,"speech_pad_ms":80},
+                )
+            raw,asr_word_count=collect_whisper_segments(seg_iter)
+            detected_language=info.language
+            language_probability=float(info.language_probability or 0)
+            transcript_media_duration=float(getattr(info,"duration",0) or 0)
+            del whisper
+            if device=="cuda":
+                del transcriber
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            heartbeat("transcribed",f"ASR ready: {len(raw)} raw cues")
 
     segments=raw
     for s in segments:
@@ -1074,6 +1134,33 @@ def main()->None:
 
     translation_started=time.monotonic()
     segment_signature=translation_segment_signature(segments)
+    if BOT2_MODE:
+        save_translation_checkpoint(
+            "asr_complete",len(segments),segment_signature,{},set(),{},
+            translation_profile,
+            extra_payload={
+                "segments_data":[{
+                    "index":seg["index"],
+                    "start":round(float(seg["start"]),3),
+                    "end":round(float(seg["end"]),3),
+                    "text":seg["text"],
+                    "tts_slot":round(float(seg["tts_slot"]),3),
+                    "max_words":int(seg["max_words"]),
+                    "fit_words":int(seg["fit_words"]),
+                } for seg in segments],
+                "transcript_meta":{
+                    "source":transcript_source,
+                    "whisper_model":whisper_name,
+                    "detected_language":detected_language,
+                    "language_probability":language_probability,
+                    "asr_word_count":asr_word_count,
+                    "media_duration":round(float(transcript_media_duration),3),
+                    "coverage_pct":round(float(transcript_coverage_pct),3),
+                    "segments_per_minute":round(float(segments_per_minute),3),
+                },
+            },
+        )
+        heartbeat("transcribed",f"ASR checkpoint saved: {len(segments)} timed segments")
     checkpoint=load_translation_checkpoint(segment_signature,len(segments))
     translated={}
     review_ids=set()
