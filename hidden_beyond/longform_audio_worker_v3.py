@@ -31,8 +31,10 @@ API=JOB["callback_base"].rstrip("/")
 JOB_ID=JOB["job_id"]
 JOB_TOKEN=JOB["job_token"]
 BOT2_MODE=str(JOB.get("mode") or "").lower()=="bot2"
+WORKER_PHASE=str(JOB.get("phase") or "full").strip().lower()
 WORKER_REVISION=str(JOB.get("worker_revision") or "").strip()
-_stage={"name":"starting","message":"GPU worker starting"}
+CHECKPOINT_REVISION=str(JOB.get("checkpoint_revision") or WORKER_REVISION).strip()
+_stage={"name":"starting","message":"worker starting"}
 _stop=threading.Event()
 
 CJK_RE=re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -122,6 +124,8 @@ def bot2_stage_name(stage:str)->str:
         return "gpu_submitted"
     if stage in {"caption_probe","extracting_audio","transcribing","transcribed"}:
         return "asr"
+    if stage=="translation_complete":
+        return "translation_complete"
     if stage in {"translating","packaging_translation"}:
         return "translating"
     if stage=="translation_repair":
@@ -228,24 +232,27 @@ def translation_segment_signature(segments:list[dict])->str:
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
-def load_translation_checkpoint(segment_signature:str)->dict:
-    if not BOT2_MODE or not WORKER_REVISION:
+def fetch_translation_checkpoint()->dict:
+    if not BOT2_MODE or not CHECKPOINT_REVISION:
         return {}
     try:
-        result=post("/translation-checkpoint-get",{
+        return post("/translation-checkpoint-get",{
             "source_video_id":str(JOB["source_video_id"]),
-            "worker_revision":WORKER_REVISION,
+            "worker_revision":CHECKPOINT_REVISION,
         })
-        if not result.get("found"):
-            return {}
-        payload=result.get("payload") or {}
-        if str(payload.get("segment_signature") or "")!=segment_signature:
-            print("HB_CHECKPOINT_IGNORED signature_mismatch",flush=True)
-            return {}
-        return payload
     except Exception as exc:
         print("HB_CHECKPOINT_LOAD_ERROR",repr(exc),flush=True)
         return {}
+
+def load_translation_checkpoint(segment_signature:str)->dict:
+    result=fetch_translation_checkpoint()
+    if not result.get("found"):
+        return {}
+    payload=result.get("payload") or {}
+    if str(payload.get("segment_signature") or "")!=segment_signature:
+        print("HB_CHECKPOINT_IGNORED signature_mismatch",flush=True)
+        return {}
+    return payload
 
 def save_translation_checkpoint(
     phase:str,
@@ -255,22 +262,26 @@ def save_translation_checkpoint(
     review_ids:set,
     hard_reasons:dict,
     translation_profile:dict,
+    extra_payload:dict|None=None,
 )->None:
-    if not BOT2_MODE or not WORKER_REVISION:
+    if not BOT2_MODE or not CHECKPOINT_REVISION:
         return
     try:
+        payload={
+            "segment_signature":segment_signature,
+            "translated":{str(k):v for k,v in translated.items()},
+            "review_ids":sorted(int(x) for x in review_ids),
+            "hard_reasons":{str(k):str(v) for k,v in hard_reasons.items()},
+            "translation_profile":translation_profile,
+        }
+        if extra_payload:
+            payload.update(extra_payload)
         post("/translation-checkpoint-save",{
             "source_video_id":str(JOB["source_video_id"]),
-            "worker_revision":WORKER_REVISION,
+            "worker_revision":CHECKPOINT_REVISION,
             "phase":phase,
             "cursor":int(cursor),
-            "payload":{
-                "segment_signature":segment_signature,
-                "translated":{str(k):v for k,v in translated.items()},
-                "review_ids":sorted(int(x) for x in review_ids),
-                "hard_reasons":{str(k):str(v) for k,v in hard_reasons.items()},
-                "translation_profile":translation_profile,
-            },
+            "payload":payload,
         })
         print("HB_CHECKPOINT_SAVED",phase,cursor,flush=True)
     except Exception as exc:
@@ -793,32 +804,93 @@ def main()->None:
         SOURCE.symlink_to(mounted)
         heartbeat("source_ready",f"Mounted source ready bytes={mounted.stat().st_size} path={mounted}")
 
-    heartbeat("installing","Installing optimized local AI runtime")
-    deps=[
-        "faster-whisper>=1.1,<2",
-        "transformers>=5.6,<6",
-        "accelerate<2",
-        "bitsandbytes>=0.45,<1",
-        "sentencepiece",
-        "sacremoses",
-        "vieneu>=3.8.1,<4",
-        "soundfile>=0.13,<1",
-        "numpy",
-    ]
+    heartbeat("installing","Installing optimized local runtime")
+    if BOT2_MODE and WORKER_PHASE=="tts_only":
+        deps=[
+            "vieneu>=3.8.1,<4",
+            "soundfile>=0.13,<1",
+            "numpy",
+        ]
+    else:
+        deps=[
+            "faster-whisper>=1.1,<2",
+            "transformers>=5.6,<6",
+            "accelerate<2",
+            "bitsandbytes>=0.45,<1",
+            "sentencepiece",
+            "sacremoses",
+            "soundfile>=0.13,<1",
+            "numpy",
+        ]
     if not BOT2_MODE:
         deps.insert(0,"yt-dlp>=2026.1")
     run([sys.executable,"-m","pip","install","--quiet",*deps])
+
+    cfg=dict(JOB.get("config") or {}) if BOT2_MODE else post("/worker-config",{"job_id":JOB_ID})
+    source_video_id=str(cfg["source_video_id"])
+    pipeline_started=time.monotonic()
+
+    if BOT2_MODE and WORKER_PHASE=="tts_only":
+        checkpoint=fetch_translation_checkpoint()
+        if not checkpoint.get("found"):
+            raise RuntimeError("translation checkpoint missing for CPU TTS")
+        payload=checkpoint.get("payload") or {}
+        segments=list(payload.get("segments_data") or [])
+        if not segments:
+            raise RuntimeError("translation checkpoint has no timed segments for CPU TTS")
+        for s in segments:
+            s["index"]=int(s["index"])
+            s["start"]=float(s["start"])
+            s["end"]=float(s["end"])
+            s["text"]=clean(s.get("text",""))
+            s["vi"]=validate_vi(s.get("vi",""),s["text"],field=f"cpu tts segment {s['index']}")
+            s["tts_slot"]=float(s.get("tts_slot") or max(0.25,s["end"]-s["start"]))
+            s["max_words"]=int(s.get("max_words") or max(2,math.ceil(s["tts_slot"]*3.0)))
+            s["fit_words"]=int(s.get("fit_words") or fit_word_limit(s))
+        translated_title=clean(str(payload.get("translated_title") or cfg.get("series_title") or cfg.get("title") or "Hidden Beyond"))
+        translation_profile=dict(payload.get("translation_profile") or {})
+        voice_name=str(payload.get("voice_name") or "Ngọc Linh")
+        lines=[]
+        for i,s in enumerate(segments,1):
+            lines += [str(i),f"{ts(s['start'])} --> {ts(s['end'])}",s["vi"],""]
+        SRT.write_text("\n".join(lines),encoding="utf-8")
+        meta={
+            "ok":True,
+            "job_id":JOB_ID,
+            "source_video_id":cfg["source_video_id"],
+            "series_id":cfg["series_id"],
+            "episode_number":cfg["episode_number"],
+            "translated_title":translated_title,
+            "segments":len(segments),
+            "translation_profile":translation_profile,
+            "translation_checkpoint_revision":CHECKPOINT_REVISION,
+            "tts_voice":"vieneu-v3-turbo-onnx-int8",
+            "style":STYLE,
+            "voice_name":voice_name,
+            "compute_stage":"cpu_tts_mix_upload",
+            "timed_segments":[{
+                "index":s["index"],"start":round(s["start"],3),"end":round(s["end"],3),
+                "zh":s["text"],"vi":s["vi"],"max_words":s["max_words"],"fit_words":s["fit_words"],
+            } for s in segments],
+        }
+        heartbeat("tts",f"CPU TTS resume: {len(segments)} translated segments")
+        meta=render_voice_and_video(segments,meta)
+        META.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        video_id=upload_to_youtube(str(cfg["youtube_upload_url"]),OUT)
+        heartbeat("youtube_uploaded",f"YouTube accepted video id={video_id}")
+        result=post("/worker-complete",{
+            "source_video_id":source_video_id,
+            "youtube_video_id":video_id,
+        })
+        print("HB_BOT2_CPU_COMPLETE",json.dumps(result,ensure_ascii=False),flush=True)
+        return
 
     import torch
     from faster_whisper import BatchedInferencePipeline, WhisperModel
     from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
-    cfg=dict(JOB.get("config") or {}) if BOT2_MODE else post("/worker-config",{"job_id":JOB_ID})
     device="cuda" if torch.cuda.is_available() else "cpu"
     compute="float16" if device=="cuda" else "int8"
-    source_video_id=str(cfg["source_video_id"])
-
-    pipeline_started=time.monotonic()
     if not BOT2_MODE:
         heartbeat("source_download","Downloading source once on the direct worker")
         client_sets=[None,"android_vr,web_safari","tv,mweb"]
@@ -1003,6 +1075,30 @@ def main()->None:
     structural_rescue_segments=0
     fast_path_used=False
     primary_model="tencent/Hy-MT2-7B"
+
+    if WORKER_PHASE=="translation_only" and resume_cursor==len(segments) and len(translated)==len(segments):
+        for seg in segments:
+            idx=seg["index"]
+            translated[idx]=validate_translation_pair(
+                translated[idx],seg["text"],field=f"checkpoint segment {idx}",enforce_intent=False
+            )
+            seg["vi"]=translated[idx]
+        translated_title=clean(str(checkpoint.get("translated_title") or cfg.get("series_title") or cfg.get("title") or "Hidden Beyond"))
+        save_translation_checkpoint(
+            "translation_complete",len(segments),segment_signature,translated,set(),{},
+            translation_profile,
+            extra_payload={
+                "translated_title":translated_title,
+                "voice_name":"Ngọc Linh",
+                "segments_data":[{
+                    "index":seg["index"],"start":round(float(seg["start"]),3),"end":round(float(seg["end"]),3),
+                    "text":seg["text"],"vi":seg["vi"],"tts_slot":round(float(seg["tts_slot"]),3),
+                    "max_words":int(seg["max_words"]),"fit_words":int(seg["fit_words"]),
+                } for seg in segments],
+            },
+        )
+        heartbeat("translation_complete",f"Translation checkpoint ready: {len(segments)}/{len(segments)}; GPU stage complete")
+        return
 
     if device!="cuda":
         raise RuntimeError("Hidden Beyond production translation requires Kaggle GPU")
@@ -1295,11 +1391,6 @@ def main()->None:
                     +",".join(map(str,rescue_failed[:30]))+"; details="+detail
                 )
 
-    save_translation_checkpoint(
-        "translation_complete",len(segments),segment_signature,translated,
-        set(),{},translation_profile,
-    )
-
     title_item={
         "index":0,
         "text":str(cfg.get("title") or ""),
@@ -1363,11 +1454,27 @@ def main()->None:
     for s in segments:
         s["vi"]=translated[s["index"]]
 
+    save_translation_checkpoint(
+        "translation_complete",len(segments),segment_signature,translated,set(),{},
+        translation_profile,
+        extra_payload={
+            "translated_title":translated_title,
+            "voice_name":"Ngọc Linh",
+            "segments_data":[{
+                "index":seg["index"],"start":round(float(seg["start"]),3),"end":round(float(seg["end"]),3),
+                "text":seg["text"],"vi":seg["vi"],"tts_slot":round(float(seg["tts_slot"]),3),
+                "max_words":int(seg["max_words"]),"fit_words":int(seg["fit_words"]),
+            } for seg in segments],
+        },
+    )
+
     translation_seconds=round(time.monotonic()-translation_started,2)
     heartbeat(
-        "packaging_translation",
-        f"Translation complete: {len(segments)}/{len(segments)} (100%) in {translation_seconds:.1f}s; packaging for CPU TTS",
+        "translation_complete",
+        f"Translation complete: {len(segments)}/{len(segments)} (100%) in {translation_seconds:.1f}s; checkpoint ready",
     )
+    if BOT2_MODE and WORKER_PHASE=="translation_only":
+        return
 
     voice_mode="vieneu-v3-turbo-onnx-int8"
     voice_name="Ngọc Linh"
