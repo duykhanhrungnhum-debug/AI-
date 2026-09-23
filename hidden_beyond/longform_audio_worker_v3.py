@@ -244,15 +244,42 @@ def fetch_translation_checkpoint()->dict:
         print("HB_CHECKPOINT_LOAD_ERROR",repr(exc),flush=True)
         return {}
 
-def load_translation_checkpoint(segment_signature:str)->dict:
+def load_translation_checkpoint(segment_signature:str,segment_count:int)->dict:
     result=fetch_translation_checkpoint()
     if not result.get("found"):
         return {}
     payload=result.get("payload") or {}
-    if str(payload.get("segment_signature") or "")!=segment_signature:
-        print("HB_CHECKPOINT_IGNORED signature_mismatch",flush=True)
-        return {}
-    return payload
+    stored_signature=str(payload.get("segment_signature") or "")
+    if stored_signature==segment_signature:
+        return payload
+
+    # Same source video can produce tiny ASR text differences between runs.
+    # A completed checkpoint is safe to reuse when the segment cardinality is
+    # identical and every translated index is present; each reused line is
+    # validated again before CPU handoff.
+    translated=dict(payload.get("translated") or {})
+    complete_compatible=(
+        str(result.get("phase") or "")=="translation_complete"
+        and int(result.get("cursor") or 0)==int(segment_count)
+        and len(translated)==int(segment_count)
+        and all(str(i) in translated for i in range(1,int(segment_count)+1))
+    )
+    if complete_compatible:
+        print(
+            "HB_CHECKPOINT_COMPATIBLE same_video_same_count",
+            segment_count,
+            "signature_mismatch",
+            flush=True,
+        )
+        return payload
+
+    print(
+        "HB_CHECKPOINT_IGNORED signature_mismatch",
+        "stored_cursor="+str(result.get("cursor") or 0),
+        "current_count="+str(segment_count),
+        flush=True,
+    )
+    return {}
 
 def save_translation_checkpoint(
     phase:str,
@@ -1039,7 +1066,7 @@ def main()->None:
 
     translation_started=time.monotonic()
     segment_signature=translation_segment_signature(segments)
-    checkpoint=load_translation_checkpoint(segment_signature)
+    checkpoint=load_translation_checkpoint(segment_signature,len(segments))
     translated={}
     review_ids=set()
     hard_reasons={}
