@@ -51,3 +51,14 @@ def test_worker_has_bounded_source_only_structural_rescue():
     assert "max_new_tokens=48" in source
     assert "structural_rescue_segments" in source
     assert "after bounded structural rescue" in source
+
+def test_worker_has_translation_checkpoint_resume_contract():
+    source = WORKER.read_text(encoding="utf-8")
+    assert "translation_segment_signature" in source
+    assert "/translation-checkpoint-get" in source
+    assert "/translation-checkpoint-save" in source
+    assert "Resuming translation checkpoint" in source
+    assert "cursor=resume_cursor" in source
+    assert "cursor-last_checkpoint_cursor>=300" in source
+    assert "\"translation_complete\"" in source
+
