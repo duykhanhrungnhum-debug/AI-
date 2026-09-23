@@ -30,19 +30,29 @@ class ScenePlanner:
         self.provider = provider
         self.max_scenes = max_scenes
 
-    def plan(\n        self,\n        script: str,\n        *,\n        visual_style: str = "cinematic realistic",\n        composition: str = "16:9 widescreen",\n    ) -> VisualScenePlan:\n        assert_core_invariants()
+    def plan(
+        self,
+        script: str,
+        *,
+        visual_style: str = "cinematic realistic",
+        composition: str = "16:9 widescreen",
+    ) -> VisualScenePlan:
+        assert_core_invariants()
         script = script.strip()
         visual_style = visual_style.strip()
+        composition = composition.strip()
         if not script:
             raise ValueError("script must not be empty")
         if not visual_style:
             raise ValueError("visual_style must not be empty")
+        if not composition:
+            raise ValueError("composition must not be empty")
 
         prompt = (
             "SCENE_PLANNING\n"
             "Split the SCRIPT into visual scenes for a narrated video. Preserve story order and character identity. "
-            f"Use at most {self.max_scenes} scenes. Each image prompt must describe one still image, use a 16:9 "
-            "widescreen composition, and must not invent plot facts not present in the script. "
+            f"Use at most {self.max_scenes} scenes. Each image prompt must describe one still image, use a {composition} "
+            "composition, and must not invent plot facts not present in the script. "
             f"Visual style: {visual_style}. "
             "Return ONLY a JSON object with key scenes. Each scene must contain scene_id, narration, image_prompt, "
             "and negative_prompt. scene_id values must be unique strings.\n"
@@ -50,11 +60,12 @@ class ScenePlanner:
         )
         response = self.provider.generate(prompt)
         raw = response.text.strip()
-        if raw.startswith("```"):
+        fence = chr(96) * 3
+        if raw.startswith(fence):
             lines = raw.splitlines()
-            if lines and lines[0].startswith("```"):
+            if lines and lines[0].startswith(fence):
                 lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
+            if lines and lines[-1].strip() == fence:
                 lines = lines[:-1]
             raw = "\n".join(lines).strip()
         try:
@@ -84,8 +95,8 @@ class ScenePlanner:
             if scene_id in seen:
                 raise ValueError("scene_id values must be unique")
             seen.add(scene_id)
-            if "16:9" not in image_prompt and "widescreen" not in image_prompt.casefold():
-                image_prompt = image_prompt + ", 16:9 widescreen composition"
+            if composition.casefold() not in image_prompt.casefold():
+                image_prompt = image_prompt + f", {composition} composition"
             scenes.append(
                 VisualScene(
                     scene_id=scene_id,
