@@ -1393,7 +1393,7 @@ def main()->None:
         return bool(translation_review_reasons(value,source))
 
     hard_invalid=set(hard_reasons)
-    batch_size=6
+    batch_size=12
     cursor=resume_cursor
     last_checkpoint_cursor=resume_cursor
     with torch.inference_mode():
@@ -1442,7 +1442,7 @@ def main()->None:
                     review_ids.add(idx)
 
             cursor+=len(batch)
-            if cursor==len(segments) or cursor-last_checkpoint_cursor>=300:
+            if cursor==len(segments) or cursor-last_checkpoint_cursor>=100:
                 save_translation_checkpoint(
                     "translating",cursor,segment_signature,translated,
                     review_ids,hard_reasons,translation_profile,
