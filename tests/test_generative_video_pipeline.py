@@ -30,7 +30,7 @@ def _wav_bytes(seconds=1.0, sample_rate=8000):
 
 
 class FakePlanner:
-    def plan(self, script, *, visual_style):
+    def plan(self, script, *, visual_style, composition="16:9 widescreen"):
         return VisualScenePlan((
             VisualScene("s1", "one", "Lan walks toward the food stall, widescreen"),
             VisualScene("s2", "two", "Tu hides behind a motorbike, widescreen"),
