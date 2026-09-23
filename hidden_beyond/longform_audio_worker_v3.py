@@ -46,6 +46,25 @@ def has_ngram_loop(value:str)->bool:
                 return True
     return False
 
+def repair_prompt_policy(failure_reason:str)->dict:
+    """Keep broken structural output out of the model's repair context.
+
+    A bad previous translation can poison deterministic decoding and reproduce
+    the same loop/CJK/meta failure. Soft-review rewrites may still use context.
+    """
+    reason=str(failure_reason or "")
+    structural=(
+        "still contains CJK" in reason
+        or "repetition loop" in reason
+        or " empty" in reason
+        or reason.endswith("empty")
+    )
+    return {
+        "include_previous":not structural,
+        "include_context":not structural,
+        "structural":structural,
+    }
+
 def collapse_cjk_asr_repetition(value:str)->str:
     """Collapse obvious consecutive CJK ASR loops while preserving emphasis twice."""
     value=clean(value)
@@ -894,6 +913,7 @@ def main()->None:
     translated={}
     qwen_reviewed=0
     fallback_segments=0
+    structural_rescue_segments=0
     fast_path_used=False
     primary_model="tencent/Hy-MT2-7B"
 
@@ -956,19 +976,21 @@ def main()->None:
         limit=int(s.get("fit_words") or 18)
         if repair:
             structural_rule=""
-            include_previous=True
-            include_context=True
+            policy=repair_prompt_policy(failure_reason)
+            include_previous=bool(policy["include_previous"])
+            include_context=bool(policy["include_context"])
             if "still contains CJK" in failure_reason:
                 structural_rule=(
                     "上一版含中文或解释性内容。现在重新独立翻译。"
                     "输出必须只有一行越南语对白；禁止汉字、禁止解释、禁止前缀、禁止讨论翻译过程。\n"
                 )
-                include_previous=False
-                include_context=False
             elif "repetition loop" in failure_reason:
-                structural_rule="上一版出现重复循环；修正版不得重复词句。\n"
+                structural_rule=(
+                    "上一版出现重复循环。不要参考上一版措辞，必须从原文重新独立翻译；"
+                    "修正版不得重复词句。\n"
+                )
             elif " empty" in failure_reason or failure_reason.endswith("empty"):
-                structural_rule="上一版为空；必须输出非空的越南语译文。\n"
+                structural_rule="上一版为空；必须从原文重新独立翻译并输出非空越南语。\n"
             return (
                 term_text
                 +"请重新翻译下面一句中文为自然、准确、简洁的越南语影视对白。\n"
@@ -992,6 +1014,24 @@ def main()->None:
             +f"5. 尽量简洁，目标不超过 {limit} 个越南语词，适合配音。\n"
             +"6. 只输出越南语译文，不解释。\n"
             +"〖待翻译文本〗\n"+s["text"]
+        )
+
+    def rescue_prompt_for(s:dict, failure_reason:str)->str:
+        """Last bounded structural rescue: source-only, no poisoned history."""
+        terms=glossary_pairs(s["text"])
+        term_text=""
+        if terms:
+            term_text="固定术语："+"；".join(f"{zh}={vi}" for zh,vi in terms)+"\n"
+        limit=int(s.get("fit_words") or 18)
+        return (
+            term_text
+            +"这是结构性故障恢复翻译。上一版不可参考。\n"
+            +"请只根据原文，从零翻译成一行自然、准确、简洁的越南语影视对白。\n"
+            +"禁止汉字、解释、前缀、重复词句或循环；不得添加原文没有的信息。\n"
+            +profile_prompt_rule(translation_profile)+"\n"
+            +f"尽量控制在 {limit} 个越南语词以内，但不得改变原意。\n"
+            +f"故障类型：{failure_reason or 'structural_invalid'}\n"
+            +f"原文：{s['text']}"
         )
 
     def soft_intent_review(source:str,value:str)->bool:
@@ -1055,8 +1095,10 @@ def main()->None:
                 f"{cursor/elapsed:.1f} seg/s; review={len(review_ids)} hard={len(hard_invalid)}",
             )
 
-    # Exactly one bounded repair pass, using the same already-loaded Hy-MT2.
-    # No OPUS/Qwen/model handoff in the production GPU path.
+    # Bounded two-stage repair using the same already-loaded Hy-MT2:
+    # 1) normal targeted repair for review items;
+    # 2) source-only structural rescue only for the rare items still invalid.
+    # No OPUS/Qwen/model handoff and no second model load in production.
     repair_items=[s for s in segments if s["index"] in review_ids]
     if repair_items:
         heartbeat(
@@ -1104,14 +1146,62 @@ def main()->None:
                         }
 
         if hard_after:
-            detail=" | ".join(
-                f"{idx}:{hard_after_details.get(idx,{})}"
-                for idx in hard_after[:3]
+            rescue_items=[by_index[idx] for idx in hard_after if idx in by_index]
+            structural_rescue_segments=len(rescue_items)
+            heartbeat(
+                "translation_repair",
+                f"Structural rescue pass: {len(rescue_items)} segments; source-only deterministic decode",
             )
-            raise RuntimeError(
-                f"translation hard quality unresolved after single repair {len(hard_after)} segments: "
-                +",".join(map(str,hard_after[:30]))+"; details="+detail
-            )
+            rescue_failed=[]
+            rescue_details={}
+            with torch.inference_mode():
+                for off in range(0,len(rescue_items),2):
+                    batch=rescue_items[off:off+2]
+                    chats=[
+                        tok.apply_chat_template(
+                            [{"role":"user","content":rescue_prompt_for(
+                                s,hard_after_details.get(s["index"],{}).get("reason","")
+                            )}],
+                            tokenize=False,
+                            add_generation_prompt=True,
+                        )
+                        for s in batch
+                    ]
+                    inp=tok(chats,return_tensors="pt",padding=True,truncation=True,max_length=384)
+                    inp={k:v.to(device) for k,v in inp.items() if k!="token_type_ids"}
+                    out=model.generate(
+                        **inp,max_new_tokens=48,do_sample=False,repetition_penalty=1.20,
+                        no_repeat_ngram_size=3,use_cache=True,
+                        pad_token_id=tok.pad_token_id,eos_token_id=tok.eos_token_id,
+                    )
+                    generated=out[:,inp["input_ids"].shape[1]:]
+                    vis=tok.batch_decode(generated,skip_special_tokens=True)
+                    for s,vi in zip(batch,vis,strict=True):
+                        idx=s["index"]
+                        candidate=clean(vi)
+                        translated[idx]=candidate
+                        try:
+                            translated[idx]=validate_translation_pair(
+                                candidate,s["text"],field=f"rescue segment {idx}",enforce_intent=False
+                            )
+                        except Exception as exc:
+                            rescue_failed.append(idx)
+                            rescue_details[idx]={
+                                "reason":str(exc),
+                                "source":clean(s["text"])[:160],
+                                "output":candidate[:160],
+                            }
+
+            if rescue_failed:
+                detail=" | ".join(
+                    f"{idx}:{rescue_details.get(idx,{})}"
+                    for idx in rescue_failed[:3]
+                )
+                raise RuntimeError(
+                    f"translation hard quality unresolved after bounded structural rescue "
+                    f"{len(rescue_failed)} segments: "
+                    +",".join(map(str,rescue_failed[:30]))+"; details="+detail
+                )
 
     title_item={
         "index":0,
@@ -1205,9 +1295,9 @@ def main()->None:
         "detected_language":detected_language,
         "language_probability":language_probability,
         "tts_voice":voice_mode,
-        "translation_mode":"hy-mt2-context-window-single-repair-v10",
+        "translation_mode":"hy-mt2-context-window-bounded-structural-rescue-v11",
         "timing_mode":"source-speech-window-sync-v2",
-        "translation_quality_profile":"asr-dedup-reason-aware-single-repair-v7",
+        "translation_quality_profile":"asr-dedup-source-only-structural-rescue-v8",
         "translation_quality_rules":["fidelity","no_addition","no_omission","terminology_consistency","negation_preserved","question_intent_preserved","number_preserved","context_aware"],
         "style":STYLE,
         "voice_name":voice_name,
@@ -1227,6 +1317,7 @@ def main()->None:
         "overlong_review_segments":len(overlong_ids) if device=="cuda" else 0,
         "estimated_overlong_after_review":estimated_overlong_after_review,
         "fallback_segments":fallback_segments,
+        "structural_rescue_segments":structural_rescue_segments,
         "fast_path_used":fast_path_used,
         "timed_segments":[{
             "index":s["index"],
