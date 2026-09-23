@@ -91,7 +91,7 @@ def test_worker_persists_and_reuses_asr_checkpoint():
     assert '"asr_complete"' in source
     assert '"ASR checkpoint saved:' in source
     assert '"ASR checkpoint reused:' in source
-    assert 'pre_segments=list(pre_payload.get("segments_data") or [])' in source
+    assert 'checkpoint_segments=list(pre_payload.get("segments_data") or [])' in source
     assert 'if not pre_segments:' in source
     assert 'if not pre_translation_complete:' in source
     assert '"transcript_meta"' in source
