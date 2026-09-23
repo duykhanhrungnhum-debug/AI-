@@ -71,6 +71,7 @@ class GenerativeVideoPipeline:
     height: int = 480
     num_frames: int = 17
     fps: int = 16
+    composition: str = "16:9 widescreen"
     max_video_rounds: int = 2
     audio_verifier: AudioSignalVerifier = field(default_factory=AudioSignalVerifier)
 
@@ -81,6 +82,8 @@ class GenerativeVideoPipeline:
             raise ValueError("num_frames must follow Wan's 4*k+1 rule")
         if self.fps <= 0:
             raise ValueError("fps must be positive")
+        if not self.composition.strip():
+            raise ValueError("composition must not be empty")
         if self.max_video_rounds <= 0:
             raise ValueError("max_video_rounds must be positive")
 
@@ -99,7 +102,11 @@ class GenerativeVideoPipeline:
         target = Path(output_dir)
         target.mkdir(parents=True, exist_ok=True)
 
-        scene_plan = self.scene_planner.plan(verified_script, visual_style=visual_style)
+        scene_plan = self.scene_planner.plan(
+            verified_script,
+            visual_style=visual_style,
+            composition=self.composition,
+        )
         requests = [
             SceneVideoRequest(
                 scene_id=scene.scene_id,
