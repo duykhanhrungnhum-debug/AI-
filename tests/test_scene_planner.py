@@ -90,3 +90,24 @@ def test_scene_planner_accepts_json_code_fence():
     plan = ScenePlanner(FencedModel()).plan("Một câu chuyện.")
     assert len(plan.scenes) == 1
     assert "16:9 widescreen composition" in plan.scenes[0].image_prompt
+
+
+def test_scene_planner_supports_vertical_composition():
+    model = FakeModel({
+        "scenes": [
+            {
+                "scene_id": "v1",
+                "narration": "Một cảnh dọc.",
+                "image_prompt": "Vietnamese roadside food stall with two women",
+                "negative_prompt": "",
+            }
+        ]
+    })
+
+    plan = ScenePlanner(model).plan(
+        "Một cảnh hài ở quầy đồ ăn.",
+        composition="9:16 vertical",
+    )
+
+    assert "9:16 vertical composition" in plan.scenes[0].image_prompt
+    assert "9:16 vertical" in model.prompts[0]
