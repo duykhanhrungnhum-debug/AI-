@@ -259,7 +259,9 @@ class KaggleBatchVideoProvider:
                     except Exception:
                         pass
                     detail = (status.failure_message or logs or status.status).strip()
-                    raise RuntimeError(f"Kaggle video batch failed: {detail[:4000]}")
+                    if len(detail) > 8000:
+                        detail = "...[tail]\n" + detail[-8000:]
+                    raise RuntimeError(f"Kaggle video batch failed: {detail}")
                 return
             if self.poll_interval:
                 time.sleep(self.poll_interval)
@@ -350,6 +352,7 @@ class KaggleBatchVideoProvider:
             from __future__ import annotations
 
             from hashlib import sha256
+            import gc
             import json
             import subprocess
             import sys
@@ -367,7 +370,7 @@ class KaggleBatchVideoProvider:
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
-                    "diffusers>=0.36,<1", "transformers>=4.46,<5",
+                    "diffusers==0.35.2", "transformers>=4.53,<5",
                     "accelerate>=1,<2", "safetensors", "sentencepiece",
                     "ftfy", "imageio", "imageio-ffmpeg",
                 ])
@@ -382,15 +385,34 @@ class KaggleBatchVideoProvider:
 
             gpu_name = torch.cuda.get_device_name(0)
             model_id = CONFIG["model"]
+
+            def cuda_snapshot(stage):
+                allocated = int(torch.cuda.memory_allocated() / (1024 * 1024))
+                reserved = int(torch.cuda.memory_reserved() / (1024 * 1024))
+                free_bytes, total_bytes = torch.cuda.mem_get_info()
+                print(json.dumps({
+                    "stage": stage,
+                    "allocated_mib": allocated,
+                    "reserved_mib": reserved,
+                    "free_mib": int(free_bytes / (1024 * 1024)),
+                    "total_mib": int(total_bytes / (1024 * 1024)),
+                }))
+
+            # Keep the large UMT5 text encoder on CPU. The previous worker installed
+            # model_cpu_offload before prompt encoding, which moved UMT5 onto the T4
+            # and failed with CUBLAS_STATUS_ALLOC_FAILED. Encode every prompt first,
+            # release UMT5, then reserve the GPU for the video transformer and VAE.
             vae = AutoencoderKLWan.from_pretrained(
                 model_id,
                 subfolder="vae",
                 torch_dtype=torch.float32,
+                low_cpu_mem_usage=True,
             )
             pipe = WanPipeline.from_pretrained(
                 model_id,
                 vae=vae,
                 torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
             )
             pipe.scheduler = UniPCMultistepScheduler.from_config(
                 pipe.scheduler.config,
@@ -398,17 +420,47 @@ class KaggleBatchVideoProvider:
             )
             if hasattr(pipe.vae, "enable_tiling"):
                 pipe.vae.enable_tiling()
+
+            cuda_snapshot("pipeline_loaded_cpu")
+            prompt_cache = {}
+            cpu_device = torch.device("cpu")
+            for scene in CONFIG["scenes"]:
+                with torch.inference_mode():
+                    prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
+                        prompt=scene["prompt"],
+                        negative_prompt=scene["negative_prompt"] or "",
+                        do_classifier_free_guidance=float(CONFIG["guidance_scale"]) > 1.0,
+                        num_videos_per_prompt=1,
+                        device=cpu_device,
+                        dtype=torch.float16,
+                    )
+                prompt_cache[scene["scene_id"]] = (
+                    prompt_embeds.detach().cpu(),
+                    negative_prompt_embeds.detach().cpu()
+                    if negative_prompt_embeds is not None else None,
+                )
+
+            pipe.text_encoder = None
+            pipe.tokenizer = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            cuda_snapshot("text_encoder_released")
             pipe.enable_model_cpu_offload()
+            cuda_snapshot("video_offload_enabled")
 
             output_dir = Path("/kaggle/working/batch_videos")
             output_dir.mkdir(parents=True, exist_ok=True)
             reports = []
 
             for index, scene in enumerate(CONFIG["scenes"]):
-                generator = torch.Generator(device="cuda").manual_seed(int(scene["seed"]))
+                prompt_embeds, negative_prompt_embeds = prompt_cache[scene["scene_id"]]
+                generator = torch.Generator(device="cpu").manual_seed(int(scene["seed"]))
+                cuda_snapshot(f"scene_{index}_before")
                 frames = pipe(
-                    prompt=scene["prompt"],
-                    negative_prompt=scene["negative_prompt"] or None,
+                    prompt=None,
+                    negative_prompt=None,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
                     height=int(scene["height"]),
                     width=int(scene["width"]),
                     num_frames=int(scene["num_frames"]),
@@ -443,7 +495,9 @@ class KaggleBatchVideoProvider:
                 }})
 
                 del frames
+                gc.collect()
                 torch.cuda.empty_cache()
+                cuda_snapshot(f"scene_{index}_after")
 
             archive_path = Path("/kaggle/working/videos.zip")
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
