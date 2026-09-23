@@ -569,6 +569,61 @@ def split_timed_text(raw:list[dict])->list[dict]:
             cursor=part_end
     return out
 
+def enforce_max_cue_duration(segments:list[dict],max_seconds:float=6.0)->list[dict]:
+    """Deterministically split rare overlong cues instead of failing the episode."""
+    out=[]
+    boundary_chars="，,。！？!?；;、"
+    for item in segments:
+        text=clean(item.get("text",""))
+        start=float(item["start"])
+        end=float(item["end"])
+        duration=max(0.2,end-start)
+        if not text or duration<=max_seconds:
+            out.append({"start":start,"end":end,"text":text})
+            continue
+
+        parts_needed=max(2,int(math.ceil(duration/max_seconds)))
+        remaining=text
+        chunks=[]
+        while len(chunks)<parts_needed-1 and len(remaining)>1:
+            target=max(1,int(round(len(remaining)/(parts_needed-len(chunks)))))
+            lo=max(1,target-8)
+            hi=min(len(remaining)-1,target+8)
+            cut=-1
+            for pos in range(hi,lo-1,-1):
+                if remaining[pos-1] in boundary_chars:
+                    cut=pos
+                    break
+            if cut<1:
+                cut=min(len(remaining)-1,target)
+            chunks.append(clean(remaining[:cut]))
+            remaining=clean(remaining[cut:])
+        if remaining:
+            chunks.append(remaining)
+        chunks=[c for c in chunks if c]
+        if len(chunks)<2:
+            mid=max(1,len(text)//2)
+            chunks=[clean(text[:mid]),clean(text[mid:])]
+            chunks=[c for c in chunks if c]
+
+        weights=[max(1,len(c)) for c in chunks]
+        total=sum(weights)
+        cursor=start
+        for idx,(chunk,weight) in enumerate(zip(chunks,weights,strict=True)):
+            if idx==len(chunks)-1:
+                part_end=end
+            else:
+                part_end=min(end,cursor+duration*(weight/total))
+            if part_end-cursor<0.25:
+                part_end=min(end,cursor+0.25)
+            out.append({
+                "start":cursor,
+                "end":max(cursor+0.2,part_end),
+                "text":chunk,
+            })
+            cursor=part_end
+    return out
+
 def collect_whisper_segments(seg_iter)->tuple[list[dict],int]:
     words=[]
     fallback=[]
@@ -1139,6 +1194,16 @@ def main()->None:
     segments=raw
     for s in segments:
         s["text"]=collapse_cjk_asr_repetition(s.get("text",""))
+    overlong_before=sum(
+        1 for s in segments
+        if float(s["end"])-float(s["start"])>6.2
+    )
+    if overlong_before:
+        segments=enforce_max_cue_duration(segments,max_seconds=6.0)
+        heartbeat(
+            "transcribed",
+            f"Normalized {overlong_before} overlong dialogue cues before checkpointing",
+        )
     if len(segments)<10:
         raise RuntimeError(f"too few transcript segments: {len(segments)}")
     for i,s in enumerate(segments,1):
