@@ -248,9 +248,17 @@ def load_translation_checkpoint(segment_signature:str,segment_count:int)->dict:
     result=fetch_translation_checkpoint()
     if not result.get("found"):
         return {}
-    payload=result.get("payload") or {}
+    payload=dict(result.get("payload") or {})
+    stored_cursor=int(result.get("cursor") or 0)
+    stored_phase=str(result.get("phase") or "")
+    # Cursor/phase live beside payload in the API response. Carry them into the
+    # in-memory checkpoint so resume logic does not silently fall back to 0.
+    payload["cursor"]=stored_cursor
+    payload["phase"]=stored_phase
+
     stored_signature=str(payload.get("segment_signature") or "")
     if stored_signature==segment_signature:
+        print("HB_CHECKPOINT_RESUME cursor",stored_cursor,flush=True)
         return payload
 
     # Same source video can produce tiny ASR text differences between runs.
@@ -259,8 +267,8 @@ def load_translation_checkpoint(segment_signature:str,segment_count:int)->dict:
     # validated again before CPU handoff.
     translated=dict(payload.get("translated") or {})
     complete_compatible=(
-        str(result.get("phase") or "")=="translation_complete"
-        and int(result.get("cursor") or 0)==int(segment_count)
+        stored_phase=="translation_complete"
+        and stored_cursor==int(segment_count)
         and len(translated)==int(segment_count)
         and all(str(i) in translated for i in range(1,int(segment_count)+1))
     )
@@ -275,7 +283,7 @@ def load_translation_checkpoint(segment_signature:str,segment_count:int)->dict:
 
     print(
         "HB_CHECKPOINT_IGNORED signature_mismatch",
-        "stored_cursor="+str(result.get("cursor") or 0),
+        "stored_cursor="+str(stored_cursor),
         "current_count="+str(segment_count),
         flush=True,
     )
