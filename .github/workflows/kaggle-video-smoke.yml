@@ -1,0 +1,59 @@
+name: Kaggle Generative Video Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/kaggle-video-smoke.trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  video-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      OUTPUT_DIR: kaggle-video-smoke-output
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        shell: bash
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install AI package
+        run: python -m pip install -e .
+
+      - name: Preflight compile video provider
+        run: >-
+          python -m py_compile
+          src/ai_agent/core/kaggle_video.py
+          src/ai_agent/core/generative_video_pipeline.py
+          scripts/kaggle_video_smoke.py
+
+      - name: Generate and verify one real motion clip
+        run: python scripts/kaggle_video_smoke.py
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggle-generative-video-smoke-output
+          path: kaggle-video-smoke-output/
+          if-no-files-found: warn
+          retention-days: 7
