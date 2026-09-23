@@ -816,6 +816,9 @@ def upload_to_youtube(url:str,path:Path)->str:
     return video_id
 
 def main()->None:
+    mounted_caption_segments=[]
+    mounted_caption_name=""
+    mounted_caption_duration=0.0
     if BOT2_MODE:
         mounted_pattern=str(JOB.get("mounted_source_glob") or "/kaggle/input/**/source.mp4")
         deadline=time.monotonic()+60.0
@@ -839,6 +842,30 @@ def main()->None:
         SOURCE.symlink_to(mounted)
         heartbeat("source_ready",f"Mounted source ready bytes={mounted.stat().st_size} path={mounted}")
 
+        # Captions, when present, were acquired by the CPU source job. Parsing
+        # them here costs no model/GPU time and lets the AI stage skip ASR.
+        for caption_path in sorted(mounted.parent.glob("source-caption*.json3")):
+            try:
+                cues=split_timed_text(parse_json3_caption(caption_path))
+                cjk=sum(1 for cue in cues if CJK_RE.search(cue.get("text","")))
+                if len(cues)>=10 and cjk>=max(5,int(len(cues)*0.35)):
+                    mounted_caption_segments=cues
+                    mounted_caption_name=caption_path.name
+                    try:
+                        mounted_caption_duration=float(subprocess.check_output([
+                            "ffprobe","-v","error","-show_entries","format=duration",
+                            "-of","default=noprint_wrappers=1:nokey=1",str(SOURCE),
+                        ],text=True).strip() or 0)
+                    except Exception:
+                        mounted_caption_duration=max(float(x["end"]) for x in cues)
+                    heartbeat(
+                        "transcribed",
+                        f"CPU-acquired captions ready: {len(cues)} cues file={caption_path.name}; ASR can be skipped",
+                    )
+                    break
+            except Exception as caption_exc:
+                print("HB_MOUNTED_CAPTION_INVALID",caption_path.name,repr(caption_exc),flush=True)
+
     cfg=dict(JOB.get("config") or {}) if BOT2_MODE else post("/worker-config",{"job_id":JOB_ID})
     source_video_id=str(cfg["source_video_id"])
     pipeline_started=time.monotonic()
@@ -849,7 +876,8 @@ def main()->None:
         else {}
     )
     pre_payload=dict(precheckpoint.get("payload") or {}) if precheckpoint else {}
-    pre_segments=list(pre_payload.get("segments_data") or [])
+    checkpoint_segments=list(pre_payload.get("segments_data") or [])
+    pre_segments=checkpoint_segments or mounted_caption_segments
     pre_translated=dict(pre_payload.get("translated") or {})
     pre_phase=str(precheckpoint.get("phase") or "")
     pre_cursor=int(precheckpoint.get("cursor") or 0)
@@ -1002,14 +1030,14 @@ def main()->None:
 
     transcript_started=time.monotonic()
     transcript_meta=dict(pre_payload.get("transcript_meta") or {}) if pre_payload else {}
-    if BOT2_MODE and WORKER_PHASE=="translation_only" and pre_segments:
+    if BOT2_MODE and WORKER_PHASE=="translation_only" and checkpoint_segments:
         raw=[
             {
                 "start":float(x["start"]),
                 "end":float(x["end"]),
                 "text":clean(x.get("text","")),
             }
-            for x in pre_segments
+            for x in checkpoint_segments
         ]
         transcript_media_duration=float(
             transcript_meta.get("media_duration")
@@ -1023,6 +1051,28 @@ def main()->None:
         heartbeat(
             "transcribed",
             f"ASR checkpoint reused: {len(raw)} cues; no speech-recognition GPU work",
+        )
+    elif BOT2_MODE and WORKER_PHASE=="translation_only" and mounted_caption_segments:
+        raw=[
+            {
+                "start":float(x["start"]),
+                "end":float(x["end"]),
+                "text":clean(x.get("text","")),
+            }
+            for x in mounted_caption_segments
+        ]
+        transcript_media_duration=float(
+            mounted_caption_duration
+            or max(float(x["end"]) for x in raw)
+        )
+        transcript_source="cpu_source_caption_json3"
+        whisper_name="skipped-cpu-caption"
+        detected_language="zh"
+        language_probability=None
+        asr_word_count=0
+        heartbeat(
+            "transcribed",
+            f"CPU source captions reused: {len(raw)} cues file={mounted_caption_name}; ASR skipped",
         )
     else:
         if BOT2_MODE:
