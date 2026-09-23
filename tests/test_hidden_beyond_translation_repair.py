@@ -73,3 +73,12 @@ def test_worker_splits_gpu_translation_and_cpu_tts():
     assert '"translation_complete"' in source
     assert '"compute_stage":"cpu_tts_mix_upload"' in source
     assert 'enable_gpu' not in source  # worker itself never decides Kaggle accelerator
+
+
+def test_completed_checkpoint_reuses_same_video_same_segment_count():
+    source = WORKER.read_text(encoding="utf-8")
+    assert "HB_CHECKPOINT_COMPATIBLE same_video_same_count" in source
+    assert 'str(result.get("phase") or "")=="translation_complete"' in source
+    assert 'int(result.get("cursor") or 0)==int(segment_count)' in source
+    assert 'len(translated)==int(segment_count)' in source
+    assert 'all(str(i) in translated for i in range(1,int(segment_count)+1))' in source
