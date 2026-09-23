@@ -390,13 +390,13 @@ class KaggleBatchVideoProvider:
                 allocated = int(torch.cuda.memory_allocated() / (1024 * 1024))
                 reserved = int(torch.cuda.memory_reserved() / (1024 * 1024))
                 free_bytes, total_bytes = torch.cuda.mem_get_info()
-                print(json.dumps({
+                print(json.dumps({{
                     "stage": stage,
                     "allocated_mib": allocated,
                     "reserved_mib": reserved,
                     "free_mib": int(free_bytes / (1024 * 1024)),
                     "total_mib": int(total_bytes / (1024 * 1024)),
-                }))
+                }}))
 
             # Keep the large UMT5 text encoder on CPU. The previous worker installed
             # model_cpu_offload before prompt encoding, which moved UMT5 onto the T4
@@ -455,7 +455,7 @@ class KaggleBatchVideoProvider:
             for index, scene in enumerate(CONFIG["scenes"]):
                 prompt_embeds, negative_prompt_embeds = prompt_cache[scene["scene_id"]]
                 generator = torch.Generator(device="cpu").manual_seed(int(scene["seed"]))
-                cuda_snapshot(f"scene_{index}_before")
+                cuda_snapshot(f"scene_{{index}}_before")
                 frames = pipe(
                     prompt=None,
                     negative_prompt=None,
@@ -497,7 +497,7 @@ class KaggleBatchVideoProvider:
                 del frames
                 gc.collect()
                 torch.cuda.empty_cache()
-                cuda_snapshot(f"scene_{index}_after")
+                cuda_snapshot(f"scene_{{index}}_after")
 
             archive_path = Path("/kaggle/working/videos.zip")
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
