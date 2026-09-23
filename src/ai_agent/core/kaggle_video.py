@@ -422,7 +422,7 @@ class KaggleBatchVideoProvider:
                 pipe.vae.enable_tiling()
 
             cuda_snapshot("pipeline_loaded_cpu")
-            prompt_cache = {}
+            prompt_cache = {{}}
             cpu_device = torch.device("cpu")
             for scene in CONFIG["scenes"]:
                 with torch.inference_mode():
