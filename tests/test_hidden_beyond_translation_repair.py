@@ -59,7 +59,7 @@ def test_worker_has_translation_checkpoint_resume_contract():
     assert "/translation-checkpoint-save" in source
     assert "Resuming translation checkpoint" in source
     assert "cursor=resume_cursor" in source
-    assert "cursor-last_checkpoint_cursor>=300" in source
+    assert "cursor-last_checkpoint_cursor>=100" in source
     assert "\"translation_complete\"" in source
 
 
@@ -110,3 +110,12 @@ def test_worker_prefers_cpu_acquired_captions():
     assert '"CPU source captions reused:' in source
     assert 'transcript_source="cpu_source_caption_json3"' in source
     assert 'whisper_name="skipped-cpu-caption"' in source
+
+
+def test_translation_batch_prefers_gpu_throughput_without_quality_change():
+    source = WORKER.read_text(encoding="utf-8")
+    assert "batch_size=12" in source
+    assert "if batch_size<=4:" in source
+    assert "batch_size=max(4,batch_size//2)" in source
+    assert "do_sample=False" in source
+    assert "cursor-last_checkpoint_cursor>=100" in source
