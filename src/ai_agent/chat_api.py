@@ -64,8 +64,8 @@ class ChatRequestHandler(AIRequestHandler):
                 if not self._worker_authorized():
                     self._json(401, {"error": "unauthorized"})
                     return
-                self._read_body()
-                CHAT_BROKER.heartbeat()
+                body = self._read_body()
+                CHAT_BROKER.heartbeat(str(body.get("state", "ready")))
                 self._json(200, {"status": "ok"})
                 return
 
