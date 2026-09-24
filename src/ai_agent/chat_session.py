@@ -66,7 +66,7 @@ class ChatSessionBroker:
             username = os.environ.get("KAGGLE_USERNAME", "").strip()
             model = os.environ.get("AI_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct").strip()
             public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
-            worker_token = os.environ.get("AI_CHAT_WORKER_TOKEN", "").strip()
+            worker_token = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
             if not token:
                 raise RuntimeError("KAGGLE_API_TOKEN is required")
             if not username:
@@ -74,7 +74,7 @@ class ChatSessionBroker:
             if not public_domain:
                 raise RuntimeError("RAILWAY_PUBLIC_DOMAIN is required")
             if not worker_token:
-                raise RuntimeError("AI_CHAT_WORKER_TOKEN is required")
+                raise RuntimeError("AI_AGENT_API_TOKEN is required")
 
             worker = KaggleGpuWorker(api_token=token, username=username, timeout=120)
             try:
