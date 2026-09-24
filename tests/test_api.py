@@ -38,7 +38,7 @@ def test_chat_ui_is_served(api):
         body = response.read().decode("utf-8")
         assert response.headers["content-type"].startswith("text/html")
         assert "AI- Chat" in body
-        assert "/v1/generate" in body
+        assert "/v1/chat" in body
 
 
 def test_translate_requires_family_token(api):
