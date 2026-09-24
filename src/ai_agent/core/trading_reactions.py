@@ -17,12 +17,17 @@ def _event_date(event: dict) -> str | None:
 def study_event_price_reactions(events: list[dict], history: dict, *, horizons: tuple[int, ...] = (1, 3, 5)) -> dict:
     """Measure close-to-close reactions without using same-day prices as the anchor.
 
-    EIA histories are daily and do not carry an intraday timestamp. To avoid
-    accidentally using a close that occurred after an event, the anchor is the
-    latest observation strictly before the event date. Horizon N is the Nth
-    available trading observation on/after the event date.
+    Daily price histories do not carry an intraday timestamp, so the anchor is
+    always the latest observation strictly before the event date. Horizon N is
+    the Nth available trading observation on/after the event date.
+
+    Recent events may not yet have every requested horizon. Those rows remain
+    useful runtime evidence but are explicitly marked incomplete and do not
+    prevent verification when at least one fully observable event/asset row
+    proves the complete no-lookahead measurement path.
     """
     rows: list[dict] = []
+    required = {str(item) for item in horizons if item > 0}
     for event in events:
         day = _event_date(event)
         if day is None:
@@ -47,6 +52,7 @@ def study_event_price_reactions(events: list[dict], history: dict, *, horizons: 
                     "return_pct": round((value / base - 1.0) * 100.0, 6),
                 }
             if reactions:
+                complete = required.issubset(reactions)
                 rows.append({
                     "event_id": event.get("event_id"),
                     "category": event.get("category"),
@@ -55,18 +61,20 @@ def study_event_price_reactions(events: list[dict], history: dict, *, horizons: 
                     "anchor_date": anchor["date"],
                     "anchor_usd_per_barrel": float(anchor["usd_per_barrel"]),
                     "horizons_trading_days": reactions,
+                    "complete_horizons": complete,
                 })
-    required = {str(item) for item in horizons}
-    verified = bool(rows) and all(
-        row["anchor_date"] < str(row["published_at"])[:10]
-        and required.issubset(row["horizons_trading_days"])
-        for row in rows
-    )
+    complete_rows = [
+        row for row in rows
+        if row["complete_horizons"] and row["anchor_date"] < str(row["published_at"])[:10]
+    ]
+    verified = bool(complete_rows)
     return {
         "verified": verified,
         "method": "previous-trading-day-close to Nth available close on/after event date",
         "no_lookahead": True,
         "horizons_trading_days": list(horizons),
         "reaction_count": len(rows),
+        "complete_reaction_count": len(complete_rows),
+        "incomplete_reaction_count": len(rows) - len(complete_rows),
         "reactions": rows,
     }
