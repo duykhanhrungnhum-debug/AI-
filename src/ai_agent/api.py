@@ -6,6 +6,7 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from ai_agent.chat_ui import CHAT_HTML
 from ai_agent.core.model_factory import build_model_provider
 
 
@@ -18,13 +19,22 @@ def _translate_prompt(text: str, source_language: str, target_language: str) -> 
 
 
 class AIRequestHandler(BaseHTTPRequestHandler):
-    server_version = "AI-Agent-API/0.1"
+    server_version = "AI-Agent-API/0.2"
 
     def _json(self, status: int, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json; charset=utf-8")
         self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _html(self, status: int, content: str) -> None:
+        data = content.encode("utf-8")
+        self.send_response(status)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(data)))
+        self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -36,7 +46,11 @@ class AIRequestHandler(BaseHTTPRequestHandler):
         return hmac.compare_digest(supplied, f"Bearer {expected}")
 
     def do_GET(self) -> None:
-        if self.path == "/health":
+        path = self.path.split("?", 1)[0]
+        if path in {"/", "/chat"}:
+            self._html(200, CHAT_HTML)
+            return
+        if path == "/health":
             self._json(200, {"status": "ok", "service": "AI-"})
             return
         self._json(404, {"error": "not_found"})
