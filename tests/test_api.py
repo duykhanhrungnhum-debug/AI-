@@ -33,6 +33,14 @@ def test_health(api):
         assert json.load(response)["service"] == "AI-"
 
 
+def test_chat_ui_is_served(api):
+    with urlopen(api + "/chat") as response:
+        body = response.read().decode("utf-8")
+        assert response.headers["content-type"].startswith("text/html")
+        assert "AI- Chat" in body
+        assert "/v1/generate" in body
+
+
 def test_translate_requires_family_token(api):
     req = Request(api + "/v1/translate", data=b'{"text":"hello"}',
                   headers={"content-type": "application/json"}, method="POST")
@@ -44,6 +52,17 @@ def test_translate_requires_family_token(api):
 def test_translate_returns_ai_result(api):
     body = json.dumps({"text": "hello", "target_language": "Vietnamese"}).encode()
     req = Request(api + "/v1/translate", data=body, method="POST", headers={
+        "content-type": "application/json",
+        "authorization": "Bearer family-token",
+    })
+    with urlopen(req) as response:
+        payload = json.load(response)
+    assert payload == {"text": "Xin chào", "provider": "fake", "model": "fake-model"}
+
+
+def test_generate_returns_ai_result(api):
+    body = json.dumps({"prompt": "Xin chao AI"}).encode()
+    req = Request(api + "/v1/generate", data=body, method="POST", headers={
         "content-type": "application/json",
         "authorization": "Bearer family-token",
     })
