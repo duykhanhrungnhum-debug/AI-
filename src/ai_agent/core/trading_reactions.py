@@ -19,7 +19,10 @@ def study_event_price_reactions(events: list[dict], history: dict, *, horizons: 
 
     Daily price histories do not carry an intraday timestamp, so the anchor is
     always the latest observation strictly before the event date. Horizon N is
-    the Nth available trading observation on/after the event date.
+    the Nth trading-day close counted from that anchor. Thus horizon 1 is the
+    first available observation on/after the event date, horizon 3 is two
+    observations after that, etc. This keeps the measurement no-lookahead while
+    making horizons explicit trading-day distances from the pre-event close.
 
     Recent events may not yet have every requested horizon. Those rows remain
     useful runtime evidence but are explicitly marked incomplete and do not
@@ -41,9 +44,12 @@ def study_event_price_reactions(events: list[dict], history: dict, *, horizons: 
             anchor = before[-1]
             reactions = {}
             for horizon in horizons:
-                if horizon <= 0 or len(after) < horizon:
+                if horizon <= 0:
                     continue
-                target = after[horizon - 1]
+                target_index = horizon - 1
+                if len(after) <= target_index:
+                    continue
+                target = after[target_index]
                 base = float(anchor["usd_per_barrel"])
                 value = float(target["usd_per_barrel"])
                 reactions[str(horizon)] = {
@@ -70,7 +76,7 @@ def study_event_price_reactions(events: list[dict], history: dict, *, horizons: 
     verified = bool(complete_rows)
     return {
         "verified": verified,
-        "method": "previous-trading-day-close to Nth available close on/after event date",
+        "method": "previous-trading-day-close to Nth trading-day close from anchor",
         "no_lookahead": True,
         "horizons_trading_days": list(horizons),
         "reaction_count": len(rows),
