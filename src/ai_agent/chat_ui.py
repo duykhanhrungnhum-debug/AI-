@@ -92,9 +92,16 @@ function render(){
   ).join('');
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
-function setBusy(v){
+function setBusy(v, label='AI- đang trả lời...'){
   busy=v; send.disabled=v; input.disabled=v;
-  statusEl.innerHTML=v?'<span class="typing"><i></i><i></i><i></i></span> AI- đang trả lời...':'';
+  statusEl.innerHTML=v?'<span class="typing"><i></i><i></i><i></i></span> '+esc(label):'';
+}
+function sleep(ms){ return new Promise(resolve=>setTimeout(resolve,ms)); }
+function statusLabel(data){
+  if(data.worker_state==='starting') return 'Đang khởi động Qwen trên Kaggle...';
+  if(data.status==='pending') return 'Đang chờ AI- sẵn sàng...';
+  if(data.status==='processing') return 'AI- đang xử lý...';
+  return 'AI- đang trả lời...';
 }
 function autoSize(){ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,180)+'px'; }
 function buildPrompt(){
@@ -106,11 +113,25 @@ async function submit(){
   const text=input.value.trim(); if(!text || busy) return;
   const token=sessionStorage.getItem(TOKEN);
   if(!token){ dialog.showModal(); return; }
-  messages.push({role:'user',text}); persist(); render(); input.value=''; autoSize(); setBusy(true);
+  messages.push({role:'user',text}); persist(); render(); input.value=''; autoSize();
+  setBusy(true,'Đang khởi động Qwen trên Kaggle...');
   try{
-    const res=await fetch('/v1/generate',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+token},body:JSON.stringify({prompt:buildPrompt()})});
-    const data=await res.json().catch(()=>({}));
-    if(!res.ok) throw new Error(res.status===401?'Khóa truy cập không đúng.':(data.detail||data.error||'Không thể kết nối AI-.'));
+    const start=await fetch('/v1/chat',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+token},body:JSON.stringify({prompt:buildPrompt()})});
+    const started=await start.json().catch(()=>({}));
+    if(!start.ok) throw new Error(start.status===401?'Khóa truy cập không đúng.':(started.detail||started.error||'Không thể khởi động phiên chat.'));
+    const jobId=started.job_id;
+    if(!jobId) throw new Error('AI- không tạo được phiên chat.');
+    let data=null;
+    for(let i=0;i<180;i++){
+      await sleep(2000);
+      const res=await fetch('/v1/chat/status?job_id='+encodeURIComponent(jobId),{headers:{'authorization':'Bearer '+token}});
+      data=await res.json().catch(()=>({}));
+      if(!res.ok) throw new Error(res.status===401?'Khóa truy cập không đúng.':(data.detail||data.error||'Không đọc được trạng thái AI-.'));
+      setBusy(true,statusLabel(data));
+      if(data.status==='done') break;
+      if(data.status==='error') throw new Error(data.error||data.worker_error||'Phiên AI- bị lỗi.');
+    }
+    if(!data || data.status!=='done') throw new Error('Qwen khởi động quá lâu. Phiên chat đã dừng để tránh chờ vô hạn.');
     messages.push({role:'assistant',text:data.text||'',meta:[data.provider,data.model].filter(Boolean).join(' · ')});
     persist(); render();
   }catch(e){
