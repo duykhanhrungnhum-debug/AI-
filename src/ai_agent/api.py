@@ -96,7 +96,7 @@ class AIRequestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     host = os.environ.get("AI_AGENT_API_HOST", "0.0.0.0")
-    port = int(os.environ.get("AI_AGENT_API_PORT", "8080"))
+    port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
     if not os.environ.get("AI_AGENT_API_TOKEN"):
         raise SystemExit("AI_AGENT_API_TOKEN is required")
     ThreadingHTTPServer((host, port), AIRequestHandler).serve_forever()
