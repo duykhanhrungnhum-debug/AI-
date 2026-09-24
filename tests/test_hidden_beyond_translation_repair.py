@@ -127,3 +127,35 @@ def test_overlong_dialogue_cues_are_split_not_fatal():
     assert "Normalized {overlong_before} overlong dialogue cues before checkpointing" in source
     assert "segments=enforce_max_cue_duration(segments,max_seconds=6.0)" in source
     assert "dialogue segmentation has {too_long} cues longer than 6.2s" in source
+
+
+def test_xianxia_mastery_profile_flags_modern_pronouns_and_verbose_lines():
+    source = WORKER.read_text(encoding="utf-8")
+    assert "xianxia_modern_pronoun" in source
+    assert "xianxia_verbose" in source
+    assert "不得习惯性使用 tôi/bạn" in source
+    assert '"闭关":"bế quan"' in source
+    assert '"道侣":"đạo lữ"' in source
+    assert '"神识":"thần thức"' in source
+
+
+def test_translation_word_budget_matches_real_tts_cadence():
+    source = WORKER.read_text(encoding="utf-8")
+    assert 'target_wps=float(STYLE.get("words_per_second") or 3.0)*1.12' in source
+    assert "slot*4.8" not in source
+
+
+def test_cpu_dubbing_uses_source_dialogue_windows():
+    source = WORKER.read_text(encoding="utf-8")
+    assert "def compute_dub_window(" in source
+    assert "place_start,slot_end=compute_dub_window(segments,i-1,min_pause)" in source
+    assert 'pos=max(0,int(round(float(place_start)*rate)))' in source
+    assert '"sync_policy"]="source_dialogue_window_v2"' in source
+    assert '"sync_max_start_shift_ms"' in source
+    assert '"sync_max_end_overrun_ms"' in source
+
+
+def test_sync_policy_keeps_natural_speed_before_trimming():
+    source = WORKER.read_text(encoding="utf-8")
+    assert '"max_tempo":1.28' in source
+    assert '"min_pause_between_cues":0.08' in source

@@ -95,16 +95,22 @@ FANTASY_GLOSSARY={
     "长老":"trưởng lão","長老":"trưởng lão","道友":"đạo hữu","法宝":"pháp bảo","法寶":"pháp bảo",
     "丹药":"đan dược","丹藥":"đan dược","功法":"công pháp","秘境":"bí cảnh","洞府":"động phủ",
     "魔修":"ma tu","正道":"chính đạo","天道":"thiên đạo","飞升":"phi thăng","飛升":"phi thăng","境界":"cảnh giới",
+    "闭关":"bế quan","閉關":"bế quan","道侣":"đạo lữ","道侶":"đạo lữ","丹田":"đan điền",
+    "灵石":"linh thạch","靈石":"linh thạch","剑修":"kiếm tu","劍修":"kiếm tu",
+    "阵法":"trận pháp","陣法":"trận pháp","符箓":"phù lục","符籙":"phù lục",
+    "神识":"thần thức","神識":"thần thức","元神":"nguyên thần","心魔":"tâm ma",
+    "天劫":"thiên kiếp","秘法":"bí pháp","禁制":"cấm chế","护法":"hộ pháp","護法":"hộ pháp",
+    "炉鼎":"lô đỉnh","爐鼎":"lô đỉnh","炼丹":"luyện đan","煉丹":"luyện đan",
 }
 STYLE={
-    "max_tempo":1.16,
+    "max_tempo":1.28,
     "min_tempo":0.94,
     "pitch_ratio":1.0,
     "max_extra_gap":0.65,
     "words_per_second":3.0,
     "target_segment_seconds":3.2,
     "hard_max_segment_seconds":5.5,
-    "min_pause_between_cues":0.20,
+    "min_pause_between_cues":0.08,
 }
 
 def post(path:str,payload:dict)->dict:
@@ -161,8 +167,10 @@ def infer_translation_profile(cfg:dict,segments:list[dict],existing:dict)->dict:
         genre="general"
     rules={
         "xianxia":[
-            "Giữ sắc thái tiên hiệp/cổ phong nhưng tiếng Việt phải tự nhiên.",
-            "Suy luận xưng hô theo vai vế; ưu tiên ta/ngươi/nàng/hắn khi đúng ngữ cảnh.",
+            "Giữ sắc thái tiên hiệp/cổ phong nhưng tiếng Việt phải tự nhiên, không dịch từng chữ.",
+            "Xưng hô phải nhất quán theo nhân vật và vai vế; ưu tiên ta/ngươi/nàng/hắn/sư huynh/sư muội/bổn tọa khi ngữ cảnh phù hợp.",
+            "Không dùng tôi/bạn theo thói quen trong cảnh tiên hiệp trừ khi ngữ cảnh xác định rõ là lời thoại hiện đại.",
+            "Câu nguồn ngắn phải được dịch ngắn gọn; ưu tiên thành ngữ và nhịp thoại Việt tự nhiên, không diễn giải thừa.",
         ],
         "historical":[
             "Dùng thoại Việt cổ trang tự nhiên, không hiện đại hóa xưng hô tùy tiện.",
@@ -182,7 +190,7 @@ def infer_translation_profile(cfg:dict,segments:list[dict],existing:dict)->dict:
         ],
     }
     profile.update({
-        "profile_version":int(profile.get("profile_version") or 1),
+        "profile_version":max(2,int(profile.get("profile_version") or 1)),
         "profile_key":"auto-"+genre,
         "genre":genre,
         "register":"natural cinematic Vietnamese",
@@ -195,7 +203,12 @@ def infer_translation_profile(cfg:dict,segments:list[dict],existing:dict)->dict:
 def profile_prompt_rule(profile:dict)->str:
     genre=str(profile.get("genre") or "general").lower()
     if genre=="xianxia":
-        return "使用自然、专业的仙侠/修仙影视越南语对白；按人物关系保持古风称谓和辈分一致，不得把所有人物机械翻成同一种称呼。"
+        return (
+            "使用达到专业译制水平的仙侠/修仙越南语对白；先理解人物关系、辈分、语气和前后文再翻译。"
+            "称谓必须前后一致，优先使用符合古风关系的 ta/ngươi/nàng/hắn/sư huynh/sư muội/bổn tọa；"
+            "除非上下文明示现代身份，否则不得习惯性使用 tôi/bạn。"
+            "短句必须保持简洁，不逐字硬译，不把术语扩写成解释；成语、讥讽、威胁和情绪要译成自然的越南语影视表达。"
+        )
     if genre=="historical":
         return "使用自然的越南语古装影视对白；保持身份、官职、辈分和称谓一致，不得随意现代化。"
     if genre=="modern":
@@ -422,11 +435,18 @@ def translation_review_reasons(text:str,source:str)->list[str]:
     for zh,vi in glossary_pairs(source):
         if vi.casefold() not in low:
             reasons.append("glossary_"+zh)
+    if str(ACTIVE_PROFILE.get("genre") or "").lower()=="xianxia":
+        word_set=set(re.findall(r"[A-Za-zÀ-ỹ]+",low))
+        if any(x in source for x in ("我","你","您","咱")) and ({"tôi","bạn"} & word_set):
+            reasons.append("xianxia_modern_pronoun")
+        if src_cjk<=10 and words>max(8,int(math.ceil(src_cjk*1.8)+2)):
+            reasons.append("xianxia_verbose")
     return reasons
 
 def fit_word_limit(segment:dict)->int:
     slot=max(0.25,float(segment.get("tts_slot") or (float(segment["end"])-float(segment["start"]))))
-    return max(2,int(math.ceil(slot*4.8)))
+    target_wps=float(STYLE.get("words_per_second") or 3.0)*1.12
+    return max(2,int(math.ceil(slot*target_wps)))
 
 def validate_segment_fit(text:str,segment:dict,*,field:str)->str:
     value=validate_vi(text,segment["text"],field=field)
@@ -737,6 +757,31 @@ def wav_duration(path:Path)->float:
     with wave.open(str(path),"rb") as w:
         return w.getnframes()/w.getframerate()
 
+def compute_dub_window(segments:list[dict],idx:int,min_pause:float)->tuple[float,float]:
+    """Place each Vietnamese cue around the source dialogue without crossing neighbors."""
+    s=segments[idx]
+    source_start=float(s["start"])
+    source_end=max(source_start+0.20,float(s["end"]))
+    prev_end=float(segments[idx-1]["end"]) if idx>0 else 0.0
+    next_start=float(segments[idx+1]["start"]) if idx+1<len(segments) else source_end+1.0
+
+    leading_gap=max(0.0,source_start-prev_end)
+    preroll=min(0.10,leading_gap*0.35)
+    start=max(0.0,source_start-preroll)
+    if idx>0:
+        start=max(start,prev_end+min_pause)
+
+    trailing_gap=max(0.0,next_start-source_end)
+    postroll=min(0.20,trailing_gap*0.45)
+    end=source_end+postroll
+    if idx+1<len(segments):
+        end=min(end,next_start-min_pause)
+
+    if end-start<0.25:
+        start=source_start
+        end=max(start+0.25,min(source_end+0.12,next_start if idx+1<len(segments) else source_end+0.12))
+    return start,max(start+0.25,end)
+
 def render_voice_and_video(segments:list[dict],meta:dict)->dict:
     import numpy as np
     import soundfile as sf
@@ -757,6 +802,8 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
     fitted=[]
     retimed=0
     hard_trim=0
+    max_start_shift_ms=0.0
+    max_end_overrun_ms=0.0
     started=time.monotonic()
     batch_size=24
 
@@ -781,9 +828,8 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
             sf.write(str(raw),arr,tts.sample_rate,subtype="PCM_16")
 
             original=max(0.01,wav_duration(raw))
-            next_start=float(segments[i]["start"]) if i<len(segments) else float(s["end"])+1.2
-            slot_end=min(next_start-min_pause,float(s["end"])+0.18)
-            slot=max(0.25,slot_end-float(s["start"]))
+            place_start,slot_end=compute_dub_window(segments,i-1,min_pause)
+            slot=max(0.25,slot_end-place_start)
             fit=raw
             if original>slot+0.08:
                 retimed+=1
@@ -803,7 +849,10 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
                     ])
                     fit=trimmed
                     hard_trim+=1
-            fitted.append((s,fit))
+            actual_end=place_start+wav_duration(fit)
+            max_start_shift_ms=max(max_start_shift_ms,abs(place_start-float(s["start"]))*1000.0)
+            max_end_overrun_ms=max(max_end_overrun_ms,max(0.0,actual_end-float(s["end"]))*1000.0)
+            fitted.append((s,fit,place_start,slot_end))
 
         done=min(off+len(batch),len(segments))
         elapsed=max(0.001,time.monotonic()-started)
@@ -821,10 +870,10 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
         rate=wf.getframerate()
     duration=max(float(s["end"]) for s in segments)+1.0
     canvas=np.zeros(max(1,int(math.ceil(duration*rate))),dtype=np.float32)
-    for s,path in fitted:
+    for s,path,place_start,slot_end in fitted:
         with wave.open(str(path),"rb") as wf:
             data=np.frombuffer(wf.readframes(wf.getnframes()),dtype="<i2").astype(np.float32)
-        pos=max(0,int(round(float(s["start"])*rate)))
+        pos=max(0,int(round(float(place_start)*rate)))
         stop=min(len(canvas),pos+len(data))
         if pos<len(canvas):
             canvas[pos:stop]+=data[:stop-pos]
@@ -854,6 +903,9 @@ def render_voice_and_video(segments:list[dict],meta:dict)->dict:
     meta["tts_sample_rate"]=48000
     meta["retimed_segments"]=retimed
     meta["hard_trim_segments"]=hard_trim
+    meta["sync_max_start_shift_ms"]=round(max_start_shift_ms,1)
+    meta["sync_max_end_overrun_ms"]=round(max_end_overrun_ms,1)
+    meta["sync_policy"]="source_dialogue_window_v2"
     meta["voice_render_seconds"]=round(time.monotonic()-started,2)
     meta["final_video_bytes"]=OUT.stat().st_size
     return meta

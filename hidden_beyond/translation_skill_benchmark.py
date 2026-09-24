@@ -32,17 +32,17 @@ def beat(stage:str,message:str)->None:
 CASES=[
     {"source":"看不懂","must_any":["không hiểu","đọc không hiểu"],"forbid":["bản quyền","yêu cầu","đội phim","quay phim"]},
     {"source":"这不就是太阳底下修炼吗","must_all":["tu luyện"],"must_any":["mặt trời","ánh nắng","dưới nắng"],"forbid":["bản quyền","đội phim","quay phim"]},
-    {"source":"我果然是天选之人","must_any":["trời chọn","thiên tuyển"],"forbid":["máu trời","bản quyền","đội phim"]},
+    {"source":"我果然是天选之人","must_any":["trời chọn","thiên tuyển"],"forbid":["máu trời","bản quyền","đội phim","tôi","bạn"],"max_words":10},
     {"source":"你已经练气三层了","must_all":["luyện khí"],"must_any":["ba","3"]},
     {"source":"师兄小心","must_all":["sư huynh"],"must_any":["cẩn thận","coi chừng"]},
     {"source":"灵气太稀薄了","must_all":["linh khí"],"must_any":["loãng","mỏng","ít"]},
     {"source":"我们去宗门","must_all":["tông môn"]},
-    {"source":"这是筑基丹","must_all":["trúc cơ"],"must_any":["đan","đan dược"]},
+    {"source":"这是筑基丹","must_all":["trúc cơ"],"must_any":["đan","đan dược"],"max_words":8},
     {"source":"他突破到金丹境了","must_all":["kim đan"],"must_any":["đột phá","cảnh"]},
-    {"source":"我没有灵根","must_all":["linh căn"],"must_any":["không","chẳng"]},
+    {"source":"我没有灵根","must_all":["linh căn"],"must_any":["không","chẳng"],"forbid":["tôi","bạn"],"max_words":7},
     {"source":"你想飞升吗","must_all":["phi thăng"]},
     {"source":"魔修来了","must_all":["ma tu"],"must_any":["đến","tới"]},
-    {"source":"这是我的法宝","must_all":["pháp bảo"]},
+    {"source":"这是我的法宝","must_all":["pháp bảo"],"forbid":["tôi","bạn"],"max_words":8},
     {"source":"洞府里有秘境","must_all":["động phủ","bí cảnh"]},
     {"source":"天道不公","must_all":["thiên đạo"],"must_any":["bất công","không công bằng"]},
 ]
@@ -82,6 +82,8 @@ def validate(case:dict,out:str)->list[str]:
     for x in case.get("forbid",[]):
         if x.casefold() in v:
             reasons.append("forbidden:"+x)
+    if case.get("max_words") and words(v)>int(case["max_words"]):
+        reasons.append("too_verbose")
     return reasons
 
 def main():
@@ -130,8 +132,9 @@ def main():
                     "1. 忠实传达原意，不得添加原文没有的信息，不得遗漏关键含义。\n"
                     "2. 先保证准确，再保证越南语自然；不得改变否定、数字、疑问或人物关系。\n"
                     "3. 人物称呼、专有名词、修仙境界和术语必须保持一致。\n"
-                    "4. 使用自然、专业、适合影视对白的越南语。\n"
-                    "5. 只输出译文，不要解释、注释、免责声明或元话语。\n"
+                    "4. 使用自然、专业、适合仙侠影视对白的越南语；人物称谓按古风关系保持一致，除非原文明示现代场景，不得习惯性使用 tôi/bạn。\n"
+                    "5. 短句保持简洁，不逐字硬译，不把术语扩写成解释；成语、讥讽、威胁和情绪要按越南语自然表达。\n"
+                    "6. 只输出译文，不要解释、注释、免责声明或元话语。\n"
                     "〖待翻译文本〗\n"+x["source"]
                 )
             chats=[
