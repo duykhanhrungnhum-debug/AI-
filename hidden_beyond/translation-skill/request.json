@@ -1,6 +1,6 @@
 {
-  "nonce": "2026-09-24-mastery-regression-01",
-  "purpose": "verify_xianxia_mastery_pronoun_concise_dialogue_after_sync_upgrade",
+  "nonce": "2026-09-24-mastery-regression-02",
+  "purpose": "verify_mastery_fix_exact_xianxia_terms_and_natural_concise_dialogue",
   "model": "tencent/Hy-MT2-7B",
   "cases": 15,
   "source_video_id": "vaY4URFw0cg",

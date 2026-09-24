@@ -84,6 +84,9 @@ DIALOGUE_GLOSSARY={
     "自寻死路":"tự tìm đường chết",
     "别给脸不要脸":"đừng có không biết điều",
     "一成":"một thành",
+    "筑基丹":"đan dược Trúc Cơ",
+    "天道不公":"Thiên đạo bất công",
+    "不公":"bất công",
 }
 ACTIVE_PROFILE={}
 FANTASY_GLOSSARY={
@@ -1482,9 +1485,10 @@ def main()->None:
             +"1. 忠实传达原意，不添加原文没有的信息，不遗漏关键含义。\n"
             +"2. 必须先结合前后文判断谁对谁说话、人物身份、辈分、关系和当前事件，再翻译本句；不得只按字面孤立翻译。\n"
             +"3. 保持人物关系、否定、数字、疑问、因果和情绪强度；称呼、专有名词和术语在同一系列中保持一致。\n"
-            +"4. "+profile_prompt_rule(translation_profile)+"\n"
-            +f"5. 尽量简洁，目标不超过 {limit} 个越南语词，适合配音。\n"
-            +"6. 只输出越南语译文，不解释。\n"
+            +"4. 若上方提供固定术语，必须优先使用给定译法，不得扩写或解释该术语。\n"
+            +"5. "+profile_prompt_rule(translation_profile)+"\n"
+            +f"6. 尽量简洁，目标不超过 {limit} 个越南语词，适合配音。\n"
+            +"7. 只输出越南语译文，不解释。\n"
             +"〖待翻译文本〗\n"+s["text"]
         )
 
