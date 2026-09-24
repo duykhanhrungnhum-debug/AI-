@@ -71,7 +71,6 @@ function bootstrapAccess(){
   const access = params.get('access');
   if(access){
     sessionStorage.setItem(TOKEN, access);
-    history.replaceState(null, '', location.pathname + location.search);
   }
 }
 function load(){
