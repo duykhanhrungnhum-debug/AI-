@@ -15,7 +15,7 @@ class ChatRequestHandler(AIRequestHandler):
     server_version = "AI-Agent-Chat-API/0.1"
 
     def _worker_authorized(self) -> bool:
-        expected = os.environ.get("AI_CHAT_WORKER_TOKEN", "")
+        expected = os.environ.get("AI_AGENT_API_TOKEN", "")
         supplied = self.headers.get("authorization", "")
         return bool(expected) and hmac.compare_digest(supplied, f"Bearer {expected}")
 
@@ -104,8 +104,8 @@ def main() -> None:
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
     if not os.environ.get("AI_AGENT_API_TOKEN"):
         raise SystemExit("AI_AGENT_API_TOKEN is required")
-    if not os.environ.get("AI_CHAT_WORKER_TOKEN"):
-        raise SystemExit("AI_CHAT_WORKER_TOKEN is required")
+    if not os.environ.get("AI_AGENT_API_TOKEN"):
+        raise SystemExit("AI_AGENT_API_TOKEN is required")
     ThreadingHTTPServer((host, port), ChatRequestHandler).serve_forever()
 
 
