@@ -66,7 +66,16 @@ const STORE = 'ai_chat_messages_v1', TOKEN = 'ai_chat_token_v1';
 let messages = [];
 let busy = false;
 
+function bootstrapAccess(){
+  const params = new URLSearchParams(location.hash.slice(1));
+  const access = params.get('access');
+  if(access){
+    sessionStorage.setItem(TOKEN, access);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
 function load(){
+  bootstrapAccess();
   try{ messages = JSON.parse(localStorage.getItem(STORE) || '[]'); if(!Array.isArray(messages)) messages=[]; }catch{ messages=[]; }
   render();
   if(!sessionStorage.getItem(TOKEN)) dialog.showModal();
