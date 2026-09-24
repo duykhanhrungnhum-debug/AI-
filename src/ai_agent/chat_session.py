@@ -4,11 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
-import secrets
 import threading
 import time
 import textwrap
-from urllib.error import HTTPError
 from uuid import uuid4
 
 from .core.kaggle_worker import KaggleGpuWorker
@@ -76,13 +74,29 @@ class ChatSessionBroker:
             if not worker_token:
                 raise RuntimeError("AI_AGENT_API_TOKEN is required")
 
-            worker = KaggleGpuWorker(api_token=token, username=username, timeout=120)
+            worker = KaggleGpuWorker(
+                api_token=token,
+                username=username,
+                timeout=120,
+                submission_retry_attempts=2,
+                submission_retry_delay_seconds=10,
+            )
+            launch_started = time.time()
             try:
                 status = worker.status(self.kernel_slug)
                 if not status.terminal:
-                    with self._lock:
-                        self._worker_state = "starting"
-                    return
+                    deadline = time.time() + 45
+                    while time.time() < deadline:
+                        with self._lock:
+                            if self._worker_last_seen >= launch_started:
+                                return
+                        time.sleep(5)
+                        try:
+                            status = worker.status(self.kernel_slug)
+                            if status.terminal:
+                                break
+                        except Exception:
+                            break
             except Exception:
                 pass
 
@@ -137,9 +151,10 @@ class ChatSessionBroker:
                     return {"job_id": job.job_id, "prompt": job.prompt}
         return None
 
-    def heartbeat(self) -> None:
+    def heartbeat(self, state: str = "ready") -> None:
+        normalized = state.strip().lower()
         with self._lock:
-            self._worker_state = "running"
+            self._worker_state = "starting" if normalized in {"booting", "starting", "loading"} else "running"
             self._worker_error = ""
             self._worker_last_seen = time.time()
 
@@ -221,6 +236,7 @@ class ChatSessionBroker:
                     detail = exc.read().decode("utf-8", errors="replace")
                     raise RuntimeError(f"HTTP {{exc.code}} {{path}}: {{detail[:500]}}") from exc
 
+            request("POST", "/internal/chat/heartbeat", {"state": "booting"})
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
             tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
