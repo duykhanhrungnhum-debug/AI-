@@ -1,10 +1,11 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "builder": "RAILPACK"
+    "builder": "RAILPACK",
+    "buildCommand": "python -m pip install ."
   },
   "deploy": {
-    "startCommand": "python -m ai_agent.api",
+    "startCommand": "PYTHONPATH=src python -m ai_agent.api",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
