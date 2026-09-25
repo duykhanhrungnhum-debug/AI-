@@ -1,0 +1,278 @@
+name: Reference Character Video Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/reference-video-smoke.trigger"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  reference-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      PRODUCTION_LEARNING_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/story-processor-api
+      OUTPUT_DIR: reference-video-smoke-output
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        shell: bash
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install package and FFmpeg
+        shell: bash
+        run: |
+          python -m pip install -e .
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Compile reference pipeline
+        run: >-
+          python -m py_compile
+          src/ai_agent/core/kaggle_image_batch.py
+          src/ai_agent/core/production_learning.py
+          src/ai_agent/core/episode_pipeline.py
+          scripts/generate_reference_video.py
+
+      - name: Generate real reference-conditioned video
+        shell: bash
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          python - <<'PY'
+          from __future__ import annotations
+
+          from hashlib import sha256
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import struct
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+          import wave
+
+          from ai_agent.core.kaggle_image_batch import KaggleBatchImageProvider, SceneImageRequest
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          from ai_agent.core.production_learning import (
+              HttpProductionLearningStore,
+              ProductionLesson,
+              tuned_reference_scale,
+          )
+          from ai_agent.core.video_builder import FFmpegVideoBuilder
+
+
+          def oidc_token() -> str:
+              url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              sep = "&" if "?" in url else "?"
+              req = Request(
+                  url + sep + "audience=" + quote("hidden-beyond-story-processor"),
+                  headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+              )
+              with urlopen(req, timeout=30) as response:
+                  payload = json.loads(response.read().decode("utf-8"))
+              token = str(payload.get("value") or "").strip()
+              if not token:
+                  raise RuntimeError("GitHub OIDC token missing")
+              return token
+
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          learning = HttpProductionLearningStore(
+              base_url=os.environ["PRODUCTION_LEARNING_API"],
+              bearer_token=oidc_token(),
+          )
+          prior = learning.relevant("reference-character-video", limit=10)
+          scale = tuned_reference_scale(prior, base=0.75)
+
+          reference_url = (
+              "https://huggingface.co/datasets/huggingface/documentation-images/"
+              "resolve/main/diffusers/ip_adapter_einstein_base.png"
+          )
+          with urlopen(reference_url, timeout=60) as response:
+              reference = response.read()
+          if len(reference) < 10_000:
+              raise RuntimeError("reference image download is unexpectedly small")
+          (output / "reference.png").write_bytes(reference)
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+              submission_retry_attempts=5,
+              submission_retry_delay_seconds=30,
+          )
+          provider = KaggleBatchImageProvider(
+              worker=worker,
+              kernel_slug="ai-agent-reference-video-smoke",
+              poll_interval=15,
+              max_poll_attempts=160,
+              inference_steps=12,
+              guidance_scale=7.0,
+              identity_threshold=0.40,
+          )
+          requests = (
+              SceneImageRequest(
+                  scene_id="scene-001",
+                  prompt=(
+                      "cinematic realistic portrait story frame, the same elderly man from the "
+                      "reference image enters a warm old library, medium shot, detailed shelves, "
+                      "natural lighting, 16:9 widescreen composition"
+                  ),
+                  negative_prompt="text, watermark, logo, changed face, different person, blurry",
+                  width=512,
+                  height=288,
+                  seed=2026092501,
+              ),
+              SceneImageRequest(
+                  scene_id="scene-002",
+                  prompt=(
+                      "cinematic realistic story frame, the same elderly man from the reference "
+                      "image studies an antique map at a wooden desk, medium shot, warm lamp light, "
+                      "16:9 widescreen composition"
+                  ),
+                  negative_prompt="text, watermark, logo, changed face, different person, blurry",
+                  width=512,
+                  height=288,
+                  seed=2026092502,
+              ),
+          )
+
+          try:
+              batch = provider.generate_with_retries(
+                  requests,
+                  max_rounds=2,
+                  reference_image=reference,
+                  reference_scale=scale,
+              )
+              if not batch.verified:
+                  issues = [issue for scene in batch.scenes for issue in scene.issues]
+                  learning.record(ProductionLesson(
+                      task_type="reference-character-video",
+                      success=False,
+                      failure_kind=(
+                          "identity_drift"
+                          if any("identity similarity" in issue for issue in issues)
+                          else "model_output"
+                      ),
+                      lesson="Real reference video smoke failed; adjust only the failed factor on the next run.",
+                      config={"reference_scale": scale},
+                      metrics={"failed_scene_ids": list(batch.failed_scene_ids)},
+                      evidence=tuple(issues[:20]),
+                  ))
+                  raise RuntimeError("reference image verification failed: " + "; ".join(issues))
+
+              image_paths = []
+              identity_scores = []
+              for index, scene in enumerate(batch.scenes):
+                  path = output / f"scene-{index + 1:03d}.png"
+                  path.write_bytes(scene.artifact.data)
+                  image_paths.append(str(path))
+                  for item in scene.artifact.evidence:
+                      if item.startswith("identity_score:"):
+                          identity_scores.append(float(item.split(":", 1)[1]))
+
+              narration = output / "narration.wav"
+              rate = 22050
+              seconds = 8
+              with wave.open(str(narration), "wb") as wav:
+                  wav.setnchannels(1)
+                  wav.setsampwidth(2)
+                  wav.setframerate(rate)
+                  frames = []
+                  for i in range(rate * seconds):
+                      value = int(3500 * math.sin(2 * math.pi * 220 * i / rate))
+                      frames.append(struct.pack("<h", value))
+                  wav.writeframes(b"".join(frames))
+
+              final_path = output / "final.mp4"
+              video = FFmpegVideoBuilder(
+                  width=1280,
+                  height=720,
+                  fps=24,
+                  timeout=900,
+              ).build(image_paths, str(narration), str(final_path))
+              if not (video.has_video and video.has_audio):
+                  raise RuntimeError("final video does not contain both video and audio")
+
+              lesson = learning.record(ProductionLesson(
+                  task_type="reference-character-video",
+                  success=True,
+                  lesson=(
+                      "Real IP-Adapter reference conditioning passed identity checks and produced "
+                      "a verified final video; reuse this scale unless later runs regress."
+                  ),
+                  config={"reference_scale": scale},
+                  metrics={
+                      "scene_count": len(batch.scenes),
+                      "min_identity_score": min(identity_scores),
+                      "mean_identity_score": sum(identity_scores) / len(identity_scores),
+                      "duration_seconds": video.duration_seconds,
+                  },
+                  evidence=(
+                      f"reference_sha256:{sha256(reference).hexdigest()}",
+                      *tuple(item for scene in batch.scenes for item in scene.artifact.evidence),
+                      *video.evidence,
+                  ),
+              ))
+
+              report = {
+                  "verified": True,
+                  "prior_lessons_loaded": len(prior),
+                  "reference_scale": scale,
+                  "reference_sha256": sha256(reference).hexdigest(),
+                  "image_rounds": batch.rounds,
+                  "identity_scores": identity_scores,
+                  "min_identity_score": min(identity_scores),
+                  "mean_identity_score": sum(identity_scores) / len(identity_scores),
+                  "final_video": {
+                      "path": str(final_path),
+                      "bytes": final_path.stat().st_size,
+                      "duration_seconds": video.duration_seconds,
+                      "width": video.width,
+                      "height": video.height,
+                      "has_video": video.has_video,
+                      "has_audio": video.has_audio,
+                  },
+                  "learning_record": lesson.to_dict(),
+              }
+              (output / "report.json").write_text(
+                  json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+              print("REFERENCE_CHARACTER_VIDEO_SMOKE_OK")
+              print(json.dumps(report, ensure_ascii=False, indent=2))
+          except Exception as exc:
+              (output / "failure.json").write_text(
+                  json.dumps({"verified": False, "error": str(exc)}, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+              raise
+          PY
+
+      - name: Upload reference video evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-character-video-smoke
+          path: reference-video-smoke-output/
+          if-no-files-found: warn
+          retention-days: 7
