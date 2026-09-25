@@ -450,7 +450,7 @@ class KaggleBatchImageProvider:
 
             for index, scene in enumerate(CONFIG["scenes"]):
                 generator = torch.Generator(device="cuda").manual_seed(int(scene["seed"]))
-                generation = {
+                generation = {{
                     "prompt": scene["prompt"],
                     "negative_prompt": scene["negative_prompt"] or None,
                     "width": int(scene["width"]),
@@ -458,7 +458,7 @@ class KaggleBatchImageProvider:
                     "num_inference_steps": int(CONFIG["inference_steps"]),
                     "guidance_scale": float(CONFIG["guidance_scale"]),
                     "generator": generator,
-                }
+                }}
                 if reference_image is not None:
                     generation["ip_adapter_image"] = reference_image
                 result = pipe(**generation)
