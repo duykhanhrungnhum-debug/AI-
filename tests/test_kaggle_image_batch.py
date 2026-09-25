@@ -146,3 +146,22 @@ def test_reference_worker_does_not_enable_attention_slicing_before_ip_adapter():
 
     assert conditional_at < slicing_at < load_at
     assert source[conditional_at:load_at].count("pipe.enable_attention_slicing()") == 1
+
+
+def test_safety_checker_block_is_reported():
+    provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
+    request = SceneImageRequest("scene-1", "safe portrait", seed=10)
+    image = png_bytes()
+    digest = hashlib.sha256(image).hexdigest()
+    issues = provider._verify_scene(
+        request,
+        {
+            "image_sha256": digest,
+            "pixel_std": 40.0,
+            "safety_blocked": True,
+        },
+        image,
+        digest,
+    )
+
+    assert "safety checker blocked generated image" in issues
