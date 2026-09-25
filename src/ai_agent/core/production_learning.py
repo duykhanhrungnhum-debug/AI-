@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from typing import Protocol
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -75,8 +76,14 @@ class HttpProductionLearningStore:
                 "User-Agent": "AI-Agent-Production-Learning/1.0",
             },
         )
-        with urlopen(request, timeout=self.timeout) as response:
-            parsed = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"production learning API HTTP {exc.code}: {detail or exc.reason}"
+            ) from exc
         if not isinstance(parsed, dict) or parsed.get("ok") is not True:
             raise RuntimeError(f"production learning API rejected request: {parsed}")
         return parsed
