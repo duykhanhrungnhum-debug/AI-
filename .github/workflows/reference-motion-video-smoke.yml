@@ -90,11 +90,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -s .github/reference-motion-video-smoke.resume ]; then
-            RESUME_RUN_ID="$(tr -cd '0-9' < .github/reference-motion-video-smoke.resume)"
+            RESUME_RUN_ID="$(head -n1 .github/reference-motion-video-smoke.resume | tr -cd '0-9')"
             test -n "$RESUME_RUN_ID"
+            RESUME_DIR="$(mktemp -d)"
             gh run download "$RESUME_RUN_ID" \
               -n reference-motion-video-smoke \
-              -D "$VIDEO_OUTPUT_DIR"
+              -D "$RESUME_DIR"
+            find "$RESUME_DIR" -maxdepth 1 -name 'scene_*_keyframe.png' -print -quit | grep -q .
+            cp "$RESUME_DIR"/scene_*_keyframe.png "$VIDEO_OUTPUT_DIR"/
             test -n "$(find "$VIDEO_OUTPUT_DIR" -maxdepth 1 -name 'scene_*_keyframe.png' -print -quit)"
             echo "VIDEO_REUSE_EXISTING_KEYFRAMES=1" >> "$GITHUB_ENV"
             echo "RESUMED_FROM_RUN_ID=$RESUME_RUN_ID" >> "$GITHUB_ENV"
