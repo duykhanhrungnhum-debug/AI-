@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from collections.abc import Callable
 from typing import Protocol
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -53,17 +54,25 @@ class ProductionLearningStore(Protocol):
 @dataclass
 class HttpProductionLearningStore:
     base_url: str
-    bearer_token: str
+    bearer_token: str = ""
+    token_provider: Callable[[], str] | None = None
     timeout: float = 60.0
 
     def __post_init__(self) -> None:
         self.base_url = self.base_url.rstrip("/")
         if not self.base_url.startswith(("http://", "https://")):
             raise ValueError("base_url must use HTTP(S)")
-        if not self.bearer_token.strip():
-            raise ValueError("bearer_token is required")
+        if not self.bearer_token.strip() and self.token_provider is None:
+            raise ValueError("bearer_token or token_provider is required")
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
+
+    def _token(self) -> str:
+        token = self.token_provider() if self.token_provider is not None else self.bearer_token
+        token = str(token or "").strip()
+        if not token:
+            raise RuntimeError("production learning bearer token is unavailable")
+        return token
 
     def _post(self, route: str, body: dict) -> dict:
         request = Request(
@@ -71,7 +80,7 @@ class HttpProductionLearningStore:
             data=json.dumps(body).encode("utf-8"),
             method="POST",
             headers={
-                "Authorization": f"Bearer {self.bearer_token}",
+                "Authorization": f"Bearer {self._token()}",
                 "Content-Type": "application/json",
                 "User-Agent": "AI-Agent-Production-Learning/1.0",
             },
