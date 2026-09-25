@@ -130,3 +130,19 @@ def test_batch_marks_flat_image_as_failed():
 
     assert result.verified is False
     assert "image lacks visual variation" in result.scenes[0].issues[0]
+
+
+def test_reference_worker_does_not_enable_attention_slicing_before_ip_adapter():
+    provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
+    source = provider._build_worker_source(
+        (SceneImageRequest("scene-1", "same character in a library", seed=1),),
+        reference_image=b"reference-image-bytes",
+        reference_scale=0.75,
+    )
+
+    load_at = source.index("pipe.load_ip_adapter(")
+    slicing_at = source.index("pipe.enable_attention_slicing()")
+    conditional_at = source.index('if not CONFIG.get("reference_b64"):')
+
+    assert conditional_at < slicing_at < load_at
+    assert "SlicedAttnProcessor" not in source
