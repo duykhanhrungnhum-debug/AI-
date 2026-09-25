@@ -63,11 +63,17 @@ def learning_store():
     if not base_url:
         return None
     token = os.environ.get("PRODUCTION_LEARNING_BEARER_TOKEN", "").strip()
-    if not token:
-        token = github_oidc_token("hidden-beyond-story-processor") or ""
-    if not token:
-        return None
-    return HttpProductionLearningStore(base_url=base_url, bearer_token=token)
+    if token:
+        return HttpProductionLearningStore(base_url=base_url, bearer_token=token)
+
+    if os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "").strip():
+        def fresh_token() -> str:
+            value = github_oidc_token("hidden-beyond-story-processor")
+            if not value:
+                raise RuntimeError("GitHub OIDC token is unavailable")
+            return value
+        return HttpProductionLearningStore(base_url=base_url, token_provider=fresh_token)
+    return None
 
 
 def main() -> int:
