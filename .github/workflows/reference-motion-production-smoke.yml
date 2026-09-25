@@ -1,0 +1,128 @@
+name: Reference Motion Production Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/reference-motion-production-smoke.trigger"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  production-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      PRODUCTION_LEARNING_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/story-processor-api
+      VIDEO_OUTPUT_DIR: reference-motion-production-output
+      VIDEO_REFERENCE_IMAGE: reference-motion-production-output/reference.png
+      VIDEO_MAX_SCENES: "2"
+      VIDEO_IMAGE_STEPS: "10"
+      VIDEO_IMAGE_WIDTH: "512"
+      VIDEO_IMAGE_HEIGHT: "288"
+      VIDEO_IMAGE_ROUNDS: "2"
+      VIDEO_MOTION_FRAMES: "14"
+      VIDEO_MOTION_FPS: "7"
+      VIDEO_MOTION_ROUNDS: "2"
+      VIDEO_FINAL_WIDTH: "1280"
+      VIDEO_FINAL_HEIGHT: "720"
+      VIDEO_FINAL_FPS: "30"
+      VIDEO_COMPOSITION: "16:9 widescreen"
+      VIDEO_VISUAL_STYLE: "cinematic realistic story film, natural acting, consistent recurring character"
+      PIPER_VOICE: vi_VN-vais1000-medium
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install package Piper and FFmpeg
+        shell: bash
+        run: |
+          python -m pip install -e .
+          python -m pip install "piper-tts>=1.3,<2"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Download Vietnamese Piper voice and reference image
+        shell: bash
+        run: |
+          mkdir -p piper-voices "$VIDEO_OUTPUT_DIR"
+          python -m piper.download_voices "$PIPER_VOICE" --download-dir piper-voices
+          test -s "piper-voices/$PIPER_VOICE.onnx"
+          test -s "piper-voices/$PIPER_VOICE.onnx.json"
+          python - <<'PY'
+          from urllib.request import urlopen
+          from pathlib import Path
+          url = (
+              "https://huggingface.co/datasets/huggingface/documentation-images/"
+              "resolve/main/diffusers/ip_adapter_einstein_base.png"
+          )
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if len(data) < 10_000:
+              raise RuntimeError("reference image download is unexpectedly small")
+          Path("reference-motion-production-output/reference.png").write_bytes(data)
+          PY
+
+      - name: Compile production path
+        run: >-
+          python -m py_compile
+          src/ai_agent/core/kaggle_i2v.py
+          src/ai_agent/core/kaggle_image_batch.py
+          src/ai_agent/core/reference_motion_pipeline.py
+          src/ai_agent/core/production_learning.py
+          scripts/generate_reference_motion_video.py
+
+      - name: Generate full reference motion video
+        shell: bash
+        env:
+          VIDEO_SCRIPT: >-
+            Một học giả lớn tuổi bước vào thư viện cổ lúc chạng vạng.
+            Ông dừng trước một chiếc bàn gỗ, mở tấm bản đồ cũ và chăm chú quan sát các ký hiệu.
+            Ánh đèn vàng rung nhẹ trong căn phòng, tạo cảm giác bí ẩn nhưng yên tĩnh.
+        run: python scripts/generate_reference_motion_video.py
+
+      - name: Verify manifest
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(
+              Path("reference-motion-production-output/manifest.json").read_text(encoding="utf-8")
+          )
+          assert manifest["media_ready"] is True
+          assert manifest["scene_count"] >= 1
+          final = manifest["final_video"]
+          assert final["has_video"] is True
+          assert final["has_audio"] is True
+          assert float(final["duration_seconds"]) > 0
+          print("REFERENCE_MOTION_PRODUCTION_VERIFIED")
+          print(json.dumps(manifest["final_video"], ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload production evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-motion-production-output
+          path: reference-motion-production-output/
+          if-no-files-found: warn
+          retention-days: 7
