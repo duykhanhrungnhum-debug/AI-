@@ -405,7 +405,8 @@ class KaggleBatchImageToVideoProvider:
             )
             pipe.enable_model_cpu_offload()
             pipe.unet.enable_forward_chunking()
-            pipe.vae.enable_slicing()
+            if hasattr(pipe.vae, "enable_slicing"):
+                pipe.vae.enable_slicing()
 
             processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
             clip = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32").eval()
