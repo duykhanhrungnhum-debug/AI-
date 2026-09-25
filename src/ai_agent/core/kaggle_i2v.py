@@ -407,6 +407,9 @@ class KaggleBatchImageToVideoProvider:
             pipe.unet.enable_forward_chunking()
             pipe.vae.enable_slicing()
 
+            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            clip = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32").eval()
+
             reports = []
             for index, scene in enumerate(CONFIG["scenes"]):
                 raw = base64.b64decode(scene["image_b64"])
@@ -429,12 +432,6 @@ class KaggleBatchImageToVideoProvider:
                 path = output_dir / filename
                 export_to_video(frames, str(path), fps=int(scene["fps"]))
 
-                del pipe
-                gc.collect()
-                torch.cuda.empty_cache()
-
-                processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
-                clip = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32").eval()
                 pixels = processor(images=[image, frames[0], frames[-1]], return_tensors="pt").pixel_values
                 with torch.no_grad():
                     pooled = clip(pixel_values=pixels).pooler_output
@@ -464,19 +461,13 @@ class KaggleBatchImageToVideoProvider:
                     "motion_delta": motion_delta,
                 }})
 
-                del clip, processor, pooled, pixels, frames
+                del pooled, pixels, frames
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                if index + 1 < len(CONFIG["scenes"]):
-                    pipe = StableVideoDiffusionPipeline.from_pretrained(
-                        CONFIG["model"],
-                        torch_dtype=torch.float16,
-                        variant="fp16",
-                    )
-                    pipe.enable_model_cpu_offload()
-                    pipe.unet.enable_forward_chunking()
-                    pipe.vae.enable_slicing()
+            del pipe, clip, processor
+            gc.collect()
+            torch.cuda.empty_cache()
 
             archive_path = Path("/kaggle/working/i2v_videos.zip")
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
