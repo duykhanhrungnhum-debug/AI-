@@ -101,7 +101,7 @@ jobs:
               token_provider=oidc_token,
           )
           prior = learning.relevant("reference-character-video", limit=10)
-          scale = tuned_reference_scale(prior, base=0.75)
+          scale = tuned_reference_scale(prior, base=0.50)
 
           reference_url = (
               "https://huggingface.co/datasets/huggingface/documentation-images/"
@@ -122,6 +122,7 @@ jobs:
           )
           provider = KaggleBatchImageProvider(
               worker=worker,
+              ip_adapter_weight="ip-adapter-full-face_sd15.bin",
               kernel_slug="ai-agent-reference-video-smoke",
               poll_interval=15,
               max_poll_attempts=160,
