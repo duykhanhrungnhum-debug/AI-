@@ -25,8 +25,11 @@ jobs:
           scripts/submit_hidden_beyond_audio_worker.py
           src/ai_agent/core/kaggle_video.py
           src/ai_agent/core/generative_video_pipeline.py
+          src/ai_agent/core/production_learning.py
+          src/ai_agent/core/episode_pipeline.py
           scripts/kaggle_video_smoke.py
           scripts/generate_ai_video.py
+          scripts/generate_reference_video.py
       - name: Run test suite
         run: python -m pytest -q
       - name: Smoke test public Internet retrieval and verification
