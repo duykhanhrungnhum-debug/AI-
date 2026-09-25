@@ -6,9 +6,11 @@ on:
     branches: [main]
     paths:
       - ".github/reference-motion-video-smoke.trigger"
+      - ".github/reference-motion-video-smoke.resume"
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -81,6 +83,22 @@ jobs:
               raise RuntimeError("reference image download is unexpectedly small")
           Path("reference-motion-video-smoke-output/reference.png").write_bytes(data)
           PY
+
+      - name: Restore prior verified keyframes when requested
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -s .github/reference-motion-video-smoke.resume ]; then
+            RESUME_RUN_ID="$(tr -cd '0-9' < .github/reference-motion-video-smoke.resume)"
+            test -n "$RESUME_RUN_ID"
+            gh run download "$RESUME_RUN_ID" \
+              -n reference-motion-video-smoke \
+              -D "$VIDEO_OUTPUT_DIR"
+            test -n "$(find "$VIDEO_OUTPUT_DIR" -maxdepth 1 -name 'scene_*_keyframe.png' -print -quit)"
+            echo "VIDEO_REUSE_EXISTING_KEYFRAMES=1" >> "$GITHUB_ENV"
+            echo "RESUMED_FROM_RUN_ID=$RESUME_RUN_ID" >> "$GITHUB_ENV"
+          fi
 
       - name: Compile reference motion pipeline
         run: >-
