@@ -259,9 +259,15 @@ class KaggleBatchImageProvider:
             status = self.worker.status(self.kernel_slug)
             if status.terminal:
                 if not status.successful:
-                    raise RuntimeError(
-                        f"Kaggle image batch failed: {status.status} {status.failure_message}"
-                    )
+                    logs = ""
+                    try:
+                        logs = self.worker.logs(self.kernel_slug)
+                    except Exception:
+                        pass
+                    detail = (status.failure_message or logs or status.status).strip()
+                    if len(detail) > 8000:
+                        detail = "...[tail]\n" + detail[-8000:]
+                    raise RuntimeError(f"Kaggle image batch failed: {detail}")
                 return
             if self.poll_interval:
                 time.sleep(self.poll_interval)
