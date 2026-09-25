@@ -223,3 +223,37 @@ def test_reference_motion_pipeline_records_motion_failure(tmp_path):
 
     assert learning.recorded[-1].success is False
     assert learning.recorded[-1].failure_kind == "motion_identity_drift"
+
+
+class BombImages(FakeImages):
+    def generate_with_retries(self, *args, **kwargs):
+        raise AssertionError("keyframe generation must not run during resume")
+
+
+def test_reference_motion_pipeline_resumes_without_regenerating_keyframes(tmp_path):
+    motion = FakeMotion()
+    pipeline = ReferenceMotionVideoPipeline(
+        scene_planner=FakePlanner(),
+        image_provider=BombImages(),
+        motion_provider=motion,
+        speech_provider=FakeSpeech(),
+        video_builder=FakeBuilder(),
+        learning_store=FakeLearning(),
+        audio_verifier=FakeAudioVerifier(),
+    )
+
+    result = pipeline.produce(
+        "Kịch bản thật đã xác minh.",
+        b"REFERENCE-CHARACTER",
+        tmp_path,
+        existing_keyframes=(b"RESUMED-s1", b"RESUMED-s2"),
+    )
+
+    assert result.media_ready is True
+    assert result.keyframes.rounds == 0
+    assert motion.images == [b"RESUMED-s1", b"RESUMED-s2"]
+    assert any(
+        item == "resumed_verified_keyframe:true"
+        for item in result.keyframes.scenes[0].artifact.evidence
+    )
+    assert (tmp_path / "reference_motion_checkpoint.json").exists()
