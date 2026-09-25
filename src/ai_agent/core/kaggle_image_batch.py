@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from io import BytesIO
+import base64
 import json
 import struct
 import textwrap
@@ -66,6 +67,9 @@ class BatchImageResult:
 class KaggleBatchImageProvider:
     worker: KaggleGpuWorker
     model: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    ip_adapter_model: str = "h94/IP-Adapter"
+    ip_adapter_weight: str = "ip-adapter_sd15.bin"
+    identity_threshold: float = 0.40
     kernel_slug: str = "ai-agent-image-batch"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
@@ -83,12 +87,30 @@ class KaggleBatchImageProvider:
             raise ValueError("poll configuration must be valid")
         if self.inference_steps <= 0 or self.min_pixel_std < 0:
             raise ValueError("inference_steps and min_pixel_std must be valid")
+        if not -1.0 <= self.identity_threshold <= 1.0:
+            raise ValueError("identity_threshold must be in [-1, 1]")
 
-    def generate_batch(self, requests: tuple[SceneImageRequest, ...] | list[SceneImageRequest]) -> BatchImageResult:
+    def generate_batch(
+        self,
+        requests: tuple[SceneImageRequest, ...] | list[SceneImageRequest],
+        *,
+        reference_image: bytes | None = None,
+        reference_scale: float = 0.75,
+    ) -> BatchImageResult:
         assert_core_invariants()
         requests = tuple(requests)
         self._validate_requests(requests)
-        source = self._build_worker_source(requests)
+        if reference_image is not None and not reference_image:
+            raise ValueError("reference_image must not be empty")
+        if reference_image is not None and len(reference_image) > 8_000_000:
+            raise ValueError("reference_image exceeds 8 MB")
+        if not 0.50 <= reference_scale <= 0.95:
+            raise ValueError("reference_scale must be between 0.50 and 0.95")
+        source = self._build_worker_source(
+            requests,
+            reference_image=reference_image,
+            reference_scale=reference_scale,
+        )
         title = self.kernel_slug.replace("-", " ").title()
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
@@ -107,6 +129,10 @@ class KaggleBatchImageProvider:
             raise ValueError("batch report does not contain scenes")
         if report.get("model") != self.model:
             raise ValueError("batch report model does not match configured model")
+        if reference_image is not None:
+            expected_reference = sha256(reference_image).hexdigest()
+            if report.get("reference_sha256") != expected_reference:
+                raise ValueError("batch report reference image hash mismatch")
         gpu_name = str(report.get("gpu_name", "")).strip()
         if not gpu_name:
             raise ValueError("batch report does not contain GPU evidence")
@@ -143,6 +169,7 @@ class KaggleBatchImageProvider:
                         f"dimensions:{request.width}x{request.height}",
                         f"seed:{entry.get('seed')}",
                         f"pixel_std:{entry.get('pixel_std')}",
+                        *((f"identity_score:{float(entry.get('identity_score')):.6f}", f"reference_scale:{float(entry.get('reference_scale')):.3f}") if entry.get("identity_score") is not None else ()),
                         f"gpu:{gpu_name}",
                         f"model:{self.model}",
                     ),
@@ -179,6 +206,8 @@ class KaggleBatchImageProvider:
         requests: tuple[SceneImageRequest, ...] | list[SceneImageRequest],
         *,
         max_rounds: int = 2,
+        reference_image: bytes | None = None,
+        reference_scale: float = 0.75,
     ) -> BatchImageResult:
         """Retry only failed scenes; each retry changes the seed to avoid loops."""
         assert_core_invariants()
@@ -193,7 +222,11 @@ class KaggleBatchImageProvider:
         seen_hashes: dict[str, set[str]] = {request.scene_id: set() for request in original}
 
         while pending and rounds < max_rounds:
-            batch = self.generate_batch(pending)
+            batch = self.generate_batch(
+                pending,
+                reference_image=reference_image,
+                reference_scale=min(0.92, reference_scale + rounds * 0.05),
+            )
             rounds += 1
             next_pending: list[SceneImageRequest] = []
 
@@ -271,6 +304,15 @@ class KaggleBatchImageProvider:
             pixel_std = 0.0
         if pixel_std < self.min_pixel_std:
             issues.append(f"image lacks visual variation: pixel_std={pixel_std:.3f}")
+        if entry.get("identity_score") is not None:
+            try:
+                identity_score = float(entry.get("identity_score"))
+            except (TypeError, ValueError):
+                identity_score = -1.0
+            if identity_score < self.identity_threshold:
+                issues.append(
+                    f"identity similarity below threshold: {identity_score:.4f} < {self.identity_threshold:.4f}"
+                )
         return issues
 
     @staticmethod
@@ -298,9 +340,21 @@ class KaggleBatchImageProvider:
                 return item[len(prefix):]
         return ""
 
-    def _build_worker_source(self, requests: tuple[SceneImageRequest, ...]) -> str:
+    def _build_worker_source(
+        self,
+        requests: tuple[SceneImageRequest, ...],
+        *,
+        reference_image: bytes | None = None,
+        reference_scale: float = 0.75,
+    ) -> str:
         config = {
             "model": self.model,
+            "ip_adapter_model": self.ip_adapter_model,
+            "ip_adapter_weight": self.ip_adapter_weight,
+            "reference_b64": base64.b64encode(reference_image).decode("ascii") if reference_image else None,
+            "reference_sha256": sha256(reference_image).hexdigest() if reference_image else None,
+            "reference_scale": reference_scale,
+            "identity_threshold": self.identity_threshold,
             "inference_steps": self.inference_steps,
             "guidance_scale": self.guidance_scale,
             "scenes": [
@@ -320,7 +374,9 @@ class KaggleBatchImageProvider:
             f"""
             from __future__ import annotations
 
+            import base64
             from hashlib import sha256
+            from io import BytesIO
             import json
             import subprocess
             import sys
@@ -332,15 +388,21 @@ class KaggleBatchImageProvider:
             try:
                 import numpy as np
                 import torch
+                import torch.nn.functional as F
+                from PIL import Image
                 from diffusers import StableDiffusionPipeline
+                from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
-                    "diffusers<1", "transformers<5", "accelerate<2", "safetensors", "numpy",
+                    "diffusers<1", "transformers<5", "accelerate<2", "safetensors", "numpy", "Pillow",
                 ])
                 import numpy as np
                 import torch
+                import torch.nn.functional as F
+                from PIL import Image
                 from diffusers import StableDiffusionPipeline
+                from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
@@ -353,22 +415,57 @@ class KaggleBatchImageProvider:
             pipe.enable_attention_slicing()
             pipe = pipe.to("cuda")
 
+            reference_image = None
+            reference_embedding = None
+            clip_processor = None
+            clip_model = None
+
+            if CONFIG.get("reference_b64"):
+                reference_bytes = base64.b64decode(CONFIG["reference_b64"])
+                if sha256(reference_bytes).hexdigest() != CONFIG["reference_sha256"]:
+                    raise RuntimeError("reference image hash mismatch inside Kaggle worker")
+                reference_image = Image.open(BytesIO(reference_bytes)).convert("RGB")
+                pipe.load_ip_adapter(
+                    CONFIG["ip_adapter_model"],
+                    subfolder="models",
+                    weight_name=CONFIG["ip_adapter_weight"],
+                )
+                pipe.set_ip_adapter_scale(float(CONFIG["reference_scale"]))
+                clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+                clip_model = CLIPVisionModelWithProjection.from_pretrained(
+                    "openai/clip-vit-base-patch32"
+                ).eval()
+
+                def image_embedding(image):
+                    values = clip_processor(images=image, return_tensors="pt").pixel_values
+                    with torch.no_grad():
+                        vector = clip_model(values).image_embeds[0].float()
+                    return F.normalize(vector, dim=0)
+
+                reference_embedding = image_embedding(reference_image)
+
             output_dir = Path("/kaggle/working/batch_images")
             output_dir.mkdir(parents=True, exist_ok=True)
             reports = []
 
             for index, scene in enumerate(CONFIG["scenes"]):
                 generator = torch.Generator(device="cuda").manual_seed(int(scene["seed"]))
-                result = pipe(
-                    prompt=scene["prompt"],
-                    negative_prompt=scene["negative_prompt"] or None,
-                    width=int(scene["width"]),
-                    height=int(scene["height"]),
-                    num_inference_steps=int(CONFIG["inference_steps"]),
-                    guidance_scale=float(CONFIG["guidance_scale"]),
-                    generator=generator,
-                )
+                generation = {
+                    "prompt": scene["prompt"],
+                    "negative_prompt": scene["negative_prompt"] or None,
+                    "width": int(scene["width"]),
+                    "height": int(scene["height"]),
+                    "num_inference_steps": int(CONFIG["inference_steps"]),
+                    "guidance_scale": float(CONFIG["guidance_scale"]),
+                    "generator": generator,
+                }
+                if reference_image is not None:
+                    generation["ip_adapter_image"] = reference_image
+                result = pipe(**generation)
                 image = result.images[0]
+                identity_score = None
+                if reference_embedding is not None:
+                    identity_score = float(torch.dot(reference_embedding, image_embedding(image)).item())
                 filename = f"scene_{{index:04d}}.png"
                 path = output_dir / filename
                 image.save(path, format="PNG")
@@ -387,6 +484,8 @@ class KaggleBatchImageProvider:
                     "pixel_std": float(pixels.std()),
                     "pixel_min": float(pixels.min()),
                     "pixel_max": float(pixels.max()),
+                    "identity_score": identity_score,
+                    "reference_scale": float(CONFIG["reference_scale"]) if reference_image is not None else None,
                 }})
 
             archive_path = Path("/kaggle/working/images.zip")
@@ -396,6 +495,7 @@ class KaggleBatchImageProvider:
 
             batch_report = {{
                 "model": CONFIG["model"],
+                "reference_sha256": CONFIG.get("reference_sha256"),
                 "gpu_name": gpu_name,
                 "scene_count": len(reports),
                 "archive_sha256": sha256(archive_path.read_bytes()).hexdigest(),
