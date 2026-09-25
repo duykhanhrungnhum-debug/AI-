@@ -88,7 +88,9 @@ class MediaProductionPipeline:
         target.mkdir(parents=True, exist_ok=True)
 
         lessons = ()
-        reference_scale = 0.75
+        adapter_weight = str(getattr(self.image_provider, "ip_adapter_weight", "") or "")
+        base_reference_scale = 0.50 if "full-face" in adapter_weight else 0.75
+        reference_scale = base_reference_scale
         reference_hash = None
         if reference_image is not None:
             if not reference_image:
@@ -99,7 +101,7 @@ class MediaProductionPipeline:
                     lessons = self.learning_store.relevant("reference-character-video", limit=10)
                 except Exception:
                     lessons = ()
-            reference_scale = tuned_reference_scale(lessons, base=0.75)
+            reference_scale = tuned_reference_scale(lessons, base=base_reference_scale)
 
         scene_plan = self.scene_planner.plan(verified_script, visual_style=visual_style)
         requests = [
