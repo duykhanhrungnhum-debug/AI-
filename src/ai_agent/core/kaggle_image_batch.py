@@ -418,7 +418,13 @@ class KaggleBatchImageProvider:
                 CONFIG["model"],
                 torch_dtype=torch.float16,
             )
-            pipe.enable_attention_slicing()
+            # Diffusers IP-Adapter installs its own attention processors. Enabling
+            # slicing first replaces them with SlicedAttnProcessor and causes
+            # load_ip_adapter() to fail because that processor requires slice_size.
+            # SD1.5 + IP-Adapter fits on Kaggle T4 without slicing, so only use
+            # attention slicing for the non-reference path.
+            if not CONFIG.get("reference_b64"):
+                pipe.enable_attention_slicing()
             pipe = pipe.to("cuda")
 
             reference_image = None
