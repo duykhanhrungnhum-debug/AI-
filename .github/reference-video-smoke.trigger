@@ -1,1 +1,1 @@
-reference-character-video-smoke-v2-log-tail
+reference-character-video-smoke-v3-ip-adapter-order-fix
