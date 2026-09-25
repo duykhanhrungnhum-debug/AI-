@@ -1,0 +1,79 @@
+name: Production Learning Auth Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/production-learning-auth-smoke.trigger"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  auth-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRODUCTION_LEARNING_API: https://rlqqcuuphjmwksanbfml.supabase.co/functions/v1/story-processor-api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Verify GitHub OIDC to production learning API
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import base64
+          import json
+          import os
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          from ai_agent.core.production_learning import HttpProductionLearningStore, ProductionLesson
+
+          audience = "hidden-beyond-story-processor"
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          sep = "&" if "?" in url else "?"
+          req = Request(
+              url + sep + "audience=" + quote(audience),
+              headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+          )
+          with urlopen(req, timeout=30) as response:
+              token = json.loads(response.read().decode("utf-8"))["value"]
+
+          payload_segment = token.split(".")[1]
+          payload_segment += "=" * (-len(payload_segment) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload_segment).decode("utf-8"))
+          safe = {
+              key: claims.get(key)
+              for key in ("repository", "ref", "event_name", "job_workflow_ref", "aud", "iss", "sub")
+          }
+          print("SAFE_OIDC_CLAIMS", json.dumps(safe, sort_keys=True))
+
+          store = HttpProductionLearningStore(
+              base_url=os.environ["PRODUCTION_LEARNING_API"],
+              bearer_token=token,
+          )
+          prior = store.relevant("system-auth-smoke", limit=3)
+          saved = store.record(ProductionLesson(
+              task_type="system-auth-smoke",
+              success=True,
+              lesson="GitHub OIDC can query and record durable production lessons.",
+              config={"workflow":"production-learning-auth-smoke"},
+              metrics={"prior_count":len(prior)},
+              evidence=("query:ok","record:ok"),
+          ))
+          print("PRODUCTION_LEARNING_AUTH_SMOKE_OK", json.dumps(saved.to_dict(), sort_keys=True))
+          PY
