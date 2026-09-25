@@ -187,6 +187,17 @@ def main() -> int:
         max_motion_rounds=positive_int("VIDEO_MOTION_ROUNDS", 2),
         learning_store=learning_store(),
     )
+
+    reuse_keyframes = os.environ.get("VIDEO_REUSE_EXISTING_KEYFRAMES", "").strip() == "1"
+    existing_keyframes = None
+    if reuse_keyframes:
+        paths = sorted(output_dir.glob("scene_*_keyframe.png"))
+        if not paths:
+            raise FileNotFoundError(
+                "VIDEO_REUSE_EXISTING_KEYFRAMES=1 but no scene_*_keyframe.png files exist"
+            )
+        existing_keyframes = tuple(path.read_bytes() for path in paths)
+
     result = pipeline.produce(
         script,
         reference,
@@ -195,6 +206,7 @@ def main() -> int:
             "VIDEO_VISUAL_STYLE",
             "cinematic realistic story film, natural acting, consistent recurring character",
         ).strip(),
+        existing_keyframes=existing_keyframes,
     )
     if not result.media_ready:
         raise RuntimeError("reference motion video pipeline finished without media_ready")
@@ -206,6 +218,7 @@ def main() -> int:
         "keyframe_rounds": result.keyframes.rounds,
         "motion_rounds": result.clips.rounds,
         "motion_model": result.clips.scenes[0].artifact.model if result.clips.scenes else None,
+        "resumed_existing_keyframes": reuse_keyframes,
         "final_video": {
             "path": result.video.path,
             "duration_seconds": result.video.duration_seconds,
