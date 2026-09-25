@@ -120,6 +120,10 @@ def main() -> int:
             "VIDEO_IMAGE_MODEL",
             "stable-diffusion-v1-5/stable-diffusion-v1-5",
         ),
+        ip_adapter_weight=os.environ.get(
+            "VIDEO_IP_ADAPTER_WEIGHT",
+            "ip-adapter-full-face_sd15.bin",
+        ),
         kernel_slug="ai-agent-reference-video-images",
         poll_interval=15,
         max_poll_attempts=120,
