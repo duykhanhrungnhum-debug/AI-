@@ -98,7 +98,7 @@ jobs:
           output = Path(os.environ["OUTPUT_DIR"])
           learning = HttpProductionLearningStore(
               base_url=os.environ["PRODUCTION_LEARNING_API"],
-              bearer_token=oidc_token(),
+              token_provider=oidc_token,
           )
           prior = learning.relevant("reference-character-video", limit=10)
           scale = tuned_reference_scale(prior, base=0.75)
