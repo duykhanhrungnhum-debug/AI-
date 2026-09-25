@@ -162,3 +162,79 @@ def test_reference_scale_learns_from_identity_failures_and_is_bounded():
         for _ in range(10)
     )
     assert tuned_reference_scale(lessons, base=0.75) == 0.92
+
+
+class FailingLearningStore:
+    def relevant(self, task_type, *, limit=10):
+        return ()
+
+    def record(self, lesson):
+        raise RuntimeError("lesson store unavailable")
+
+
+class FailingReferenceImageProvider(FakeReferenceImageProvider):
+    def generate_with_retries(
+        self,
+        requests,
+        *,
+        max_rounds,
+        reference_image=None,
+        reference_scale=0.75,
+    ):
+        request = list(requests)[0]
+        return BatchImageResult((
+            SceneImageResult(
+                scene_id=request.scene_id,
+                artifact=ImageArtifact(
+                    data=b"PNG-failed",
+                    mime_type="image/png",
+                    provider="fake-reference-image",
+                    model="fake",
+                    evidence=(),
+                ),
+                verified=False,
+                issues=("image lacks visual variation",),
+            ),
+        ), rounds=1)
+
+
+def test_successful_media_does_not_silently_drop_learning_failure(tmp_path):
+    pipeline = MediaProductionPipeline(
+        scene_planner=FakeScenePlanner(),
+        image_provider=FakeReferenceImageProvider(),
+        speech_provider=FakeSpeech(),
+        video_builder=FakeVideo(),
+        learning_store=FailingLearningStore(),
+        audio_verifier=FakeAudioVerifier(),
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError, match="production learning persistence failed"):
+        pipeline.produce(
+            "Kịch bản đã được xác minh.",
+            tmp_path,
+            reference_image=b"REFERENCE-CHARACTER",
+        )
+
+
+def test_primary_image_failure_is_preserved_when_learning_also_fails(tmp_path):
+    pipeline = MediaProductionPipeline(
+        scene_planner=FakeScenePlanner(),
+        image_provider=FailingReferenceImageProvider(),
+        speech_provider=FakeSpeech(),
+        video_builder=FakeVideo(),
+        learning_store=FailingLearningStore(),
+        audio_verifier=FakeAudioVerifier(),
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError) as exc:
+        pipeline.produce(
+            "Kịch bản đã được xác minh.",
+            tmp_path,
+            reference_image=b"REFERENCE-CHARACTER",
+        )
+
+    message = str(exc.value)
+    assert "image verification failed for scenes" in message
+    assert "production learning persistence also failed" in message
