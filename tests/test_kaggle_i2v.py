@@ -49,8 +49,8 @@ class FakeWorker:
                     "filename": "scene_0000.mp4",
                     "video_sha256": digest,
                     "input_image_sha256": image_digest,
-                    "width": 512,
-                    "height": 288,
+                    "width": 1024,
+                    "height": 576,
                     "fps": 7.0,
                     "duration_seconds": 2.0,
                     "seed": 7,
@@ -84,9 +84,13 @@ def test_i2v_provider_verifies_motion_and_identity():
     ])
 
     assert result.verified is True
+    assert result.scenes[0].artifact.width == 1024
+    assert result.scenes[0].artifact.height == 576
     evidence = result.scenes[0].artifact.evidence
     assert "last_frame_similarity:0.780000" in evidence
     assert "motion_delta:8.500000" in evidence
+    assert "conditioning_dimensions:512x288" in evidence
+    assert "dimensions:1024x576" in evidence
     assert "gpu:Tesla T4" in evidence
 
 
@@ -135,8 +139,8 @@ def test_i2v_rejects_identity_drift_and_frozen_motion():
         {
             "video_sha256": digest,
             "input_image_sha256": hashlib.sha256(request.image).hexdigest(),
-            "width": 512,
-            "height": 288,
+            "width": 800,
+            "height": 600,
             "duration_seconds": 2.0,
             "first_frame_similarity": 0.80,
             "last_frame_similarity": 0.30,
@@ -147,6 +151,7 @@ def test_i2v_rejects_identity_drift_and_frozen_motion():
     )
     assert any("identity similarity below threshold" in issue for issue in issues)
     assert any("insufficient motion" in issue for issue in issues)
+    assert any("video aspect ratio mismatch" in issue for issue in issues)
 
 
 def test_i2v_request_rejects_empty_image():
