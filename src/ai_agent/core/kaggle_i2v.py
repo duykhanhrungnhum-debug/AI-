@@ -481,7 +481,7 @@ class KaggleBatchImageToVideoProvider:
                 "scenes": reports,
             }}
             Path("/kaggle/working/i2v_batch_report.json").write_text(
-                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+                json.dumps(report, indent=2) + "\\n", encoding="utf-8"
             )
             print("AI_AGENT_I2V_BATCH_OK")
             print(json.dumps(report, indent=2))
