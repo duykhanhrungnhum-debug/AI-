@@ -1,1 +1,1 @@
-reference-motion-video-smoke-v1
+reference-motion-video-smoke-v2-resume-keyframe
