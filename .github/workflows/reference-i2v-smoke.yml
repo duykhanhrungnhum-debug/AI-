@@ -1,0 +1,132 @@
+name: Reference I2V Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/reference-i2v-smoke.trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  i2v-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      OUTPUT_DIR: reference-i2v-smoke-output
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Compile I2V worker
+        run: python -m py_compile src/ai_agent/core/kaggle_i2v.py
+
+      - name: Run real one-scene I2V smoke
+        shell: bash
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+
+          from ai_agent.core.kaggle_i2v import (
+              KaggleBatchImageToVideoProvider,
+              SceneImageToVideoRequest,
+          )
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          reference_url = (
+              "https://huggingface.co/datasets/huggingface/documentation-images/"
+              "resolve/main/diffusers/ip_adapter_einstein_base.png"
+          )
+          with urlopen(reference_url, timeout=60) as response:
+              image = response.read()
+          if len(image) < 10_000:
+              raise RuntimeError("reference image download is unexpectedly small")
+          (output / "input.png").write_bytes(image)
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+              submission_retry_attempts=5,
+              submission_retry_delay_seconds=30,
+          )
+          provider = KaggleBatchImageToVideoProvider(
+              worker=worker,
+              kernel_slug="ai-agent-reference-i2v-smoke",
+              poll_interval=20,
+              max_poll_attempts=180,
+              min_video_bytes=20_000,
+              identity_threshold=0.55,
+              min_motion_delta=1.0,
+          )
+          result = provider.generate_with_retries(
+              [SceneImageToVideoRequest(
+                  scene_id="scene-001",
+                  image=image,
+                  width=512,
+                  height=288,
+                  num_frames=14,
+                  fps=7,
+                  seed=2026092501,
+                  motion_bucket_id=96,
+                  noise_aug_strength=0.02,
+              )],
+              max_rounds=2,
+          )
+          scene = result.scenes[0]
+          (output / "scene-001.mp4").write_bytes(scene.artifact.data)
+
+          report = {
+              "verified": result.verified,
+              "rounds": result.rounds,
+              "issues": list(scene.issues),
+              "duration_seconds": scene.artifact.duration_seconds,
+              "width": scene.artifact.width,
+              "height": scene.artifact.height,
+              "fps": scene.artifact.fps,
+              "evidence": list(scene.artifact.evidence),
+          }
+          (output / "report.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          if not result.verified:
+              raise RuntimeError("I2V smoke verification failed: " + "; ".join(scene.issues))
+          print("AI_AGENT_REFERENCE_I2V_SMOKE_OK")
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload I2V evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-i2v-smoke
+          path: reference-i2v-smoke-output/
+          if-no-files-found: warn
+          retention-days: 7
