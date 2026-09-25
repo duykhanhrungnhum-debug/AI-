@@ -170,6 +170,7 @@ class KaggleBatchImageProvider:
                         f"seed:{entry.get('seed')}",
                         f"pixel_std:{entry.get('pixel_std')}",
                         *((f"identity_score:{float(entry.get('identity_score')):.6f}", f"reference_scale:{float(entry.get('reference_scale')):.3f}") if entry.get("identity_score") is not None else ()),
+                        f"safety_blocked:{bool(entry.get('safety_blocked'))}",
                         f"gpu:{gpu_name}",
                         f"model:{self.model}",
                     ),
@@ -310,6 +311,8 @@ class KaggleBatchImageProvider:
             pixel_std = 0.0
         if pixel_std < self.min_pixel_std:
             issues.append(f"image lacks visual variation: pixel_std={pixel_std:.3f}")
+        if entry.get("safety_blocked") is True:
+            issues.append("safety checker blocked generated image")
         if entry.get("identity_score") is not None:
             try:
                 identity_score = float(entry.get("identity_score"))
@@ -396,7 +399,7 @@ class KaggleBatchImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from PIL import Image
-                from diffusers import StableDiffusionPipeline
+                from diffusers import DDIMScheduler, StableDiffusionPipeline
                 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
             except ImportError:
                 subprocess.check_call([
@@ -407,7 +410,7 @@ class KaggleBatchImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from PIL import Image
-                from diffusers import StableDiffusionPipeline
+                from diffusers import DDIMScheduler, StableDiffusionPipeline
                 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
             if not torch.cuda.is_available():
@@ -418,6 +421,8 @@ class KaggleBatchImageProvider:
                 CONFIG["model"],
                 torch_dtype=torch.float16,
             )
+            if "full-face" in str(CONFIG.get("ip_adapter_weight") or ""):
+                pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
             # Diffusers IP-Adapter installs its own attention processors. Enabling
             # slicing first replaces them with SlicedAttnProcessor and causes
             # load_ip_adapter() to fail because that processor requires slice_size.
@@ -475,6 +480,10 @@ class KaggleBatchImageProvider:
                     generation["ip_adapter_image"] = reference_image
                 result = pipe(**generation)
                 image = result.images[0]
+                safety_blocked = None
+                detected = getattr(result, "nsfw_content_detected", None)
+                if isinstance(detected, (list, tuple)) and detected:
+                    safety_blocked = bool(detected[0])
                 identity_score = None
                 if reference_embedding is not None:
                     identity_score = float(torch.dot(reference_embedding, image_embedding(image)).item())
@@ -498,6 +507,7 @@ class KaggleBatchImageProvider:
                     "pixel_max": float(pixels.max()),
                     "identity_score": identity_score,
                     "reference_scale": float(CONFIG["reference_scale"]) if reference_image is not None else None,
+                    "safety_blocked": safety_blocked,
                 }})
 
             archive_path = Path("/kaggle/working/images.zip")
