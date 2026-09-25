@@ -165,19 +165,22 @@ jobs:
               )
               if not batch.verified:
                   issues = [issue for scene in batch.scenes for issue in scene.issues]
-                  learning.record(ProductionLesson(
-                      task_type="reference-character-video",
-                      success=False,
-                      failure_kind=(
-                          "identity_drift"
-                          if any("identity similarity" in issue for issue in issues)
-                          else "model_output"
-                      ),
-                      lesson="Real reference video smoke failed; adjust only the failed factor on the next run.",
-                      config={"reference_scale": scale},
-                      metrics={"failed_scene_ids": list(batch.failed_scene_ids)},
-                      evidence=tuple(issues[:20]),
-                  ))
+                  try:
+                      learning.record(ProductionLesson(
+                          task_type="reference-character-video",
+                          success=False,
+                          failure_kind=(
+                              "identity_drift"
+                              if any("identity similarity" in issue for issue in issues)
+                              else "model_output"
+                          ),
+                          lesson="Real reference video smoke failed; adjust only the failed factor on the next run.",
+                          config={"reference_scale": scale},
+                          metrics={"failed_scene_ids": list(batch.failed_scene_ids)},
+                          evidence=tuple(issues[:20]),
+                      ))
+                  except Exception as learning_error:
+                      print("LEARNING_RECORD_FAILED", repr(learning_error))
                   raise RuntimeError("reference image verification failed: " + "; ".join(issues))
 
               image_paths = []
