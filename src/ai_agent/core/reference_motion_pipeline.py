@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from hashlib import sha256
+import json
 from pathlib import Path
 from typing import Protocol
 
@@ -12,10 +13,12 @@ from .kaggle_i2v import (
     KaggleBatchImageToVideoProvider,
     SceneImageToVideoRequest,
 )
+from .image_model import ImageArtifact
 from .kaggle_image_batch import (
     BatchImageResult,
     KaggleBatchImageProvider,
     SceneImageRequest,
+    SceneImageResult,
 )
 from .production_learning import ProductionLearningStore, ProductionLesson, tuned_reference_scale
 from .scene_planner import ScenePlanner, VisualScenePlan
@@ -101,6 +104,7 @@ class ReferenceMotionVideoPipeline:
         output_dir: str | Path,
         *,
         visual_style: str = "cinematic realistic",
+        existing_keyframes: tuple[bytes, ...] | None = None,
     ) -> ReferenceMotionVideoResult:
         assert_core_invariants()
         script = verified_script.strip()
@@ -149,12 +153,39 @@ class ReferenceMotionVideoPipeline:
             for scene in scene_plan.scenes
         ]
 
-        keyframes = self.image_provider.generate_with_retries(
-            image_requests,
-            max_rounds=self.max_image_rounds,
-            reference_image=reference_image,
-            reference_scale=reference_scale,
-        )
+        if existing_keyframes is not None:
+            if len(existing_keyframes) != len(scene_plan.scenes):
+                raise ValueError(
+                    "existing_keyframes count must match planned scene count"
+                )
+            resumed = []
+            for scene, data in zip(scene_plan.scenes, existing_keyframes):
+                if not data:
+                    raise ValueError("existing keyframe must not be empty")
+                resumed.append(SceneImageResult(
+                    scene_id=scene.scene_id,
+                    artifact=ImageArtifact(
+                        data=data,
+                        mime_type="image/png",
+                        provider="verified-checkpoint",
+                        model="resumed-keyframe",
+                        evidence=(
+                            "resumed_verified_keyframe:true",
+                            f"image_sha256:{sha256(data).hexdigest()}",
+                            f"reference_scale:{reference_scale:.3f}",
+                        ),
+                    ),
+                    verified=True,
+                    issues=(),
+                ))
+            keyframes = BatchImageResult(tuple(resumed), rounds=0)
+        else:
+            keyframes = self.image_provider.generate_with_retries(
+                image_requests,
+                max_rounds=self.max_image_rounds,
+                reference_image=reference_image,
+                reference_scale=reference_scale,
+            )
         if not keyframes.verified:
             issues = tuple(issue for item in keyframes.scenes for issue in item.issues)
             learning_error = self._record_failure(
@@ -200,6 +231,25 @@ class ReferenceMotionVideoPipeline:
                     seed=self._seed("motion:" + scene.scene_id),
                 )
             )
+
+        checkpoint = {
+            "script_sha256": sha256(script.encode("utf-8")).hexdigest(),
+            "reference_sha256": reference_hash,
+            "reference_scale": reference_scale,
+            "scene_ids": [scene.scene_id for scene in scene_plan.scenes],
+            "keyframes": [
+                {
+                    "path": keyframe_paths[index],
+                    "sha256": sha256(result.artifact.data).hexdigest(),
+                    "evidence": list(result.artifact.evidence),
+                }
+                for index, result in enumerate(keyframes.scenes)
+            ],
+        }
+        (target / "reference_motion_checkpoint.json").write_text(
+            json.dumps(checkpoint, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
         clips = self.motion_provider.generate_with_retries(
             motion_requests,
