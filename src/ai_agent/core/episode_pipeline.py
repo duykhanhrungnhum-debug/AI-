@@ -139,25 +139,33 @@ class MediaProductionPipeline:
                 reference_scale=reference_scale,
             )
         if not image_result.verified:
+            learning_failure = None
             if reference_image is not None:
                 issues = tuple(issue for item in image_result.scenes for issue in item.issues)
-                self._record_learning(ProductionLesson(
-                    task_type="reference-character-video",
-                    success=False,
-                    failure_kind=(
-                        "identity_drift"
-                        if any("identity similarity" in issue for issue in issues)
-                        else "model_output"
-                    ),
-                    lesson="Reference-conditioned scene generation failed verification; tune only failed factors next run.",
-                    config={"reference_scale": reference_scale},
-                    metrics={"failed_scene_ids": list(image_result.failed_scene_ids)},
-                    evidence=issues[:20],
-                ))
-            raise RuntimeError(
-                "image verification failed for scenes: "
-                + ", ".join(image_result.failed_scene_ids)
-            )
+                try:
+                    self._record_learning(ProductionLesson(
+                        task_type="reference-character-video",
+                        success=False,
+                        failure_kind=(
+                            "safety_blocked"
+                            if any("safety checker blocked" in issue for issue in issues)
+                            else (
+                                "identity_drift"
+                                if any("identity similarity" in issue for issue in issues)
+                                else "model_output"
+                            )
+                        ),
+                        lesson="Reference-conditioned scene generation failed verification; tune only failed factors next run.",
+                        config={"reference_scale": reference_scale},
+                        metrics={"failed_scene_ids": list(image_result.failed_scene_ids)},
+                        evidence=issues[:20],
+                    ))
+                except Exception as exc:
+                    learning_failure = str(exc)
+            message = "image verification failed for scenes: " + ", ".join(image_result.failed_scene_ids)
+            if learning_failure:
+                message += "; production learning persistence also failed: " + learning_failure
+            raise RuntimeError(message)
 
         image_paths: list[str] = []
         image_evidence: list[str] = []
@@ -242,8 +250,8 @@ class MediaProductionPipeline:
             return
         try:
             self.learning_store.record(lesson)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"production learning persistence failed: {exc}") from exc
 
     @staticmethod
     def _seed(scene_id: str) -> int:
