@@ -145,4 +145,4 @@ def test_reference_worker_does_not_enable_attention_slicing_before_ip_adapter():
     conditional_at = source.index('if not CONFIG.get("reference_b64"):')
 
     assert conditional_at < slicing_at < load_at
-    assert "SlicedAttnProcessor" not in source
+    assert source[conditional_at:load_at].count("pipe.enable_attention_slicing()") == 1
