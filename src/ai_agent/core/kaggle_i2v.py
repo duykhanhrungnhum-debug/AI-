@@ -174,6 +174,7 @@ class KaggleBatchImageToVideoProvider:
                         f"scene_id:{request.scene_id}",
                         f"video_sha256:{digest}",
                         f"input_image_sha256:{sha256(request.image).hexdigest()}",
+                        f"conditioning_dimensions:{request.width}x{request.height}",
                         f"dimensions:{entry.get('width')}x{entry.get('height')}",
                         f"duration_seconds:{float(entry.get('duration_seconds', 0) or 0):.3f}",
                         f"fps:{float(entry.get('fps', 0) or 0):.3f}",
@@ -277,10 +278,17 @@ class KaggleBatchImageToVideoProvider:
             issues.append("video hash mismatch")
         if entry.get("input_image_sha256") != sha256(request.image).hexdigest():
             issues.append("input image hash mismatch")
-        if int(entry.get("width", 0) or 0) != request.width:
-            issues.append("video width mismatch")
-        if int(entry.get("height", 0) or 0) != request.height:
-            issues.append("video height mismatch")
+        width = int(entry.get("width", 0) or 0)
+        height = int(entry.get("height", 0) or 0)
+        if width <= 0 or height <= 0:
+            issues.append("video dimensions are invalid")
+        else:
+            expected_ratio = request.width / request.height
+            actual_ratio = width / height
+            if abs(actual_ratio - expected_ratio) > 0.02:
+                issues.append(
+                    f"video aspect ratio mismatch: expected {expected_ratio:.4f}, got {actual_ratio:.4f}"
+                )
         first_similarity = float(entry.get("first_frame_similarity", 0) or 0)
         last_similarity = float(entry.get("last_frame_similarity", 0) or 0)
         if min(first_similarity, last_similarity) < self.identity_threshold:
@@ -384,9 +392,10 @@ class KaggleBatchImageToVideoProvider:
             ], check=True)
 
             import numpy as np
+            import imageio_ffmpeg
             import torch
             import torch.nn.functional as F
-            from PIL import Image
+            from PIL import Image, ImageOps
             from diffusers import StableVideoDiffusionPipeline
             from diffusers.utils import export_to_video
             from transformers import CLIPImageProcessor, CLIPVisionModel
@@ -417,7 +426,13 @@ class KaggleBatchImageToVideoProvider:
                 if sha256(raw).hexdigest() != scene["input_image_sha256"]:
                     raise RuntimeError("input image checksum mismatch")
                 image = Image.open(BytesIO(raw)).convert("RGB")
-                image = image.resize((int(scene["width"]), int(scene["height"])), Image.Resampling.LANCZOS)
+                image = ImageOps.pad(
+                    image,
+                    (int(scene["width"]), int(scene["height"])),
+                    method=Image.Resampling.LANCZOS,
+                    color=(0, 0, 0),
+                    centering=(0.5, 0.5),
+                )
                 generator = torch.Generator(device="cpu").manual_seed(int(scene["seed"]))
                 frames = pipe(
                     image,
@@ -445,15 +460,23 @@ class KaggleBatchImageToVideoProvider:
                 ).mean())
 
                 data = path.read_bytes()
+                reader = imageio_ffmpeg.read_frames(str(path), pix_fmt="rgb24")
+                metadata = next(reader)
+                reader.close()
+                size = metadata.get("size") or (0, 0)
+                actual_fps = float(metadata.get("fps") or scene["fps"])
+                duration = float(metadata.get("duration") or (len(frames) / int(scene["fps"])))
                 reports.append({{
                     "scene_id": scene["scene_id"],
                     "filename": filename,
                     "video_sha256": sha256(data).hexdigest(),
                     "input_image_sha256": scene["input_image_sha256"],
-                    "width": int(scene["width"]),
-                    "height": int(scene["height"]),
-                    "fps": float(scene["fps"]),
-                    "duration_seconds": float(len(frames) / int(scene["fps"])),
+                    "conditioning_width": int(scene["width"]),
+                    "conditioning_height": int(scene["height"]),
+                    "width": int(size[0]),
+                    "height": int(size[1]),
+                    "fps": actual_fps,
+                    "duration_seconds": duration,
                     "seed": int(scene["seed"]),
                     "motion_bucket_id": int(scene["motion_bucket_id"]),
                     "noise_aug_strength": float(scene["noise_aug_strength"]),
