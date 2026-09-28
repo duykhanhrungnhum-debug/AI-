@@ -69,7 +69,8 @@ class KaggleBatchImageProvider:
     model: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
     ip_adapter_model: str = "h94/IP-Adapter"
     ip_adapter_weight: str = "ip-adapter_sd15.bin"
-    identity_threshold: float = 0.40
+    identity_threshold: float = 0.60
+    prompt_alignment_threshold: float = 0.22
     kernel_slug: str = "ai-agent-image-batch"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
@@ -89,6 +90,8 @@ class KaggleBatchImageProvider:
             raise ValueError("inference_steps and min_pixel_std must be valid")
         if not -1.0 <= self.identity_threshold <= 1.0:
             raise ValueError("identity_threshold must be in [-1, 1]")
+        if not -1.0 <= self.prompt_alignment_threshold <= 1.0:
+            raise ValueError("prompt_alignment_threshold must be in [-1, 1]")
 
     def generate_batch(
         self,
@@ -170,6 +173,7 @@ class KaggleBatchImageProvider:
                         f"seed:{entry.get('seed')}",
                         f"pixel_std:{entry.get('pixel_std')}",
                         *((f"identity_score:{float(entry.get('identity_score')):.6f}", f"reference_scale:{float(entry.get('reference_scale')):.3f}") if entry.get("identity_score") is not None else ()),
+                        *((f"prompt_alignment_score:{float(entry.get('prompt_alignment_score')):.6f}",) if entry.get("prompt_alignment_score") is not None else ()),
                         f"safety_blocked:{bool(entry.get('safety_blocked'))}",
                         f"gpu:{gpu_name}",
                         f"model:{self.model}",
@@ -280,6 +284,13 @@ class KaggleBatchImageProvider:
             )
             negatives.extend(("different person", "changed face", "face drift", "identity drift"))
 
+        if "prompt alignment" in issue_text:
+            refinements.append(
+                "STRICT SCENE MATCH: depict exactly the requested subject, action, location, objects and time of day; "
+                "do not add unrelated people or events"
+            )
+            negatives.extend(("unrelated scene", "wrong location", "unrequested people", "wrong action"))
+
         if "duplicate image" in issue_text or "retry loop" in issue_text:
             refinements.append(
                 "Use a clearly different pose, staging or camera framing while preserving the locked identity "
@@ -385,6 +396,15 @@ class KaggleBatchImageProvider:
                 issues.append(
                     f"identity similarity below threshold: {identity_score:.4f} < {self.identity_threshold:.4f}"
                 )
+
+        try:
+            prompt_alignment = float(entry.get("prompt_alignment_score"))
+        except (TypeError, ValueError):
+            prompt_alignment = -1.0
+        if prompt_alignment < self.prompt_alignment_threshold:
+            issues.append(
+                f"prompt alignment below threshold: {prompt_alignment:.4f} < {self.prompt_alignment_threshold:.4f}"
+            )
         return issues
 
     @staticmethod
@@ -427,6 +447,7 @@ class KaggleBatchImageProvider:
             "reference_sha256": sha256(reference_image).hexdigest() if reference_image else None,
             "reference_scale": reference_scale,
             "identity_threshold": self.identity_threshold,
+            "prompt_alignment_threshold": self.prompt_alignment_threshold,
             "inference_steps": self.inference_steps,
             "guidance_scale": self.guidance_scale,
             "scenes": [
@@ -463,7 +484,7 @@ class KaggleBatchImageProvider:
                 import torch.nn.functional as F
                 from PIL import Image
                 from diffusers import DDIMScheduler, StableDiffusionPipeline
-                from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+                from transformers import CLIPModel, CLIPProcessor
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
@@ -474,7 +495,7 @@ class KaggleBatchImageProvider:
                 import torch.nn.functional as F
                 from PIL import Image
                 from diffusers import DDIMScheduler, StableDiffusionPipeline
-                from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+                from transformers import CLIPModel, CLIPProcessor
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
@@ -497,8 +518,20 @@ class KaggleBatchImageProvider:
 
             reference_image = None
             reference_embedding = None
-            clip_processor = None
-            clip_model = None
+            clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").eval()
+
+            def image_embedding(image):
+                values = clip_processor(images=image, return_tensors="pt")
+                with torch.no_grad():
+                    vector = clip_model.get_image_features(**values)[0].float()
+                return F.normalize(vector, dim=0)
+
+            def text_embedding(text):
+                values = clip_processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+                with torch.no_grad():
+                    vector = clip_model.get_text_features(**values)[0].float()
+                return F.normalize(vector, dim=0)
 
             if CONFIG.get("reference_b64"):
                 reference_bytes = base64.b64decode(CONFIG["reference_b64"])
@@ -511,17 +544,6 @@ class KaggleBatchImageProvider:
                     weight_name=CONFIG["ip_adapter_weight"],
                 )
                 pipe.set_ip_adapter_scale(float(CONFIG["reference_scale"]))
-                clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
-                clip_model = CLIPVisionModelWithProjection.from_pretrained(
-                    "openai/clip-vit-base-patch32"
-                ).eval()
-
-                def image_embedding(image):
-                    values = clip_processor(images=image, return_tensors="pt").pixel_values
-                    with torch.no_grad():
-                        vector = clip_model(values).image_embeds[0].float()
-                    return F.normalize(vector, dim=0)
-
                 reference_embedding = image_embedding(reference_image)
 
             output_dir = Path("/kaggle/working/batch_images")
@@ -547,9 +569,13 @@ class KaggleBatchImageProvider:
                 detected = getattr(result, "nsfw_content_detected", None)
                 if isinstance(detected, (list, tuple)) and detected:
                     safety_blocked = bool(detected[0])
+                generated_embedding = image_embedding(image)
                 identity_score = None
                 if reference_embedding is not None:
-                    identity_score = float(torch.dot(reference_embedding, image_embedding(image)).item())
+                    identity_score = float(torch.dot(reference_embedding, generated_embedding).item())
+                prompt_alignment_score = float(
+                    torch.dot(text_embedding(scene["prompt"]), generated_embedding).item()
+                )
                 filename = f"scene_{{index:04d}}.png"
                 path = output_dir / filename
                 image.save(path, format="PNG")
@@ -569,6 +595,7 @@ class KaggleBatchImageProvider:
                     "pixel_min": float(pixels.min()),
                     "pixel_max": float(pixels.max()),
                     "identity_score": identity_score,
+                    "prompt_alignment_score": prompt_alignment_score,
                     "reference_scale": float(CONFIG["reference_scale"]) if reference_image is not None else None,
                     "safety_blocked": safety_blocked,
                 }})
