@@ -116,6 +116,59 @@ STYLE={
     "min_pause_between_cues":0.08,
 }
 
+HY_MT2_BALANCED_MODEL="tencent/Hy-MT2-7B"
+HY_MT2_MAX_MODEL="tencent/Hy-MT2-30B-A3B"
+# Tencent's official 30B-A3B Transformers path uses bfloat16. Keep a conservative
+# memory floor so the production worker never OOMs a small Kaggle GPU merely
+# because "maximum" quality was requested. T4/16GB stays on the proven 7B NF4 path.
+HY_MT2_MAX_MIN_TOTAL_VRAM_GB=70.0
+
+def select_translation_model(job:dict,torch_module)->dict:
+    """Choose the strongest Hy-MT2 model that the current GPU can safely host."""
+    requested=str(job.get("translation_model") or job.get("translation_quality_mode") or "auto").strip()
+    requested_low=requested.casefold()
+    total_vram_gb=0.0
+    if torch_module.cuda.is_available():
+        total_vram_gb=sum(
+            float(torch_module.cuda.get_device_properties(i).total_memory)
+            for i in range(torch_module.cuda.device_count())
+        )/(1024.0**3)
+
+    explicit_model=requested if "/" in requested else ""
+    wants_max=requested_low in {"maximum","max","30b","30b-a3b"}
+    wants_balanced=requested_low in {"balanced","7b","quality"}
+
+    if explicit_model:
+        model=explicit_model
+        load_mode="bf16" if "30B-A3B" in model else "nf4"
+        if "30B-A3B" in model and total_vram_gb<HY_MT2_MAX_MIN_TOTAL_VRAM_GB:
+            model=HY_MT2_BALANCED_MODEL
+            load_mode="nf4"
+            reason="explicit_30b_fell_back_for_vram"
+        else:
+            reason="explicit_model"
+    elif wants_max or (requested_low=="auto" and total_vram_gb>=HY_MT2_MAX_MIN_TOTAL_VRAM_GB):
+        if total_vram_gb>=HY_MT2_MAX_MIN_TOTAL_VRAM_GB:
+            model=HY_MT2_MAX_MODEL
+            load_mode="bf16"
+            reason="strongest_model_fits_gpu"
+        else:
+            model=HY_MT2_BALANCED_MODEL
+            load_mode="nf4"
+            reason="maximum_requested_but_vram_insufficient"
+    else:
+        model=HY_MT2_BALANCED_MODEL
+        load_mode="nf4"
+        reason="balanced_requested" if wants_balanced else "auto_small_gpu"
+
+    return {
+        "model":model,
+        "load_mode":load_mode,
+        "requested":requested,
+        "total_vram_gb":round(total_vram_gb,2),
+        "reason":reason,
+    }
+
 def post(path:str,payload:dict)->dict:
     data=json.dumps(payload,ensure_ascii=False).encode()
     token_header="x-bot2-token" if BOT2_MODE else "x-job-token"
@@ -1366,7 +1419,9 @@ def main()->None:
     fallback_segments=0
     structural_rescue_segments=0
     fast_path_used=False
-    primary_model="tencent/Hy-MT2-7B"
+    model_choice=select_translation_model(JOB,torch)
+    primary_model=str(model_choice["model"])
+    translation_load_mode=str(model_choice["load_mode"])
 
     if WORKER_PHASE=="translation_only" and resume_cursor==len(segments) and len(translated)==len(segments):
         for seg in segments:
@@ -1395,24 +1450,38 @@ def main()->None:
     if device!="cuda":
         raise RuntimeError("Hidden Beyond production translation requires Kaggle GPU")
 
-    heartbeat("translating",f"Loading {primary_model}; translating {len(segments)} segments")
+    heartbeat(
+        "translating",
+        f"Loading {primary_model} mode={translation_load_mode} "
+        f"vram={model_choice['total_vram_gb']}GB reason={model_choice['reason']}; "
+        f"translating {len(segments)} segments",
+    )
     tok=AutoTokenizer.from_pretrained(primary_model,trust_remote_code=True)
     tok.padding_side="left"
     if tok.pad_token_id is None:
         tok.pad_token=tok.eos_token
-    quant_config=BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-    )
-    model=AutoModelForCausalLM.from_pretrained(
-        primary_model,
-        quantization_config=quant_config,
-        device_map="auto",
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
-    )
+    if translation_load_mode=="bf16":
+        model=AutoModelForCausalLM.from_pretrained(
+            primary_model,
+            dtype=torch.bfloat16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
+    else:
+        quant_config=BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+        model=AutoModelForCausalLM.from_pretrained(
+            primary_model,
+            quantization_config=quant_config,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
     model.eval()
 
     by_index={s["index"]:s for s in segments}
@@ -1514,7 +1583,7 @@ def main()->None:
         return bool(translation_review_reasons(value,source))
 
     hard_invalid=set(hard_reasons)
-    batch_size=12
+    batch_size=2 if primary_model==HY_MT2_MAX_MODEL else 12
     cursor=resume_cursor
     last_checkpoint_cursor=resume_cursor
     with torch.inference_mode():
@@ -1572,7 +1641,7 @@ def main()->None:
             elapsed=max(0.001,time.monotonic()-translation_started)
             heartbeat(
                 "translating",
-                f"Hy-MT2 {cursor}/{len(segments)} ({cursor*100.0/len(segments):.1f}%); "
+                f"{primary_model.split('/')[-1]} {cursor}/{len(segments)} ({cursor*100.0/len(segments):.1f}%); "
                 f"{cursor/elapsed:.1f} seg/s; review={len(review_ids)} hard={len(hard_invalid)}",
             )
 
@@ -1753,6 +1822,8 @@ def main()->None:
         extra_payload={
             "translated_title":translated_title,
             "voice_name":"Ngọc Linh",
+            "translation_model":primary_model,
+            "translation_model_selection":model_choice,
             "segments_data":[{
                 "index":seg["index"],"start":round(float(seg["start"]),3),"end":round(float(seg["end"]),3),
                 "text":seg["text"],"vi":seg["vi"],"tts_slot":round(float(seg["tts_slot"]),3),
@@ -1785,6 +1856,8 @@ def main()->None:
         "translated_title":translated_title,
         "segments":len(segments),
         "translation_model":primary_model,
+        "translation_model_selection":model_choice,
+        "translation_engine":"hy-mt2-auto-strongest-v1",
         "translation_profile":translation_profile,
         "translation_editor":"not_used",
         "transcript_source":transcript_source,
