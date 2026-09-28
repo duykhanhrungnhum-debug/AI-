@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ast
 import json
 
 from .invariants import assert_core_invariants
@@ -80,10 +81,7 @@ class ScenePlanner:
             if lines and lines[-1].strip() == fence:
                 lines = lines[:-1]
             raw = "\n".join(lines).strip()
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError("scene plan must be valid JSON") from exc
+        data = self._parse_plan_payload(raw)
         if not isinstance(data, dict) or not isinstance(data.get("scenes"), list):
             raise ValueError("scene plan must contain a scenes array")
 
@@ -145,6 +143,27 @@ class ScenePlanner:
                 )
             )
         return VisualScenePlan(tuple(scenes), continuity_bible=continuity_bible)
+
+    @staticmethod
+    def _parse_plan_payload(raw: str) -> object:
+        candidates = [raw]
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            extracted = raw[start : end + 1]
+            if extracted != raw:
+                candidates.append(extracted)
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+            try:
+                return ast.literal_eval(candidate)
+            except (ValueError, SyntaxError) as exc:
+                last_error = exc
+        raise ValueError("scene plan must be valid JSON-like object") from last_error
 
     @staticmethod
     def _clean(value: object) -> str:
