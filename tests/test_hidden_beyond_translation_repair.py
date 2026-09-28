@@ -114,7 +114,7 @@ def test_worker_prefers_cpu_acquired_captions():
 
 def test_translation_batch_prefers_gpu_throughput_without_quality_change():
     source = WORKER.read_text(encoding="utf-8")
-    assert "batch_size=12" in source
+    assert "batch_size=2 if primary_model==HY_MT2_MAX_MODEL else 12" in source
     assert "if batch_size<=4:" in source
     assert "batch_size=max(4,batch_size//2)" in source
     assert "do_sample=False" in source
