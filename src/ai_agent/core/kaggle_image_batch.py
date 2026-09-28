@@ -484,7 +484,7 @@ class KaggleBatchImageProvider:
                 import torch.nn.functional as F
                 from PIL import Image
                 from diffusers import DDIMScheduler, StableDiffusionPipeline
-                from transformers import CLIPModel, CLIPProcessor
+                from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
@@ -495,7 +495,7 @@ class KaggleBatchImageProvider:
                 import torch.nn.functional as F
                 from PIL import Image
                 from diffusers import DDIMScheduler, StableDiffusionPipeline
-                from transformers import CLIPModel, CLIPProcessor
+                from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
@@ -518,19 +518,27 @@ class KaggleBatchImageProvider:
 
             reference_image = None
             reference_embedding = None
-            clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-            clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").eval()
+            clip_image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+            clip_vision = CLIPVisionModelWithProjection.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            ).eval()
+            clip_text = CLIPTextModelWithProjection.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            ).eval()
 
             def image_embedding(image):
-                values = clip_processor(images=image, return_tensors="pt")
+                values = clip_image_processor(images=image, return_tensors="pt").pixel_values
                 with torch.no_grad():
-                    vector = clip_model.get_image_features(**values)[0].float().reshape(-1)
+                    vector = clip_vision(pixel_values=values).image_embeds[0].float()
                 return F.normalize(vector, dim=0)
 
             def text_embedding(text):
-                values = clip_processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+                values = clip_tokenizer(
+                    [text], return_tensors="pt", padding=True, truncation=True
+                )
                 with torch.no_grad():
-                    vector = clip_model.get_text_features(**values)[0].float().reshape(-1)
+                    vector = clip_text(**values).text_embeds[0].float()
                 return F.normalize(vector, dim=0)
 
             if CONFIG.get("reference_b64"):
