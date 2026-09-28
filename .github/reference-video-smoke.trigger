@@ -1,1 +1,1 @@
-reference-character-video-smoke-v6-strict-visual-gates
+reference-character-video-smoke-v7-clip-shape-fix
