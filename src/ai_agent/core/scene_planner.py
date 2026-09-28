@@ -190,7 +190,7 @@ class ScenePlanner:
         """Use a non-JSON English visual fallback; fail fast rather than feed Vietnamese to SD1.5."""
         parts = [
             item.strip()
-            for item in re.split(r"(?<=[.!?])\\s+", script.strip())
+            for item in re.split(r"(?<=[.!?])\s+", script.strip())
             if item.strip()
         ]
         if not parts:
