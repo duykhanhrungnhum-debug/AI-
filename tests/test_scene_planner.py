@@ -111,3 +111,34 @@ def test_scene_planner_supports_vertical_composition():
 
     assert "9:16 vertical composition" in plan.scenes[0].image_prompt
     assert "9:16 vertical" in model.prompts[0]
+
+
+def test_scene_planner_builds_continuity_bible_and_structured_shot_fields():
+    model = FakeModel({
+        "continuity_bible": "Lan: black bob haircut, beige coat; old house; cool moonlight; amber practical lamps",
+        "scenes": [
+            {
+                "scene_id": "s1",
+                "narration": "Lan bước qua cửa.",
+                "image_prompt": "Lan enters the old house",
+                "negative_prompt": "",
+                "motion_prompt": "Lan takes two cautious steps; curtains move slightly",
+                "continuity_anchor": "same beige coat, same old-house foyer",
+                "camera": "slow shoulder-height push-in",
+                "lighting": "cool moonlight with warm lamp fill",
+                "palette": "navy, amber, beige",
+            }
+        ],
+    })
+
+    plan = ScenePlanner(model).plan("Lan bước vào căn nhà cũ.")
+
+    scene = plan.scenes[0]
+    assert plan.continuity_bible.startswith("Lan:")
+    assert scene.motion_prompt.startswith("Lan takes")
+    assert scene.continuity_anchor.startswith("same beige")
+    assert "Continuity bible:" in scene.image_prompt
+    assert "Camera: slow shoulder-height push-in" in scene.image_prompt
+    assert "Palette: navy, amber, beige" in scene.image_prompt
+    assert "continuity_bible" in model.prompts[0]
+    assert "WHAT STAYS" in model.prompts[0]
