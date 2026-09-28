@@ -1,1 +1,1 @@
-reference-motion-production-smoke-v1
+reference-motion-production-smoke-v2-agentic-continuity
