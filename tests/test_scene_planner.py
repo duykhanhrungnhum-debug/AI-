@@ -142,3 +142,50 @@ def test_scene_planner_builds_continuity_bible_and_structured_shot_fields():
     assert "Palette: navy, amber, beige" in scene.image_prompt
     assert "continuity_bible" in model.prompts[0]
     assert "WHAT STAYS" in model.prompts[0]
+
+
+def test_scene_planner_repairs_malformed_json_before_fallback():
+    valid = {
+        "continuity_bible": "same scholar, same old library",
+        "scenes": [{
+            "scene_id": "s1",
+            "narration": "Ông mở tấm bản đồ cũ.",
+            "image_prompt": "elderly scholar opens an antique map",
+            "negative_prompt": "",
+            "motion_prompt": "hands unfold the map slowly",
+        }],
+    }
+
+    class RepairingModel:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse('{"continuity_bible":"x","scenes":[{"scene_id":"s1", bad":1}]}', "fake", "model")
+            return ModelResponse(json.dumps(valid), "fake", "model")
+
+    model = RepairingModel()
+    plan = ScenePlanner(model).plan("Ông mở tấm bản đồ cũ.")
+
+    assert model.calls == 2
+    assert plan.scenes[0].scene_id == "s1"
+    assert "antique map" in plan.scenes[0].image_prompt
+
+
+def test_scene_planner_uses_deterministic_fallback_if_repair_also_fails():
+    class BrokenModel:
+        def generate(self, prompt):
+            return ModelResponse('{"scenes":[ bad json }', "fake", "model")
+
+    plan = ScenePlanner(BrokenModel(), max_scenes=2).plan(
+        "Một học giả bước vào thư viện. Ông mở tấm bản đồ. Đèn vàng rung nhẹ."
+    )
+
+    assert len(plan.scenes) == 2
+    assert plan.scenes[0].scene_id == "fallback-001"
+    assert "Một học giả bước vào thư viện." in plan.scenes[0].narration
+    assert "Ông mở tấm bản đồ." in plan.scenes[1].narration
+    assert "Đèn vàng rung nhẹ." in plan.scenes[1].narration
+    assert plan.continuity_bible
