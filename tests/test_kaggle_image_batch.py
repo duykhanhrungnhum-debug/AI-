@@ -62,6 +62,7 @@ class FakeWorker:
             "height": 432,
             "seed": 10,
             "pixel_std": 1.0 if self.low_variation else 40.0,
+            "prompt_alignment_score": 0.35,
         }]
         if "scene-2" in source:
             scenes.append({
@@ -72,6 +73,7 @@ class FakeWorker:
                 "height": 432,
                 "seed": 20,
                 "pixel_std": 35.0,
+                "prompt_alignment_score": 0.34,
             })
         return json.dumps({
             "model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
@@ -159,6 +161,7 @@ def test_safety_checker_block_is_reported():
             "image_sha256": digest,
             "pixel_std": 40.0,
             "safety_blocked": True,
+            "prompt_alignment_score": 0.35,
         },
         image,
         digest,
@@ -202,3 +205,37 @@ def test_retry_turns_safety_failure_into_non_graphic_refinement():
 
     assert refined.seed == 5
     assert "non-graphic and safe" in refined.prompt
+
+
+def test_prompt_alignment_below_threshold_is_rejected():
+    provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
+    request = SceneImageRequest("scene-1", "elderly scholar in an old library", seed=10)
+    image = png_bytes()
+    digest = hashlib.sha256(image).hexdigest()
+
+    issues = provider._verify_scene(
+        request,
+        {
+            "image_sha256": digest,
+            "pixel_std": 40.0,
+            "safety_blocked": False,
+            "prompt_alignment_score": 0.10,
+        },
+        image,
+        digest,
+    )
+
+    assert any("prompt alignment below threshold" in issue for issue in issues)
+
+
+def test_worker_computes_prompt_alignment_with_clip_text_and_image():
+    provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
+    source = provider._build_worker_source(
+        (SceneImageRequest("scene-1", "elderly scholar in an old library", seed=1),),
+        reference_image=b"reference-image-bytes",
+        reference_scale=0.75,
+    )
+
+    assert "CLIPModel" in source
+    assert "get_text_features" in source
+    assert "prompt_alignment_score" in source
