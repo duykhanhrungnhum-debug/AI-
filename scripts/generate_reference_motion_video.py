@@ -139,7 +139,8 @@ def main() -> int:
         max_poll_attempts=160,
         inference_steps=positive_int("VIDEO_IMAGE_STEPS", 12),
         guidance_scale=positive_float("VIDEO_IMAGE_GUIDANCE", 7.0),
-        identity_threshold=positive_float("VIDEO_KEYFRAME_IDENTITY_THRESHOLD", 0.40),
+        identity_threshold=positive_float("VIDEO_KEYFRAME_IDENTITY_THRESHOLD", 0.60),
+        prompt_alignment_threshold=positive_float("VIDEO_PROMPT_ALIGNMENT_THRESHOLD", 0.22),
     )
 
     motion_provider = KaggleBatchImageToVideoProvider(
@@ -178,8 +179,8 @@ def main() -> int:
             fps=positive_int("VIDEO_FINAL_FPS", 30),
             timeout=1800,
         ),
-        image_width=positive_int("VIDEO_IMAGE_WIDTH", 512),
-        image_height=positive_int("VIDEO_IMAGE_HEIGHT", 288),
+        image_width=positive_int("VIDEO_IMAGE_WIDTH", 768),
+        image_height=positive_int("VIDEO_IMAGE_HEIGHT", 432),
         motion_frames=positive_int("VIDEO_MOTION_FRAMES", 14),
         motion_fps=positive_int("VIDEO_MOTION_FPS", 7),
         composition=os.environ.get("VIDEO_COMPOSITION", "16:9 widescreen").strip(),
