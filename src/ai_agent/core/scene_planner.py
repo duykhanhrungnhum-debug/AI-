@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ast
 import json
+import re
 
 from .invariants import assert_core_invariants
 from .model import ModelProvider
@@ -81,9 +82,34 @@ class ScenePlanner:
             if lines and lines[-1].strip() == fence:
                 lines = lines[:-1]
             raw = "\n".join(lines).strip()
-        data = self._parse_plan_payload(raw)
+        try:
+            data = self._parse_plan_payload(raw)
+        except ValueError:
+            repair_prompt = (
+                "SCENE_PLAN_JSON_REPAIR\n"
+                "Repair ONLY the syntax of the payload below. Preserve its facts and meaning. "
+                "Return one valid JSON object only, with no Markdown and no commentary. "
+                "Required top-level keys: continuity_bible and scenes.\n"
+                f"PAYLOAD:\n{raw}"
+            )
+            repaired = self._strip_fence(self.provider.generate(repair_prompt).text.strip())
+            try:
+                data = self._parse_plan_payload(repaired)
+            except ValueError:
+                data = self._fallback_plan_payload(
+                    script,
+                    visual_style=visual_style,
+                    composition=composition,
+                    max_scenes=self.max_scenes,
+                )
+
         if not isinstance(data, dict) or not isinstance(data.get("scenes"), list):
-            raise ValueError("scene plan must contain a scenes array")
+            data = self._fallback_plan_payload(
+                script,
+                visual_style=visual_style,
+                composition=composition,
+                max_scenes=self.max_scenes,
+            )
 
         raw_scenes = data["scenes"]
         if not raw_scenes:
@@ -143,6 +169,59 @@ class ScenePlanner:
                 )
             )
         return VisualScenePlan(tuple(scenes), continuity_bible=continuity_bible)
+
+    @staticmethod
+    def _strip_fence(raw: str) -> str:
+        fence = chr(96) * 3
+        if raw.startswith(fence):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith(fence):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == fence:
+                lines = lines[:-1]
+            return "\n".join(lines).strip()
+        return raw.strip()
+
+    @staticmethod
+    def _fallback_plan_payload(
+        script: str,
+        *,
+        visual_style: str,
+        composition: str,
+        max_scenes: int,
+    ) -> dict:
+        """Build a deterministic safe plan so malformed model JSON never blocks media generation."""
+        parts = [
+            item.strip()
+            for item in re.split(r"(?<=[.!?])\s+", script.strip())
+            if item.strip()
+        ]
+        if not parts:
+            parts = [script.strip()]
+
+        if len(parts) > max_scenes:
+            head = parts[: max_scenes - 1]
+            tail = " ".join(parts[max_scenes - 1 :])
+            parts = [*head, tail]
+
+        continuity = (
+            "Preserve the same recurring character identity, age, hair, body proportions, wardrobe, "
+            "important objects, location layout, time of day, lighting direction and color palette across scenes."
+        )
+        scenes = []
+        for index, narration in enumerate(parts, start=1):
+            scenes.append({
+                "scene_id": f"fallback-{index:03d}",
+                "narration": narration,
+                "image_prompt": f"{narration}. {visual_style}, {composition} composition",
+                "negative_prompt": "text, watermark, logo, blurry, low quality, identity drift, changed face",
+                "motion_prompt": "subtle natural subject movement and gentle environmental motion",
+                "continuity_anchor": continuity,
+                "camera": "stable cinematic framing with subtle physically plausible movement",
+                "lighting": "preserve lighting direction and exposure between adjacent shots",
+                "palette": "preserve the established scene palette",
+            })
+        return {"continuity_bible": continuity, "scenes": scenes}
 
     @staticmethod
     def _parse_plan_payload(raw: str) -> object:
