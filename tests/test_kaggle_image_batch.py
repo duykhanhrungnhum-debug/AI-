@@ -236,12 +236,14 @@ def test_worker_computes_prompt_alignment_with_clip_text_and_image():
         reference_scale=0.75,
     )
 
-    assert "CLIPModel" in source
-    assert "get_text_features" in source
+    assert "CLIPVisionModelWithProjection" in source
+    assert "CLIPTextModelWithProjection" in source
+    assert ".image_embeds[0].float()" in source
+    assert ".text_embeds[0].float()" in source
     assert "prompt_alignment_score" in source
 
 
-def test_worker_flattens_clip_embeddings_before_dot_product():
+def test_worker_uses_shared_clip_projection_space_for_dot_product():
     provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
     source = provider._build_worker_source(
         (SceneImageRequest("scene-1", "elderly scholar in an old library", seed=1),),
@@ -249,5 +251,5 @@ def test_worker_flattens_clip_embeddings_before_dot_product():
         reference_scale=0.75,
     )
 
-    assert "get_image_features(**values)[0].float().reshape(-1)" in source
-    assert "get_text_features(**values)[0].float().reshape(-1)" in source
+    assert "clip_vision(pixel_values=values).image_embeds[0].float()" in source
+    assert "clip_text(**values).text_embeds[0].float()" in source
