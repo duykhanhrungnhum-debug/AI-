@@ -96,19 +96,17 @@ class ScenePlanner:
             try:
                 data = self._parse_plan_payload(repaired)
             except ValueError:
-                data = self._fallback_plan_payload(
+                data = self._fallback_plan_with_provider(
                     script,
                     visual_style=visual_style,
                     composition=composition,
-                    max_scenes=self.max_scenes,
                 )
 
         if not isinstance(data, dict) or not isinstance(data.get("scenes"), list):
-            data = self._fallback_plan_payload(
+            data = self._fallback_plan_with_provider(
                 script,
                 visual_style=visual_style,
                 composition=composition,
-                max_scenes=self.max_scenes,
             )
 
         raw_scenes = data["scenes"]
@@ -182,44 +180,81 @@ class ScenePlanner:
             return "\n".join(lines).strip()
         return raw.strip()
 
-    @staticmethod
-    def _fallback_plan_payload(
+    def _fallback_plan_with_provider(
+        self,
         script: str,
         *,
         visual_style: str,
         composition: str,
-        max_scenes: int,
     ) -> dict:
-        """Build a deterministic safe plan so malformed model JSON never blocks media generation."""
+        """Use a non-JSON English visual fallback; fail fast rather than feed Vietnamese to SD1.5."""
         parts = [
             item.strip()
-            for item in re.split(r"(?<=[.!?])\s+", script.strip())
+            for item in re.split(r"(?<=[.!?])\\s+", script.strip())
             if item.strip()
         ]
         if not parts:
             parts = [script.strip()]
-
-        if len(parts) > max_scenes:
-            head = parts[: max_scenes - 1]
-            tail = " ".join(parts[max_scenes - 1 :])
+        if len(parts) > self.max_scenes:
+            head = parts[: self.max_scenes - 1]
+            tail = " ".join(parts[self.max_scenes - 1 :])
             parts = [*head, tail]
 
-        continuity = (
-            "Preserve the same recurring character identity, age, hair, body proportions, wardrobe, "
-            "important objects, location layout, time of day, lighting direction and color palette across scenes."
+        requested = []
+        for index, narration in enumerate(parts, start=1):
+            requested.append(
+                f"PROMPT_{index}: concise English visual description for: {narration}"
+            )
+            requested.append(
+                f"MOTION_{index}: concise English subject/environment motion for the same scene"
+            )
+
+        fallback_prompt = (
+            "SCENE_PLAN_PLAIN_ENGLISH_FALLBACK\n"
+            "The structured JSON planner failed. Convert the supplied Vietnamese story scenes into robust English "
+            "prompts for Stable Diffusion 1.5. Do not output JSON or Markdown. Do not invent characters or events. "
+            "Keep the same recurring character identity and setting. Use exactly the requested labels, one per line. "
+            f"Visual style: {visual_style}. Composition: {composition}.\n"
+            "CONTINUITY: one concise English line describing identity/wardrobe/location/lighting facts that must stay fixed.\n"
+            + "\n".join(requested)
         )
+        raw = self.provider.generate(fallback_prompt).text.strip()
+
+        values: dict[str, str] = {}
+        for line in raw.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip().upper()
+            value = value.strip()
+            if key and value:
+                values[key] = value
+
+        continuity = values.get("CONTINUITY", "").strip()
+        if not continuity:
+            raise ValueError("scene planner fallback did not provide CONTINUITY")
+
         scenes = []
         for index, narration in enumerate(parts, start=1):
+            image_prompt = values.get(f"PROMPT_{index}", "").strip()
+            if not image_prompt:
+                raise ValueError(
+                    f"scene planner fallback did not provide PROMPT_{index}; aborting before image GPU"
+                )
+            motion = values.get(f"MOTION_{index}", "").strip()
             scenes.append({
                 "scene_id": f"fallback-{index:03d}",
                 "narration": narration,
-                "image_prompt": f"{narration}. {visual_style}, {composition} composition",
-                "negative_prompt": "text, watermark, logo, blurry, low quality, identity drift, changed face",
-                "motion_prompt": "subtle natural subject movement and gentle environmental motion",
+                "image_prompt": image_prompt,
+                "negative_prompt": (
+                    "text, watermark, logo, blurry, low quality, deformed anatomy, malformed hands, "
+                    "extra fingers, fused fingers, extra limbs, distorted face, identity drift, changed face"
+                ),
+                "motion_prompt": motion or "subtle natural subject movement and gentle environmental motion",
                 "continuity_anchor": continuity,
                 "camera": "stable cinematic framing with subtle physically plausible movement",
-                "lighting": "preserve lighting direction and exposure between adjacent shots",
-                "palette": "preserve the established scene palette",
+                "lighting": "preserve the established lighting direction and exposure",
+                "palette": "preserve the established palette",
             })
         return {"continuity_bible": continuity, "scenes": scenes}
 
