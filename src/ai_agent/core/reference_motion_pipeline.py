@@ -121,7 +121,7 @@ class ReferenceMotionVideoPipeline:
         reference_hash = sha256(reference_image).hexdigest()
         lessons = ()
         adapter_weight = str(getattr(self.image_provider, "ip_adapter_weight", "") or "")
-        base_scale = 0.50 if "full-face" in adapter_weight else 0.75
+        base_scale = 0.65 if "full-face" in adapter_weight else 0.80
         if self.learning_store is not None:
             try:
                 lessons = self.learning_store.relevant("reference-motion-video", limit=10)
@@ -144,7 +144,8 @@ class ReferenceMotionVideoPipeline:
                 ),
                 negative_prompt=(
                     scene.negative_prompt
-                    + ", different person, changed face, face drift, inconsistent character identity"
+                    + ", different person, changed face, face drift, inconsistent character identity, "
+                    "deformed anatomy, malformed hands, extra fingers, fused fingers, extra limbs, distorted face"
                 ),
                 width=self.image_width,
                 height=self.image_height,

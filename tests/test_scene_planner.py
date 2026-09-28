@@ -174,18 +174,46 @@ def test_scene_planner_repairs_malformed_json_before_fallback():
     assert "antique map" in plan.scenes[0].image_prompt
 
 
-def test_scene_planner_uses_deterministic_fallback_if_repair_also_fails():
-    class BrokenModel:
-        def generate(self, prompt):
-            return ModelResponse('{"scenes":[ bad json }', "fake", "model")
+def test_scene_planner_uses_plain_english_fallback_if_json_repair_fails():
+    class FallbackModel:
+        def __init__(self):
+            self.calls = 0
 
-    plan = ScenePlanner(BrokenModel(), max_scenes=2).plan(
+        def generate(self, prompt):
+            self.calls += 1
+            if self.calls <= 2:
+                return ModelResponse('{"scenes":[ bad json }', "fake", "model")
+            return ModelResponse(
+                "\n".join((
+                    "CONTINUITY: same elderly male scholar, dark suit, old library at dusk, warm lamps",
+                    "PROMPT_1: elderly male scholar entering an old library at dusk, antique shelves, warm lamps",
+                    "MOTION_1: scholar takes two slow steps into the room",
+                    "PROMPT_2: same elderly male scholar opening an antique map on a wooden table",
+                    "MOTION_2: hands slowly unfold the map while the lamp flickers",
+                )),
+                "fake",
+                "model",
+            )
+
+    model = FallbackModel()
+    plan = ScenePlanner(model, max_scenes=2).plan(
         "Một học giả bước vào thư viện. Ông mở tấm bản đồ. Đèn vàng rung nhẹ."
     )
 
+    assert model.calls == 3
     assert len(plan.scenes) == 2
     assert plan.scenes[0].scene_id == "fallback-001"
+    assert "elderly male scholar" in plan.scenes[0].image_prompt
+    assert "antique map" in plan.scenes[1].image_prompt
     assert "Một học giả bước vào thư viện." in plan.scenes[0].narration
-    assert "Ông mở tấm bản đồ." in plan.scenes[1].narration
-    assert "Đèn vàng rung nhẹ." in plan.scenes[1].narration
-    assert plan.continuity_bible
+    assert "Ông mở tấm bản đồ. Đèn vàng rung nhẹ." in plan.scenes[1].narration
+    assert plan.continuity_bible.startswith("same elderly male scholar")
+
+
+def test_scene_planner_fails_before_image_generation_if_plain_fallback_is_invalid():
+    class BrokenModel:
+        def generate(self, prompt):
+            return ModelResponse("broken output", "fake", "model")
+
+    with pytest.raises(ValueError, match="fallback did not provide CONTINUITY"):
+        ScenePlanner(BrokenModel()).plan("Một học giả bước vào thư viện.")

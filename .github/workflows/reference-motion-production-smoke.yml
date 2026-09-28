@@ -26,10 +26,12 @@ jobs:
       VIDEO_OUTPUT_DIR: reference-motion-production-output
       VIDEO_REFERENCE_IMAGE: reference-motion-production-output/reference.png
       VIDEO_MAX_SCENES: "2"
-      VIDEO_IMAGE_STEPS: "10"
-      VIDEO_IMAGE_WIDTH: "512"
-      VIDEO_IMAGE_HEIGHT: "288"
+      VIDEO_IMAGE_STEPS: "16"
+      VIDEO_IMAGE_WIDTH: "768"
+      VIDEO_IMAGE_HEIGHT: "432"
       VIDEO_IMAGE_ROUNDS: "2"
+      VIDEO_KEYFRAME_IDENTITY_THRESHOLD: "0.60"
+      VIDEO_PROMPT_ALIGNMENT_THRESHOLD: "0.22"
       VIDEO_MOTION_FRAMES: "14"
       VIDEO_MOTION_FPS: "7"
       VIDEO_MOTION_ROUNDS: "2"

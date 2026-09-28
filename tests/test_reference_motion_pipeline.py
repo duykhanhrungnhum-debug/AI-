@@ -167,7 +167,7 @@ def test_reference_motion_pipeline_produces_verified_video_and_learns(tmp_path):
     )
 
     assert result.media_ready is True
-    assert images.reference_scale == 0.50
+    assert images.reference_scale == 0.65
     assert motion.images == [b"PNG-s1", b"PNG-s2"]
     assert (tmp_path / "scene_0000_keyframe.png").exists()
     assert (tmp_path / "scene_0000.mp4").exists()
