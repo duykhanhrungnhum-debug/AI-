@@ -159,3 +159,23 @@ def test_sync_policy_keeps_natural_speed_before_trimming():
     source = WORKER.read_text(encoding="utf-8")
     assert '"max_tempo":1.28' in source
     assert '"min_pause_between_cues":0.08' in source
+
+
+def test_translation_router_prefers_30b_only_when_gpu_can_host_it():
+    source = WORKER.read_text(encoding="utf-8")
+    assert 'HY_MT2_MAX_MODEL="tencent/Hy-MT2-30B-A3B"' in source
+    assert 'HY_MT2_BALANCED_MODEL="tencent/Hy-MT2-7B"' in source
+    assert "HY_MT2_MAX_MIN_TOTAL_VRAM_GB=70.0" in source
+    assert "model_choice=select_translation_model(JOB,torch)" in source
+    assert 'translation_load_mode=="bf16"' in source
+    assert "dtype=torch.bfloat16" in source
+    assert "load_in_4bit=True" in source
+    assert "batch_size=2 if primary_model==HY_MT2_MAX_MODEL else 12" in source
+    assert '"translation_engine":"hy-mt2-auto-strongest-v1"' in source
+
+
+def test_translation_router_records_fallback_reason_and_selected_model():
+    source = WORKER.read_text(encoding="utf-8")
+    assert '"maximum_requested_but_vram_insufficient"' in source
+    assert '"explicit_30b_fell_back_for_vram"' in source
+    assert '"translation_model_selection":model_choice' in source
