@@ -1,1 +1,1 @@
-reference-character-video-smoke-v7-clip-shape-fix
+reference-character-video-smoke-v8-shared-clip-space
