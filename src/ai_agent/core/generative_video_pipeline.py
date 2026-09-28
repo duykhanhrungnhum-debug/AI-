@@ -110,7 +110,7 @@ class GenerativeVideoPipeline:
         requests = [
             SceneVideoRequest(
                 scene_id=scene.scene_id,
-                prompt=self._motion_prompt(scene.image_prompt, visual_style),
+                prompt=self._motion_prompt(scene, visual_style),
                 negative_prompt=scene.negative_prompt,
                 width=self.width,
                 height=self.height,
@@ -175,13 +175,37 @@ class GenerativeVideoPipeline:
         )
 
     @staticmethod
-    def _motion_prompt(image_prompt: str, visual_style: str) -> str:
-        return (
-            f"{image_prompt}. {visual_style}. "
-            "Continuous cinematic live-action motion, natural body movement, subtle environmental motion, "
-            "coherent anatomy, stable identity, consistent clothing, realistic camera movement, "
-            "one connected shot, no cuts, no text, no subtitles, no watermark."
-        )
+    def _motion_prompt(scene, visual_style: str) -> str:
+        motion = (getattr(scene, "motion_prompt", "") or "").strip()
+        continuity = (getattr(scene, "continuity_anchor", "") or "").strip()
+        camera = (getattr(scene, "camera", "") or "").strip()
+        lighting = (getattr(scene, "lighting", "") or "").strip()
+        palette = (getattr(scene, "palette", "") or "").strip()
+
+        parts = [
+            scene.image_prompt.rstrip(" ."),
+            visual_style,
+            "one connected short shot with coherent anatomy and stable identity",
+        ]
+        if continuity:
+            parts.append(f"continuity lock: {continuity}")
+        if motion:
+            parts.append(f"subject/environment motion: {motion}")
+        else:
+            parts.append("natural body movement with subtle environmental motion")
+        if camera:
+            parts.append(f"camera: {camera}")
+        else:
+            parts.append("camera: subtle physically plausible movement")
+        if lighting:
+            parts.append(f"lighting: {lighting}")
+        if palette:
+            parts.append(f"palette anchors: {palette}")
+        parts.extend((
+            "preserve clothing, objects, background layout and character identity through the whole shot",
+            "no cuts, no identity drift, no morphing, no text, no subtitles, no watermark",
+        ))
+        return ". ".join(part.strip(" .") for part in parts if part.strip()) + "."
 
     @staticmethod
     def _seed(scene_id: str) -> int:

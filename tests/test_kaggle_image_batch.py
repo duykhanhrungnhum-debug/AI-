@@ -165,3 +165,40 @@ def test_safety_checker_block_is_reported():
     )
 
     assert "safety checker blocked generated image" in issues
+
+
+def test_retry_refines_prompt_from_identity_and_duplicate_failures():
+    request = SceneImageRequest(
+        "scene-1",
+        "hero in an old library",
+        negative_prompt="text, watermark",
+        seed=7,
+    )
+
+    refined = KaggleBatchImageProvider._refined_retry_request(
+        request,
+        (
+            "identity similarity below threshold: 0.30 < 0.40",
+            "duplicate image content",
+        ),
+        round_index=1,
+    )
+
+    assert refined.seed == 8
+    assert "STRICT IDENTITY LOCK" in refined.prompt
+    assert "different pose, staging or camera framing" in refined.prompt
+    assert "face drift" in refined.negative_prompt
+    assert "same composition as previous attempt" in refined.negative_prompt
+
+
+def test_retry_turns_safety_failure_into_non_graphic_refinement():
+    request = SceneImageRequest("scene-1", "story scene", seed=3)
+
+    refined = KaggleBatchImageProvider._refined_retry_request(
+        request,
+        ("safety checker blocked generated image",),
+        round_index=2,
+    )
+
+    assert refined.seed == 5
+    assert "non-graphic and safe" in refined.prompt
