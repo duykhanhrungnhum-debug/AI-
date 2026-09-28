@@ -1,1 +1,1 @@
-reference-motion-production-smoke-v3-agentic-continuity-rerun
+reference-motion-production-smoke-v4-resilient-scene-plan
