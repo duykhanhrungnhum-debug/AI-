@@ -210,7 +210,7 @@ class KaggleBatchImageProvider:
         reference_image: bytes | None = None,
         reference_scale: float = 0.75,
     ) -> BatchImageResult:
-        """Retry only failed scenes; each retry changes the seed to avoid loops."""
+        """Retry only failed scenes and refine the next request from verifier feedback."""
         assert_core_invariants()
         if max_rounds <= 0:
             raise ValueError("max_rounds must be positive")
@@ -248,12 +248,75 @@ class KaggleBatchImageProvider:
 
                 if not result.verified and rounds < max_rounds:
                     request = request_by_id[result.scene_id]
-                    next_pending.append(replace(request, seed=request.seed + rounds))
+                    next_pending.append(
+                        self._refined_retry_request(
+                            request,
+                            result.issues,
+                            round_index=rounds,
+                        )
+                    )
 
             pending = tuple(next_pending)
 
         ordered = tuple(latest[request.scene_id] for request in original)
         return BatchImageResult(ordered, rounds=rounds)
+
+    @staticmethod
+    def _refined_retry_request(
+        request: SceneImageRequest,
+        issues: tuple[str, ...],
+        *,
+        round_index: int,
+    ) -> SceneImageRequest:
+        """Translate verifier failures into a bounded, safer next attempt."""
+        issue_text = " | ".join(issues).casefold()
+        refinements: list[str] = []
+        negatives: list[str] = []
+
+        if "identity similarity" in issue_text or "identity" in issue_text:
+            refinements.append(
+                "STRICT IDENTITY LOCK: preserve the reference person's face shape, age, hair, "
+                "body proportions, costume identity and distinctive features"
+            )
+            negatives.extend(("different person", "changed face", "face drift", "identity drift"))
+
+        if "duplicate image" in issue_text or "retry loop" in issue_text:
+            refinements.append(
+                "Use a clearly different pose, staging or camera framing while preserving the locked identity "
+                "and story facts"
+            )
+            negatives.append("same composition as previous attempt")
+
+        if "lacks visual variation" in issue_text:
+            refinements.append(
+                "Increase readable visual structure with clear foreground, subject and background separation, "
+                "natural texture and lighting contrast"
+            )
+            negatives.extend(("flat blank image", "featureless background"))
+
+        if "safety checker blocked" in issue_text:
+            refinements.append(
+                "Keep the scene non-graphic and safe; remove explicit injury, sexual or otherwise unsafe visual detail "
+                "while preserving the harmless story intent"
+            )
+
+        if not refinements:
+            refinements.append(
+                "Preserve all story and continuity facts, improve prompt adherence, anatomy and visual clarity"
+            )
+
+        prompt = request.prompt.rstrip(" .") + ". Retry refinement: " + ". ".join(refinements) + "."
+        negative_prompt = request.negative_prompt
+        if negatives:
+            extra = ", ".join(dict.fromkeys(negatives))
+            negative_prompt = (negative_prompt.rstrip(" ,") + ", " + extra).strip(" ,")
+
+        return replace(
+            request,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            seed=request.seed + max(1, round_index),
+        )
 
     def _wait(self) -> None:
         for _ in range(self.max_poll_attempts):
