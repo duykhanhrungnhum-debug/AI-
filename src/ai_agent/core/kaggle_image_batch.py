@@ -524,13 +524,13 @@ class KaggleBatchImageProvider:
             def image_embedding(image):
                 values = clip_processor(images=image, return_tensors="pt")
                 with torch.no_grad():
-                    vector = clip_model.get_image_features(**values)[0].float()
+                    vector = clip_model.get_image_features(**values)[0].float().reshape(-1)
                 return F.normalize(vector, dim=0)
 
             def text_embedding(text):
                 values = clip_processor(text=[text], return_tensors="pt", padding=True, truncation=True)
                 with torch.no_grad():
-                    vector = clip_model.get_text_features(**values)[0].float()
+                    vector = clip_model.get_text_features(**values)[0].float().reshape(-1)
                 return F.normalize(vector, dim=0)
 
             if CONFIG.get("reference_b64"):
