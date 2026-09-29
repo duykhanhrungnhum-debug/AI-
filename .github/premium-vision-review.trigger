@@ -1,1 +1,1 @@
-qwen3-8b-adversarial-review-v1
+qwen3-8b-adversarial-review-v2-runtime-fix
