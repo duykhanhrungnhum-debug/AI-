@@ -106,7 +106,7 @@ def test_profile_model_routing_uses_separate_photo_and_mascot_stacks():
     mascot = image_model_config(MASCOT_PREMIUM)
 
     assert human.model == "SG161222/RealVisXL_V4.0"
-    assert animal.model == "SG161222/RealVisXL_V5.0"
+    assert animal.model == "SG161222/RealVisXL_V5.0_Lightning"
     assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
     assert animal.model != mascot.model
     assert "hands" in human.quality_good_text
@@ -234,7 +234,7 @@ def test_dog_exam_routes_real_photo_and_cute_3d_to_different_profiles():
     cute = planner.plan("Tạo ảnh một chú chó Golden Retriever 3D cute")
 
     assert real.profile == ANIMAL_PHOTO_PREMIUM
-    assert real.model_config.model == "SG161222/RealVisXL_V5.0"
+    assert real.model_config.model == "SG161222/RealVisXL_V5.0_Lightning"
     assert "species-correct anatomy" in real.prompt
     assert "cartoon" in real.negative_prompt
 
@@ -317,8 +317,9 @@ def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
     assert "HDR look" in plan.negative_prompt
     assert "oversharpening" in plan.negative_prompt
     assert "advertising retouch" in plan.negative_prompt
-    assert cfg.inference_steps == 28
-    assert cfg.guidance_scale == 4.0
+    assert cfg.inference_steps == 5
+    assert cfg.guidance_scale == 1.5
+    assert cfg.scheduler == "dpm_sde_karras"
     assert any("HDR contrast" in item for item in cfg.quality_bad_texts)
     assert any("Photoshop look" in item for item in cfg.quality_bad_texts)
     assert "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589" in manifest["known_rejected_sha256"]

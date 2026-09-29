@@ -62,8 +62,8 @@ class KaggleImageProvider:
             raise ValueError("poll configuration must be valid")
         if self.inference_steps <= 0:
             raise ValueError("inference_steps must be positive")
-        if self.scheduler not in {"default", "edm_dpm", "dpm_karras"}:
-            raise ValueError("scheduler must be default, edm_dpm or dpm_karras")
+        if self.scheduler not in {"default", "edm_dpm", "dpm_karras", "dpm_sde_karras"}:
+            raise ValueError("scheduler must be default, edm_dpm, dpm_karras or dpm_sde_karras")
         if not self.quality_good_text.strip() or not self.quality_bad_texts:
             raise ValueError("visual quality critic text must be configured")
         if any(not item.strip() for item in self.quality_bad_texts):
@@ -435,6 +435,14 @@ class KaggleImageProvider:
                 pipe.scheduler = DPMSolverMultistepScheduler.from_config(
                     pipe.scheduler.config,
                     use_karras_sigmas=True,
+                )
+            elif CONFIG["scheduler"] == "dpm_sde_karras":
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                    pipe.scheduler.config,
+                    algorithm_type="sde-dpmsolver++",
+                    solver_order=2,
+                    use_karras_sigmas=True,
+                    lower_order_final=True,
                 )
             if CONFIG["enable_cpu_offload"]:
                 pipe.enable_model_cpu_offload()
