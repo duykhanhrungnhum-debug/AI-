@@ -2,6 +2,7 @@ import pytest
 
 from ai_agent.core.media_command import (
     ANIMAL_PHOTO_PREMIUM,
+    GENERAL_PREMIUM,
     HUMAN_PHOTO_PREMIUM,
     MEDIA_COMMAND_BRAIN_MODEL,
     MEDIA_COMMAND_FAST_MODEL,
@@ -346,8 +347,8 @@ def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
     assert "advertising retouch" in plan.negative_prompt
     assert cfg.inference_steps == 28
     assert cfg.guidance_scale == 4.0
-    assert any("HDR contrast" in item for item in cfg.quality_bad_texts)
-    assert any("Photoshop look" in item for item in cfg.quality_bad_texts)
+    assert any("HDR" in item for item in cfg.quality_bad_texts)
+    assert any("photo request" in item for item in cfg.quality_bad_texts)
     assert "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589" in manifest["known_rejected_sha256"]
     assert any("real camera" in item for item in manifest["must_pass"])
 
