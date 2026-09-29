@@ -1,0 +1,81 @@
+name: Dog Image Exam
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dog-image-exam.yml"
+      - ".github/dog-image-exam.trigger"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  dog-image-exam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Give both exam questions to project AI
+        id: exam
+        shell: bash
+        run: |
+          set +e
+          mkdir -p dog-exam/real dog-exam/cute3d
+
+          echo "=== EXAM 1: REAL DOG ==="
+          MEDIA_COMMAND="Tạo ảnh đúng một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời trên bãi cỏ trong ánh sáng ban ngày tự nhiên, toàn thân, giải phẫu chính xác, lông chi tiết, khuôn mặt và bàn chân tự nhiên, chất lượng ảnh thú cưng chuyên nghiệp."           MEDIA_OUTPUT_DIR="dog-exam/real"           python scripts/generate_premium_image.py
+          REAL_EXIT=$?
+
+          echo "=== EXAM 2: CUTE 3D DOG ==="
+          MEDIA_COMMAND="Tạo ảnh đúng một chú chó Golden Retriever 3D cute, nhân vật mascot cao cấp, toàn thân, tỷ lệ dễ thương nhưng giải phẫu chó mạch lạc, mắt biểu cảm, tai chân bàn chân và đuôi đúng cấu trúc, lông 3D có chi tiết mềm mại, ánh sáng studio đẹp, chất lượng nhân vật hoạt hình 3D cao cấp."           MEDIA_OUTPUT_DIR="dog-exam/cute3d"           python scripts/generate_premium_image.py
+          CUTE_EXIT=$?
+
+          python - <<PY
+          import json
+          from pathlib import Path
+          payload = {
+              "real_dog_exit": int("$REAL_EXIT"),
+              "cute_3d_dog_exit": int("$CUTE_EXIT"),
+              "both_completed": True,
+          }
+          Path("dog-exam/exam-status.json").write_text(
+              json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(payload, indent=2))
+          PY
+
+          if [ "$REAL_EXIT" -ne 0 ] || [ "$CUTE_EXIT" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload exam papers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dog-image-exam-output
+          path: dog-exam/
+          if-no-files-found: error
+          retention-days: 7
