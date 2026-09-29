@@ -478,4 +478,6 @@ def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
     assert '"branding_gate"' in source
     assert "photorealistic livestock render" in source
     assert '{"clean":false,"findings":["bottom-right logo or text"]}' not in source
-    assert "no example finding is provided" in source
+    assert "normalize_branding_findings" in source
+    assert 'candidate_count = 3 if item["semantic_profile"] == "mascot_premium" else 1' in source
+    assert '"candidate_summaries"' in source

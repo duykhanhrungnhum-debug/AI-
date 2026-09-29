@@ -1376,30 +1376,40 @@ pipe = pipe.to("cuda")
 pipe.enable_vae_slicing()
 image_ready = time.perf_counter()
 
-image_reports = {}
+candidate_reports = {}
 for item in compiled_items:
-    generate_started = time.perf_counter()
-    generator = torch.Generator(device="cpu").manual_seed(int(item["seed"]))
-    result = pipe(
-        prompt=item["prompt"],
-        negative_prompt=item["negative_prompt"] or None,
-        width=item["width"],
-        height=item["height"],
-        num_inference_steps=int(CONFIG["inference_steps"]),
-        guidance_scale=float(CONFIG["guidance_scale"]),
-        generator=generator,
-    )
-    image = result.images[0]
-    output_path = Path("/kaggle/working") / (item["item_id"] + ".png")
-    image.save(output_path, format="PNG")
-    data = output_path.read_bytes()
-    image_reports[item["item_id"]] = {
-        **item,
-        "image_sha256": sha256(data).hexdigest(),
-        "model": CONFIG["model"],
-        "model_variant": CONFIG.get("model_variant"),
-        "image_generation_seconds": round(time.perf_counter() - generate_started, 3),
-    }
+    candidate_count = 3 if item["semantic_profile"] == "mascot_premium" else 1
+    candidates = []
+    for candidate_index in range(candidate_count):
+        generate_started = time.perf_counter()
+        candidate_seed = int(item["seed"]) + candidate_index
+        generator = torch.Generator(device="cpu").manual_seed(candidate_seed)
+        result = pipe(
+            prompt=item["prompt"],
+            negative_prompt=item["negative_prompt"] or None,
+            width=item["width"],
+            height=item["height"],
+            num_inference_steps=int(CONFIG["inference_steps"]),
+            guidance_scale=float(CONFIG["guidance_scale"]),
+            generator=generator,
+        )
+        image = result.images[0]
+        output_path = Path("/kaggle/working") / (
+            item["item_id"] + "__candidate_" + str(candidate_index) + ".png"
+        )
+        image.save(output_path, format="PNG")
+        data = output_path.read_bytes()
+        candidates.append({
+            **item,
+            "seed": candidate_seed,
+            "candidate_index": candidate_index,
+            "candidate_path": str(output_path),
+            "image_sha256": sha256(data).hexdigest(),
+            "model": CONFIG["model"],
+            "model_variant": CONFIG.get("model_variant"),
+            "image_generation_seconds": round(time.perf_counter() - generate_started, 3),
+        })
+    candidate_reports[item["item_id"]] = candidates
 
 del pipe
 gc.collect()
@@ -1463,18 +1473,40 @@ def run_vlm_review(views, instruction, max_new_tokens):
     return text
 
 
+def normalize_branding_findings(payload):
+    values = payload.get("findings") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return []
+    cleaned = []
+    clean_declared = payload.get("clean") is True
+    for value in values:
+        text_value = str(value).strip()
+        if not text_value:
+            continue
+        normalized = " ".join(text_value.casefold().split())
+        is_absence_statement = (
+            normalized.startswith((
+                "no visible ",
+                "no watermark",
+                "no logo",
+                "no text",
+                "no icon",
+                "no badge",
+                "none",
+                "nothing visible",
+                "not visible",
+            ))
+            and not any(term in normalized for term in (" but ", " however ", " except "))
+        )
+        if clean_declared and is_absence_statement:
+            continue
+        cleaned.append(text_value)
+    return cleaned
+
+
+image_reports = {}
 for item in compiled_items:
-    image = Image.open(Path("/kaggle/working") / (item["item_id"] + ".png")).convert("RGB")
-    image.thumbnail((1024, 1024))
-    width, height = image.size
-    half_w = max(1, width // 2)
-    half_h = max(1, height // 2)
-    views = [
-        image,
-        image.crop((0, 0, width, half_h)),
-        image.crop((0, half_h, width, height)),
-        image.crop((half_w, half_h, width, height)),
-    ]
+    reviewed_candidates = []
     rubric = "\n".join(
         "- " + value
         for value in CONFIG["profile_rubrics"][item["semantic_profile"]]
@@ -1484,119 +1516,188 @@ for item in compiled_items:
         or "full-body" in item["prompt"].casefold()
         or "toàn thân" in item["command"].casefold()
     )
-    instruction = (
-        "You are the strict final visual-quality inspector for a production image pipeline. "
-        "Judge only what is actually visible in the SAME image shown as full frame plus crops. "
-        "PROFILE: " + item["semantic_profile"]
-        + "; EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"]
-        + "; EXPECTED STYLE: " + item["style_class"]
-        + "; ORIGINAL PROMPT: " + item["prompt"]
-        + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
-        + ("The complete full body must be visibly inside the frame. " if requires_full_body else "")
-        + "Hard requirements: the main subject must be exactly the expected species/entity; style must match; subject count must be one; "
-        "critical anatomy/appendages must be coherent; required framing must be satisfied; "
-        "there must be NO unrequested visible text, letters, logo, watermark, emblem, signature, UI/app mark, corner badge or branding anywhere. "
-        "Inspect the full frame, anatomy, and especially the bottom-right crop for branding. "
-        "For animal_photo_premium require unmistakable real-camera photographic realism and correct species anatomy; CGI or illustration means style_ok=false. "
-        "For mascot_premium require an unmistakably stylized cute premium 3D animation-film mascot with rounded appealing proportions and expressive character face/eyes; "
-        "a photorealistic livestock render, ordinary realistic animal render, or documentary-looking animal MUST make style_ok=false. "
-        "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
-        "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
-        + " AND all hard boolean checks below are true AND x/f/u are empty. "
-        "If uncertain about exact species/entity, text/logo, anatomy, style, or framing, set the relevant boolean false and p=false. "
-        "Return ONLY one JSON object and no Markdown. Required keys: "
-        "p boolean; q,m,s,d,a,c,b numbers 0-10; n integer; "
-        "subject_ok,style_ok,count_ok,framing_ok,anatomy_ok,no_text_logo booleans; "
-        "x,f,u,i arrays of short strings. Do not copy example values because no example values are provided."
-    )
-    review_started = time.perf_counter()
-    review_text = run_vlm_review(views, instruction, 220)
-    if not review_text:
-        raise RuntimeError("empty VLM review for " + item["item_id"])
-    review_payload = parse_json_object(review_text)
-    required_flags = (
-        "subject_ok",
-        "style_ok",
-        "count_ok",
-        "framing_ok",
-        "anatomy_ok",
-        "no_text_logo",
-    )
-    main_hard_passed = bool(review_payload) and all(
-        review_payload.get(flag) is True for flag in required_flags
-    )
 
-    # A dedicated second VLM inference checks branding independently because a
-    # general quality review can miss small corner watermarks/logos.
-    quarter_w = max(1, width // 2)
-    quarter_h = max(1, height // 2)
-    brand_views = [
-        image,
-        image.crop((0, 0, quarter_w, quarter_h)),
-        image.crop((quarter_w, 0, width, quarter_h)),
-        image.crop((0, quarter_h, quarter_w, height)),
-        image.crop((quarter_w, quarter_h, width, height)),
-        image.crop((0, max(0, int(height * 0.70)), width, height)),
-    ]
-    branding_instruction = (
-        "You are a dedicated watermark/logo/text detector. Inspect the SAME image as full frame plus enlarged corner/lower crops. "
-        "The requested image must be completely clean and unbranded. "
-        "A visible icon, badge, stylized letters, signature, watermark, logo, copyright mark, UI/app symbol, corner emblem, "
-        "tiny text or pseudo-text anywhere counts as branding and MUST make clean=false. "
-        "Natural grass, fur, shadows, hooves, soil, foliage, reflections and ordinary background texture are NOT branding. "
-        "Only report a finding when you can point to a discrete visible mark, glyph, icon, badge or text-like object. "
-        "If the full frame and all corner crops contain only natural/image content with no discrete mark, clean=true. "
-        "Return ONLY one JSON object and no Markdown with exactly two keys: clean (boolean) and findings (array of short strings). "
-        "Do not copy any example finding because no example finding is provided."
-    )
-    branding_started = time.perf_counter()
-    branding_text = run_vlm_review(brand_views, branding_instruction, 120)
-    branding_payload = parse_json_object(branding_text)
-    branding_findings = branding_payload.get("findings")
-    if not isinstance(branding_findings, list):
+    for candidate in candidate_reports[item["item_id"]]:
+        image = Image.open(candidate["candidate_path"]).convert("RGB")
+        image.thumbnail((1024, 1024))
+        width, height = image.size
+        half_w = max(1, width // 2)
+        half_h = max(1, height // 2)
+        views = [
+            image,
+            image.crop((0, 0, width, half_h)),
+            image.crop((0, half_h, width, height)),
+            image.crop((half_w, half_h, width, height)),
+        ]
+        instruction = (
+            "You are the strict final visual-quality inspector for a production image pipeline. "
+            "Judge only what is actually visible in the SAME image shown as full frame plus crops. "
+            "PROFILE: " + item["semantic_profile"]
+            + "; EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"]
+            + "; EXPECTED STYLE: " + item["style_class"]
+            + "; ORIGINAL PROMPT: " + item["prompt"]
+            + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
+            + ("The complete full body must be visibly inside the frame. " if requires_full_body else "")
+            + "Hard requirements: the main subject must be exactly the expected species/entity; style must match; subject count must be one; "
+            "critical anatomy/appendages must be coherent; required framing must be satisfied; "
+            "there must be NO unrequested visible text, letters, logo, watermark, emblem, signature, UI/app mark, corner badge or branding anywhere. "
+            "For animal_photo_premium require unmistakable real-camera photographic realism and correct species anatomy; CGI or illustration means style_ok=false. "
+            "For mascot_premium require an unmistakably stylized cute premium 3D animation-film mascot with rounded appealing proportions and expressive character face/eyes; "
+            "a photorealistic livestock render, ordinary realistic animal render, or documentary-looking animal MUST make style_ok=false. "
+            "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
+            "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
+            + " AND all hard boolean checks below are true AND x/f/u are empty. "
+            "If uncertain about exact species/entity, text/logo, anatomy, style, or framing, set the relevant boolean false and p=false. "
+            "Return ONLY one JSON object and no Markdown. Required keys: "
+            "p boolean; q,m,s,d,a,c,b numbers 0-10; n integer; "
+            "subject_ok,style_ok,count_ok,framing_ok,anatomy_ok,no_text_logo booleans; "
+            "x,f,u,i arrays of short strings. Do not copy example values because no example values are provided."
+        )
+        review_started = time.perf_counter()
+        review_text = run_vlm_review(views, instruction, 220)
+        if not review_text:
+            raise RuntimeError("empty VLM review for " + item["item_id"])
+        review_payload = parse_json_object(review_text)
+        required_flags = (
+            "subject_ok",
+            "style_ok",
+            "count_ok",
+            "framing_ok",
+            "anatomy_ok",
+            "no_text_logo",
+        )
+        main_hard_passed = bool(review_payload) and all(
+            review_payload.get(flag) is True for flag in required_flags
+        )
+
+        branding_started = time.perf_counter()
+        branding_text = ""
+        branding_payload = {}
         branding_findings = []
-    branding_findings = [
-        str(value) for value in branding_findings if str(value).strip()
+        dedicated_branding_ran = False
+        branding_clean = review_payload.get("no_text_logo") is True
+        if main_hard_passed:
+            dedicated_branding_ran = True
+            quarter_w = max(1, width // 2)
+            quarter_h = max(1, height // 2)
+            brand_views = [
+                image,
+                image.crop((0, 0, quarter_w, quarter_h)),
+                image.crop((quarter_w, 0, width, quarter_h)),
+                image.crop((0, quarter_h, quarter_w, height)),
+                image.crop((quarter_w, quarter_h, width, height)),
+                image.crop((0, max(0, int(height * 0.70)), width, height)),
+            ]
+            branding_instruction = (
+                "You are a dedicated watermark/logo/text detector. Inspect the SAME image as full frame plus enlarged corner/lower crops. "
+                "The requested image must be completely clean and unbranded. "
+                "A visible icon, badge, stylized letters, signature, watermark, logo, copyright mark, UI/app symbol, corner emblem, "
+                "tiny text or pseudo-text anywhere counts as branding and MUST make clean=false. "
+                "Natural grass, fur, shadows, hooves, soil, foliage, reflections and ordinary background texture are NOT branding. "
+                "Only report a finding when you can point to a discrete visible mark, glyph, icon, badge or text-like object. "
+                "If the full frame and all corner crops contain only natural/image content with no discrete mark, clean=true and findings must be empty. "
+                "Return ONLY one JSON object and no Markdown with exactly two keys: clean (boolean) and findings (array of short strings)."
+            )
+            branding_text = run_vlm_review(brand_views, branding_instruction, 120)
+            branding_payload = parse_json_object(branding_text)
+            branding_findings = normalize_branding_findings(branding_payload)
+            branding_clean = (
+                bool(branding_payload)
+                and branding_payload.get("clean") is True
+                and not branding_findings
+            )
+
+        hard_issues = []
+        for key in ("x", "f", "u"):
+            values = review_payload.get(key)
+            if isinstance(values, list):
+                hard_issues.extend(str(value) for value in values if str(value).strip())
+        if dedicated_branding_ran and not branding_clean:
+            hard_issues.extend(
+                branding_findings or ["dedicated branding detector rejected image"]
+            )
+
+        hard_passed = main_hard_passed and branding_clean
+        if not hard_passed and not hard_issues:
+            if review_payload.get("style_ok") is False:
+                hard_issues.append("requested visual style not satisfied")
+            elif review_payload.get("subject_ok") is False:
+                hard_issues.append("exact requested subject/species not satisfied")
+            else:
+                hard_issues.append("exact-subject/style/framing/anatomy/text-logo hard gate failed")
+
+        elapsed_review = round(time.perf_counter() - review_started, 3)
+        branding_elapsed = (
+            round(time.perf_counter() - branding_started, 3)
+            if dedicated_branding_ran
+            else 0.0
+        )
+        score_values = []
+        for key in ("q", "m", "s", "d", "a", "c", "b"):
+            try:
+                score_values.append(float(review_payload.get(key, 0)))
+            except (TypeError, ValueError):
+                score_values.append(0.0)
+        score_floor = min(score_values) if score_values else 0.0
+
+        candidate_record = {
+            **candidate,
+            "review_text": review_text,
+            "qa_review_seconds": elapsed_review,
+            "review_passed": review_payload.get("p") is True,
+            "score_floor": score_floor,
+            "hard_gate": {
+                "passed": hard_passed,
+                "subject_name": item["subject_name"],
+                "requires_full_body": requires_full_body,
+                "checks": {flag: review_payload.get(flag) for flag in required_flags},
+                "branding_gate": {
+                    "passed": branding_clean,
+                    "review_text": branding_text,
+                    "findings": branding_findings,
+                    "review_seconds": branding_elapsed,
+                    "dedicated_pass": dedicated_branding_ran,
+                },
+                "issues": list(dict.fromkeys(hard_issues)),
+                "review_text": review_text,
+                "review_seconds": elapsed_review,
+                "single_model_two_checks": True,
+            },
+        }
+        reviewed_candidates.append(candidate_record)
+
+    passing = [
+        candidate for candidate in reviewed_candidates
+        if candidate["hard_gate"]["passed"] and candidate["review_passed"]
     ]
-    branding_clean = (
-        bool(branding_payload)
-        and branding_payload.get("clean") is True
-        and not branding_findings
+    pool = passing or reviewed_candidates
+    selected = max(
+        pool,
+        key=lambda candidate: (
+            candidate["hard_gate"]["passed"],
+            candidate["review_passed"],
+            candidate["score_floor"],
+            -candidate["candidate_index"],
+        ),
     )
-
-    hard_issues = []
-    for key in ("x", "f", "u"):
-        values = review_payload.get(key)
-        if isinstance(values, list):
-            hard_issues.extend(str(value) for value in values if str(value).strip())
-    if not branding_clean:
-        hard_issues.extend(branding_findings or ["dedicated branding detector rejected image"])
-
-    hard_passed = main_hard_passed and branding_clean
-    if not hard_passed and not hard_issues:
-        hard_issues = ["exact-subject/style/framing/anatomy/text-logo hard gate failed"]
-
-    elapsed_review = round(time.perf_counter() - review_started, 3)
-    branding_elapsed = round(time.perf_counter() - branding_started, 3)
-    image_reports[item["item_id"]]["review_text"] = review_text
-    image_reports[item["item_id"]]["qa_review_seconds"] = elapsed_review
-    image_reports[item["item_id"]]["hard_gate"] = {
-        "passed": hard_passed,
-        "subject_name": item["subject_name"],
-        "requires_full_body": requires_full_body,
-        "checks": {flag: review_payload.get(flag) for flag in required_flags},
-        "branding_gate": {
-            "passed": branding_clean,
-            "review_text": branding_text,
-            "findings": branding_findings,
-            "review_seconds": branding_elapsed,
-            "dedicated_pass": True,
-        },
-        "issues": list(dict.fromkeys(hard_issues)),
-        "review_text": review_text,
-        "review_seconds": elapsed_review,
-        "single_model_two_checks": True,
-    }
+    selected_path = Path(selected["candidate_path"])
+    final_path = Path("/kaggle/working") / (item["item_id"] + ".png")
+    final_path.write_bytes(selected_path.read_bytes())
+    selected["candidate_count"] = len(reviewed_candidates)
+    selected["selected_candidate_index"] = selected["candidate_index"]
+    selected["candidate_summaries"] = [
+        {
+            "candidate_index": candidate["candidate_index"],
+            "seed": candidate["seed"],
+            "image_sha256": candidate["image_sha256"],
+            "hard_passed": candidate["hard_gate"]["passed"],
+            "review_passed": candidate["review_passed"],
+            "score_floor": candidate["score_floor"],
+            "issues": candidate["hard_gate"]["issues"],
+        }
+        for candidate in reviewed_candidates
+    ]
+    image_reports[item["item_id"]] = selected
 
 report = {
     "gpu_name": gpu_name,
