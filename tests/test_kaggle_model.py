@@ -71,3 +71,17 @@ def test_kaggle_model_provider_rejects_empty_prompt():
 
     with pytest.raises(ValueError, match="non-empty"):
         provider.generate("   ")
+
+
+def test_kaggle_model_provider_can_disable_qwen3_thinking():
+    worker = FakeWorker([{"prompt": "hello", "text": "world"}])
+    provider = KaggleModelProvider(
+        worker=worker,
+        poll_interval=0,
+        model="Qwen/Qwen3-1.7B",
+        enable_thinking=False,
+    )
+    source = provider._build_worker_source(("hello",))
+
+    assert '"enable_thinking": false' in source.lower()
+    assert 'template_kwargs["enable_thinking"] = bool(CONFIG["enable_thinking"])' in source
