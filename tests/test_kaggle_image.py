@@ -156,3 +156,36 @@ def test_kaggle_image_provider_embeds_profile_specific_quality_critic():
 def test_kaggle_image_provider_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match="scheduler"):
         KaggleImageProvider(worker=FakeWorker(), scheduler="unknown")
+
+
+def test_visual_margin_can_be_advisory_when_external_vlm_gate_is_mandatory():
+    worker = FakeWorker()
+
+    def low_margin(slug, filename):
+        if filename == "generated.png":
+            return worker.image
+        return json.dumps({
+            "image_sha256": hashlib.sha256(worker.image).hexdigest(),
+            "width": 512,
+            "height": 512,
+            "seed": 42,
+            "model": "playgroundai/playground-v2.5-1024px-aesthetic",
+            "gpu_name": "Tesla T4",
+            "prompt_alignment_score": 0.35,
+            "visual_quality_margin": 0.001,
+            "visual_defect_score": 0.30,
+        }).encode()
+
+    worker.download_output_file = low_margin
+    provider = KaggleImageProvider(
+        worker=worker,
+        poll_interval=0,
+        enforce_visual_quality_margin=False,
+    )
+
+    artifact = provider.generate(
+        ImageGenerationRequest("clean single mascot", width=512, height=512, seed=42)
+    )
+
+    assert "visual_quality_margin:0.001000" in artifact.evidence
+    assert "visual_quality_margin_enforced:False" in artifact.evidence

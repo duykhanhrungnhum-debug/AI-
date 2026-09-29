@@ -11,7 +11,8 @@ from ai_agent.core.image_model import ImageGenerationRequest
 from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
-from ai_agent.core.media_command import MediaCommandPlanner
+from ai_agent.core.media_command import MediaCommandPlanner, benchmark_manifest
+from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
 
 
 def main() -> int:
@@ -59,6 +60,7 @@ def main() -> int:
         scheduler=config.scheduler,
         prompt_alignment_threshold=float(os.environ.get("MEDIA_PROMPT_ALIGNMENT_THRESHOLD", "0.22")),
         visual_quality_margin_threshold=float(os.environ.get("MEDIA_VISUAL_QUALITY_MARGIN_THRESHOLD", "0.015")),
+        enforce_visual_quality_margin=False,
         quality_good_text=config.quality_good_text,
         quality_bad_texts=config.quality_bad_texts,
     )
@@ -113,10 +115,65 @@ def main() -> int:
             )
         raise
 
+    candidate_path = output / "candidate.png"
+    candidate_path.write_bytes(artifact.data)
+
+    rubric = tuple(
+        benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]
+    )
+    vlm = KaggleVisionQualityVerifier(
+        worker=worker,
+        kernel_slug="ai-agent-premium-image-vlm",
+        poll_interval=15,
+        max_poll_attempts=120,
+        min_quality_score=8.0,
+        min_prompt_match_score=8.0,
+    )
+    try:
+        visual_review = vlm.verify(VisionQualityRequest(
+            item_id="premium-image",
+            image=artifact.data,
+            prompt=plan.prompt,
+            profile=plan.profile.name,
+            rubric=rubric,
+            expected_subject_count=1,
+        ))
+    except Exception as exc:
+        (output / "vlm-failure.json").write_text(
+            json.dumps({
+                "verified": False,
+                "error": str(exc),
+                "stage": "vlm_quality",
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        raise
+
+    visual_review_payload = {
+        "passed": visual_review.passed,
+        "quality_score": visual_review.quality_score,
+        "prompt_match_score": visual_review.prompt_match_score,
+        "subject_count": visual_review.subject_count,
+        "major_issues": list(visual_review.major_issues),
+        "minor_issues": list(visual_review.minor_issues),
+        "review_text": visual_review.review_text,
+        "evidence": list(visual_review.evidence),
+    }
+    (output / "vlm-quality.json").write_text(
+        json.dumps(visual_review_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if not visual_review.passed:
+        raise RuntimeError(
+            "VLM visual quality rejected image: "
+            + "; ".join(visual_review.major_issues or ("quality gate failed",))
+        )
+
     image_path = output / "image.png"
     image_path.write_bytes(artifact.data)
     manifest = {
         "verified": True,
+        "vlm_quality": visual_review_payload,
         **plan_data,
         "provider": artifact.provider,
         "evidence": list(artifact.evidence),
