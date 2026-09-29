@@ -154,7 +154,7 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     assert "five views of the SAME generated image" in source
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
-    assert "every score is >= 8" in source
+    assert "every score including benchmark_match_score is >= 8" in source
 
 
 def test_vlm_review_image_compaction_stays_far_below_kaggle_source_limit():
