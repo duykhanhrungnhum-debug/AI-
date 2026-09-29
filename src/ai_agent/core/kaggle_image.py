@@ -300,13 +300,19 @@ class KaggleImageProvider:
             generator = torch.Generator(device="cpu").manual_seed(int(CONFIG["seed"]))
 
             inline_planner = None
+            semantic_profile = CONFIG["inline_vlm_profile"]
             if CONFIG["enable_inline_planner"]:
                 planner_started = time.perf_counter()
 
-                def parse_compiled_prompt(raw):
+                def parse_compiled_result(raw):
                     raw = (raw or "").strip().strip(chr(96)).strip()
+                    result = {{
+                        "prompt": "",
+                        "subject_class": "",
+                        "style_class": "",
+                    }}
                     if not raw:
-                        return ""
+                        return result
                     cleaned = raw
                     if cleaned.casefold().startswith("json"):
                         cleaned = cleaned[4:].lstrip("\\n :")
@@ -320,11 +326,39 @@ class KaggleImageProvider:
                             payload = json.loads(candidate)
                         except Exception:
                             continue
-                        if isinstance(payload, dict):
-                            for key in ("PROMPT", "prompt", "image_prompt", "description"):
-                                value = payload.get(key)
-                                if isinstance(value, str) and value.strip():
-                                    return value.strip()
+                        if not isinstance(payload, dict):
+                            continue
+                        prompt = str(
+                            payload.get("PROMPT")
+                            or payload.get("prompt")
+                            or payload.get("image_prompt")
+                            or ""
+                        ).strip()
+                        subject = str(
+                            payload.get("SUBJECT_CLASS")
+                            or payload.get("subject_class")
+                            or ""
+                        ).strip().casefold()
+                        style = str(
+                            payload.get("STYLE_CLASS")
+                            or payload.get("style_class")
+                            or ""
+                        ).strip().casefold()
+                        if prompt:
+                            result["prompt"] = prompt
+                            result["subject_class"] = subject
+                            result["style_class"] = style
+                            return result
+
+                    aliases = {{
+                        "PROMPT": "prompt",
+                        "PROMT": "prompt",
+                        "PROMP": "prompt",
+                        "SUBJECTCLASS": "subject_class",
+                        "SUBJECT": "subject_class",
+                        "STYLECLASS": "style_class",
+                        "STYLE": "style_class",
+                    }}
                     normalized = cleaned.replace("：", ":")
                     for line in normalized.splitlines():
                         line = line.strip().lstrip("-*# ").strip()
@@ -332,15 +366,12 @@ class KaggleImageProvider:
                             continue
                         key, value = line.split(":", 1)
                         key = "".join(ch for ch in key.strip().upper() if ch.isalpha())
-                        if key in {{"PROMPT", "PROMT", "PROMP"}} and value.strip():
-                            return value.strip().strip(chr(96)).strip()
-                    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-                    if len(lines) == 1:
-                        line = lines[0]
-                        if ":" in line and line.casefold().startswith(("here is", "here's", "image prompt", "visual prompt")):
-                            line = line.split(":", 1)[1].strip()
-                        return line
-                    return ""
+                        canonical = aliases.get(key)
+                        if canonical and value.strip() and not result[canonical]:
+                            result[canonical] = value.strip().strip(chr(96)).strip()
+                    result["subject_class"] = result["subject_class"].casefold()
+                    result["style_class"] = result["style_class"].casefold()
+                    return result
 
                 def looks_vietnamese(text):
                     chars = set("ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồỗộớờởỡợúùủũụứừửữựýỳỷỹỵ")
@@ -359,10 +390,16 @@ class KaggleImageProvider:
                     model_ready = time.perf_counter()
                     instruction = (
                         "MEDIA_COMMAND_COMPILE\\n"
-                        "Translate the USER_COMMAND into ONE concise ENGLISH still-image description. "
-                        "Preserve subject count, species/person/object, action, location, camera/framing, lighting, "
-                        "and visual style. Do not invent alternatives. Return exactly one line: "
-                        "PROMPT: <English image description>\\nUSER_COMMAND: "
+                        "Understand the USER_COMMAND semantically. Do not depend on a fixed animal species list. "
+                        "Translate the visual request into ONE concise ENGLISH still-image description while preserving the exact species, "
+                        "subject count, action, location, camera/framing, lighting and requested visual style. "
+                        "Classify SUBJECT_CLASS as exactly animal, human, or general. "
+                        "Classify STYLE_CLASS as exactly photo, 3d, mascot, illustration, or general. "
+                        "Return exactly three lines and no commentary:\\n"
+                        "SUBJECT_CLASS: <animal|human|general>\\n"
+                        "STYLE_CLASS: <photo|3d|mascot|illustration|general>\\n"
+                        "PROMPT: <English image description>\\n"
+                        "USER_COMMAND: "
                         + CONFIG["inline_planner_raw_command"]
                     )
                     messages = [{{"role": "user", "content": instruction}}]
@@ -377,7 +414,7 @@ class KaggleImageProvider:
                     with torch.inference_mode():
                         generated = planner_model.generate(
                             **inputs,
-                            max_new_tokens=120,
+                            max_new_tokens=150,
                             do_sample=False,
                             use_cache=True,
                             repetition_penalty=1.05,
@@ -386,11 +423,15 @@ class KaggleImageProvider:
                     new_tokens = generated[:, inputs.input_ids.shape[1]:]
                     raw_text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
                     generate_finished = time.perf_counter()
-                    compiled = parse_compiled_prompt(raw_text)
+                    compiled = parse_compiled_result(raw_text)
+                    valid_subjects = {{"animal", "human", "general"}}
+                    valid_styles = {{"photo", "3d", "mascot", "illustration", "general"}}
                     valid = (
-                        len(compiled) >= 20
-                        and not looks_vietnamese(compiled)
-                        and "USER_COMMAND" not in compiled
+                        len(compiled["prompt"]) >= 20
+                        and not looks_vietnamese(compiled["prompt"])
+                        and "USER_COMMAND" not in compiled["prompt"]
+                        and compiled["subject_class"] in valid_subjects
+                        and compiled["style_class"] in valid_styles
                     )
                     timing = {{
                         "model_load_seconds": round(model_ready - load_started, 3),
@@ -400,41 +441,67 @@ class KaggleImageProvider:
                     del generated, inputs, planner_model, tokenizer
                     gc.collect()
                     torch.cuda.empty_cache()
-                    return compiled if valid else "", raw_text, timing
+                    return compiled if valid else None, raw_text, timing
 
-                compiled_prompt, planner_raw, planner_timing = compile_prompt(
+                compiled, planner_raw, planner_timing = compile_prompt(
                     CONFIG["inline_planner_fast_model"]
                 )
                 planner_model_used = CONFIG["inline_planner_fast_model"]
                 planner_fallback_used = False
-                if not compiled_prompt:
+                if compiled is None:
                     planner_fallback_used = True
-                    compiled_prompt, planner_raw, planner_timing = compile_prompt(
+                    compiled, planner_raw, planner_timing = compile_prompt(
                         CONFIG["inline_planner_final_model"]
                     )
                     planner_model_used = CONFIG["inline_planner_final_model"]
-                if not compiled_prompt:
-                    raise RuntimeError("inline media planner did not produce a usable English prompt")
+                if compiled is None:
+                    raise RuntimeError("inline media planner did not produce usable semantic routing")
 
-                source_command = CONFIG["inline_planner_raw_command"].casefold()
-                if any(term in source_command for term in ("trâu", "buffalo", "water buffalo")):
-                    for wrong in ("Vietnamese cow", "cow", "cattle"):
-                        compiled_prompt = compiled_prompt.replace(wrong, "water buffalo")
-                        compiled_prompt = compiled_prompt.replace(wrong.title(), "Water buffalo")
-                    if "buffalo" not in compiled_prompt.casefold():
-                        compiled_prompt = "one water buffalo, " + compiled_prompt
+                subject_class = compiled["subject_class"]
+                style_class = compiled["style_class"]
+                if style_class in ("3d", "mascot"):
+                    semantic_profile = "mascot_premium"
+                elif subject_class == "animal" and style_class == "photo":
+                    semantic_profile = "animal_photo_premium"
+                elif subject_class == "human" and style_class == "photo":
+                    semantic_profile = "human_photo_premium"
+                elif subject_class == "animal":
+                    semantic_profile = "animal_photo_premium"
+                elif subject_class == "human":
+                    semantic_profile = "human_photo_premium"
+                else:
+                    semantic_profile = "general_premium"
 
+                positive = CONFIG["inline_profile_positive_constraints"].get(
+                    semantic_profile,
+                    CONFIG["inline_planner_positive_constraints"],
+                )
+                negative = CONFIG["inline_profile_negative_constraints"].get(
+                    semantic_profile,
+                    CONFIG["negative_prompt"],
+                )
+                rubric = CONFIG["inline_profile_rubrics"].get(
+                    semantic_profile,
+                    CONFIG["inline_vlm_rubric"],
+                )
                 CONFIG["prompt"] = (
-                    compiled_prompt.rstrip(" .")
+                    compiled["prompt"].rstrip(" .")
                     + ". Quality requirements: "
-                    + CONFIG["inline_planner_positive_constraints"].strip().rstrip(" .")
+                    + positive.strip().rstrip(" .")
                     + "."
                 )
+                CONFIG["negative_prompt"] = negative
+                CONFIG["inline_vlm_profile"] = semantic_profile
+                CONFIG["inline_vlm_rubric"] = rubric
+
                 inline_planner = {{
                     "model": planner_model_used,
                     "fallback_used": planner_fallback_used,
                     "raw_output": planner_raw,
-                    "compiled_prompt": compiled_prompt,
+                    "compiled_prompt": compiled["prompt"],
+                    "subject_class": subject_class,
+                    "style_class": style_class,
+                    "semantic_profile": semantic_profile,
                     "final_prompt": CONFIG["prompt"],
                     "timings": planner_timing,
                     "total_stage_seconds": round(time.perf_counter() - planner_started, 3),
@@ -639,6 +706,7 @@ class KaggleImageProvider:
                 "visual_quality_margin": visual_quality_margin,
                 "clip_precheck": bool(CONFIG["enable_clip_precheck"]),
                 "inline_planner": inline_planner,
+                "semantic_profile": semantic_profile,
                 "compiled_prompt": CONFIG["prompt"],
                 "inline_vlm": inline_vlm,
                 "hf_xet_high_performance": os.environ.get("HF_XET_HIGH_PERFORMANCE") == "1",
