@@ -5,7 +5,7 @@ import json
 from PIL import Image
 
 from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
-from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
+from ai_agent.core.vision_quality import HybridVisionQualityVerifier, KaggleVisionQualityVerifier, VisionQualityRequest
 
 
 class FakeWorker:
@@ -448,3 +448,107 @@ def test_qwen3_worker_rejects_unknown_attention_backend():
     import pytest
     with pytest.raises(ValueError, match="attention_backend"):
         KaggleVisionQualityVerifier(worker=FakeWorker([]), attention_backend="unknown")
+
+
+class HybridFakeWorker:
+    def __init__(self, image, fast_review, final_review=None):
+        self.image = image
+        self.fast_review = fast_review
+        self.final_review = final_review or fast_review
+        self.submissions = []
+        self.current_slug = ""
+
+    def submit_script(self, **kwargs):
+        self.current_slug = kwargs["slug"]
+        self.submissions.append(self.current_slug)
+        return KaggleKernelSubmission("testuser", kwargs["slug"], 1, 1, None)
+
+    def status(self, slug):
+        return KaggleKernelStatus("COMPLETE")
+
+    def download_output_file(self, slug, filename):
+        assert filename == "vision_quality.json"
+        fast = slug.endswith("-fast")
+        review = self.fast_review if fast else self.final_review
+        model = "Qwen/Qwen3-VL-4B-Instruct" if fast else "Qwen/Qwen3-VL-8B-Instruct"
+        review_image = KaggleVisionQualityVerifier._compact_review_image(self.image)
+        return json.dumps({
+            "model": model,
+            "gpu_name": "Tesla T4",
+            "attention_backend": "sdpa",
+            "items": [{
+                "item_id": "human-1",
+                "image_sha256": hashlib.sha256(self.image).hexdigest(),
+                "review_image_sha256": hashlib.sha256(review_image).hexdigest(),
+                "defect_review_text": json.dumps({
+                    "reject": False,
+                    "critical_defects": [],
+                    "benchmark_failures": [],
+                    "uncertain_regions": [],
+                }),
+                "review_text": json.dumps(review),
+            }],
+        }).encode()
+
+
+def _hybrid_review(score):
+    return {
+        "pass": True,
+        "quality_score": score,
+        "prompt_match_score": score,
+        "structure_score": score,
+        "detail_score": score,
+        "aesthetic_score": score,
+        "composition_score": score,
+        "benchmark_match_score": score,
+        "subject_count": 1,
+        "major_issues": [],
+        "minor_issues": [],
+    }
+
+
+def test_hybrid_quality_gate_accepts_clear_9_plus_image_without_loading_8b():
+    image = png_bytes()
+    worker = HybridFakeWorker(image, _hybrid_review(9.5))
+    verifier = HybridVisionQualityVerifier(worker=worker, poll_interval=0)
+
+    result = verifier.verify(request(image=image))
+
+    assert result.passed is True
+    assert worker.submissions == ["ai-agent-hybrid-vision-quality-fast"]
+    assert "hybrid_stage:fast_clear_pass" in result.evidence
+    assert "hybrid_fast_model:Qwen/Qwen3-VL-4B-Instruct" in result.evidence
+
+
+def test_hybrid_quality_gate_uses_8b_for_borderline_fast_review():
+    image = png_bytes()
+    worker = HybridFakeWorker(
+        image,
+        _hybrid_review(9.0),
+        _hybrid_review(9.6),
+    )
+    verifier = HybridVisionQualityVerifier(worker=worker, poll_interval=0)
+
+    result = verifier.verify(request(image=image))
+
+    assert result.passed is True
+    assert worker.submissions == [
+        "ai-agent-hybrid-vision-quality-fast",
+        "ai-agent-hybrid-vision-quality-final",
+    ]
+    assert "hybrid_stage:final_fallback" in result.evidence
+    assert "hybrid_final_model:Qwen/Qwen3-VL-8B-Instruct" in result.evidence
+
+
+def test_hybrid_quality_gate_enforces_nine_out_of_ten_minimum():
+    image = png_bytes()
+    review = _hybrid_review(8.9)
+    review["pass"] = False
+    worker = HybridFakeWorker(image, review, review)
+    verifier = HybridVisionQualityVerifier(worker=worker, poll_interval=0)
+
+    result = verifier.verify(request(image=image))
+
+    assert result.passed is False
+    assert worker.submissions[-1].endswith("-final")
+    assert any("below threshold" in issue for issue in result.major_issues)
