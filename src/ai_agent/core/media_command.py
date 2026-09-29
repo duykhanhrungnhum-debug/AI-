@@ -185,7 +185,8 @@ class MediaCommandPlanner:
                 "Preserve every requested subject count, person/object, action, location, clothing, held object, "
                 "camera/framing, time of day and visual style. Do not invent or remove story facts. "
                 "Keep identity/reference instructions if present. Do not lower quality requirements. "
-                "Return exactly two plain-text labeled lines and no Markdown or commentary:\n"
+                "Return exactly two plain-text labeled lines and no Markdown or commentary. "
+                "Return ONE image description only; do not propose alternatives, variants, close-ups or second prompts:\n"
                 "PROMPT: <one complete concise English still-image description>\n"
                 "MOTION: <English motion only when video is requested; otherwise leave empty>\n"
                 f"USER_COMMAND: {command}"
@@ -257,14 +258,23 @@ class MediaCommandPlanner:
     def _parse_labeled(raw: str) -> dict[str, str]:
         values: dict[str, str] = {}
         normalized = raw.replace("：", ":")
+        aliases = {
+            "PROMPT": "PROMPT",
+            "PROMT": "PROMPT",
+            "PROMP": "PROMPT",
+            "MOTION": "MOTION",
+            "MOTON": "MOTION",
+            "MOTIN": "MOTION",
+        }
         for line in normalized.splitlines():
             line = line.strip().lstrip("-*# ").strip()
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
             key = key.strip().upper().replace(" ", "_")
-            if key in {"PROMPT", "MOTION"}:
-                values[key] = value.strip().strip(chr(96)).strip()
+            canonical = aliases.get(key)
+            if canonical is not None and canonical not in values:
+                values[canonical] = value.strip().strip(chr(96)).strip()
         return values
 
     @staticmethod

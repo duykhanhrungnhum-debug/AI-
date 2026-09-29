@@ -143,3 +143,22 @@ def test_command_compiler_rejects_missing_prompt_label_before_image_gpu():
 
     with pytest.raises(ValueError, match="did not return a PROMPT line"):
         planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời")
+
+
+def test_qwen_real_label_typos_use_first_prompt_and_ignore_later_variant():
+    raw = (
+        "PROMT: A high-quality full-body portrait of a young Asian girl running on a modern glass bridge "
+        "in the morning, wearing sportswear in black and jade green, holding a water bottle, natural happy face, "
+        "clear from head to toe, correct hand and finger anatomy, natural light, high-end realistic photography style, "
+        "one person in the image.\n\n"
+        "MOTION:\n\n"
+        "PROMP: A close-up alternative that must not replace the first prompt.\n\n"
+        "MOTON:"
+    )
+    plan = MediaCommandPlanner(FakeModel(raw)).plan(
+        "Tạo ảnh toàn thân cô gái chạy bộ trên cầu kính"
+    )
+
+    assert plan.prompt.startswith("A high-quality full-body portrait")
+    assert "close-up alternative" not in plan.prompt
+    assert plan.motion_prompt == ""
