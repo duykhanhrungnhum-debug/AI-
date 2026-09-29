@@ -307,3 +307,46 @@ def test_qwen3_8b_worker_source_compiles_with_two_pass_critic():
     assert "adversarial visual defect hunter" in source
     assert "uncertain_regions" in source
     compile(source, "<qwen3-8b-adversarial-worker>", "exec")
+
+
+def test_user_rejected_image_hash_vetoes_vlm_pass(monkeypatch):
+    image = png_bytes()
+    digest = hashlib.sha256(image).hexdigest()
+    monkeypatch.setattr(
+        "ai_agent.core.vision_quality.benchmark_manifest",
+        lambda: {
+            "profiles": {
+                "human_photo_premium": {
+                    "known_rejected_sha256": [digest],
+                }
+            }
+        },
+    )
+    review = {
+        "pass": True,
+        "quality_score": 9.9,
+        "prompt_match_score": 9.9,
+        "structure_score": 9.9,
+        "detail_score": 9.9,
+        "aesthetic_score": 9.9,
+        "composition_score": 9.9,
+        "benchmark_match_score": 9.9,
+        "subject_count": 1,
+        "major_issues": [],
+        "minor_issues": [],
+        "summary": "model thinks it is excellent",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=FakeWorker([("human-1", image, review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(request(image=image))
+    assert result.passed is False
+    assert "image exactly matches a user-rejected quality example" in result.major_issues
+    assert "user_rejected_feedback:True" in result.evidence
+
+
+def test_qwen3_8b_worker_requires_current_bitsandbytes_for_4bit():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "bitsandbytes>=0.46.1" in source
