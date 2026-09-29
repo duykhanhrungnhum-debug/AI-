@@ -303,7 +303,7 @@ def benchmark_manifest() -> dict:
     substituting a different benchmark set.
     """
     return {
-        "version": 2,
+        "version": 3,
         "reference_set": [
             {
                 "profile": HUMAN_PHOTO_PREMIUM.name,
@@ -337,24 +337,35 @@ def benchmark_manifest() -> dict:
         "profiles": {
             HUMAN_PHOTO_PREMIUM.name: {
                 "must_pass": [
-                    "natural face and expression",
-                    "correct hand/finger anatomy",
-                    "plausible body proportions and joints",
-                    "clean clothing/skin/hair detail",
-                    "clean background geometry and objects",
-                    "no obvious AI artifacts",
-                    "production-ready overall appearance",
+                    "premium commercial-photo finish comparable to the user's accepted human references",
+                    "natural East Asian facial proportions and expression; no doll-like, plastic or distorted face",
+                    "correct hand/finger anatomy with five distinct plausible fingers when visible",
+                    "plausible body proportions, shoulders, elbows, wrists, hips, knees and feet",
+                    "clean realistic clothing, skin and hair texture without melted or waxy surfaces",
+                    "straight coherent bridge/building/railing geometry and physically plausible held objects",
+                    "natural daylight, believable depth and premium photographic detail rather than synthetic CGI gloss",
+                    "no obvious AI artifacts, duplicate body parts, warped props, pseudo-text or broken perspective",
+                    "production-ready overall appearance at the same quality bar as the supplied benchmark set",
+                ],
+                "known_rejected_sha256": [
+                    "8e38371165a9c1017a1b56a414061f827ff11133cbe23231b7ab5aa800ffe1e9",
                 ],
             },
             MASCOT_PREMIUM.name: {
                 "must_pass": [
-                    "clean rounded geometry",
-                    "coherent appendages and symmetry",
-                    "clean expressive eyes/mouth",
-                    "crisp silhouette/cutout-ready edges",
-                    "clean materials and lighting",
-                    "no malformed or duplicated parts",
-                    "production-ready overall appearance",
+                    "match the user's accepted cute 3D crab benchmark visual language, not merely generic 3D quality",
+                    "squat low wide crab silhouette resting naturally on a broad green lily pad; NOT a tall spherical balloon body",
+                    "two large rounded frontal claws integrated close to the body; NOT thin raised scissor-like claws",
+                    "coherent crab legs and two short antennae; no duplicated, missing, detached or implausibly attached appendages",
+                    "organic bumpy red-orange shell surface with soft cream underside/claw tips; NOT shiny plastic-toy material",
+                    "cute face integrated into crab anatomy with expressive eyes/mouth; no human-like eyebrows, nose or teeth unless requested",
+                    "clean sticker/cutout presentation with a crisp white outline around the crab and lily pad, black or transparent-style background",
+                    "broad green lily pad with clean shape and visible water droplets when appropriate",
+                    "soft polished studio-quality 3D lighting and materials without dark glossy toy-render look",
+                    "production-ready overall appearance at the same quality bar as the supplied sleepy/joyful crab references",
+                ],
+                "known_rejected_sha256": [
+                    "2525bafcc74e14444cb64e9c355a882d280417c712a23d1eaadd126aa3c28034",
                 ],
             },
         },
