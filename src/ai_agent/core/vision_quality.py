@@ -376,25 +376,20 @@ class KaggleVisionQualityVerifier:
                 rubric = "\n".join(f"- {{criterion}}" for criterion in item["rubric"])
                 expected = item.get("expected_subject_count")
                 instruction = (
-                    "You are the final visual-quality inspector for a production image pipeline.\n"
-                    "Be strict and judge what is actually visible, not what the prompt intended.\n"
-                    f"PROFILE: {{item['profile']}}\n"
-                    f"ORIGINAL PROMPT: {{item['prompt']}}\n"
-                    f"EXPECTED MAIN SUBJECT COUNT: {{expected}}\n"
-                    "QUALITY RUBRIC:\n"
-                    f"{{rubric}}\n\n"
-                    "Inspect specifically for: wrong subject count, duplicated people/characters/objects, "
+                    f"You are the final visual-quality inspector for a production image pipeline. "
+                    f"Be strict and judge what is actually visible, not what the prompt intended. "
+                    f"PROFILE: {{item['profile']}}; ORIGINAL PROMPT: {{item['prompt']}}; "
+                    f"EXPECTED MAIN SUBJECT COUNT: {{expected}}; QUALITY RUBRIC: {{rubric}}. "
+                    "Inspect specifically for wrong subject count, duplicated people/characters/objects, "
                     "malformed or fused hands/fingers/limbs, broken anatomy, distorted face/eyes/mouth, "
                     "warped geometry, impossible object connections, bad perspective, unreadable accidental "
-                    "pseudo-text, muddy or unfinished details, identity drift when visually evident, and prompt mismatch.\n"
-                    "Minor stylistic preferences are not major defects. A clean anatomically plausible stylized "
-                    "mascot may have its normal species limbs.\n"
-                    "Score production readiness from 0 to 10 and prompt match from 0 to 10.\n"
-                    "Set pass=true ONLY if quality_score >= 8, prompt_match_score >= 8, subject count is correct, "
-                    "and major_issues is empty.\n"
-                    "Return JSON only with exactly these keys:\n"
+                    "pseudo-text, muddy or unfinished details, identity drift when visually evident, and prompt mismatch. "
+                    "Minor stylistic preferences are not major defects. A clean anatomically plausible stylized mascot "
+                    "may have its normal species limbs. Score production readiness from 0 to 10 and prompt match from 0 to 10. "
+                    "Set pass=true ONLY if quality_score >= 8, prompt_match_score >= 8, subject count is correct, and "
+                    "major_issues is empty. Return JSON only with exactly these keys: "
                     '{{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "subject_count": 1, '
-                    '"major_issues": [], "minor_issues": [], "summary": ""}}\n'
+                    '"major_issues": [], "minor_issues": [], "summary": ""}}'
                 )
                 messages = [{{
                     "role": "user",
