@@ -9,7 +9,9 @@ import pytest
 
 from ai_agent.core.kaggle_image_batch import (
     KaggleBatchImageProvider,
+    KaggleSemanticImageBatchProvider,
     SceneImageRequest,
+    SemanticImageBatchItem,
 )
 from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
 
@@ -296,3 +298,131 @@ def test_worker_scores_visual_defects_separately_from_prompt_alignment():
     assert "visual_quality_margin" in source
     assert "deformed hands" in source
     assert "warped books" in source
+
+
+
+class SemanticFakeWorker:
+    def __init__(self):
+        self.submissions = []
+        self.images = {
+            "real": png_bytes(1024, 1024, b"R"),
+            "cute3d": png_bytes(1024, 1024, b"C"),
+        }
+
+    def submit_script(self, **kwargs):
+        self.submissions.append(kwargs)
+        return KaggleKernelSubmission("testuser", kwargs["slug"], 1, 1, None)
+
+    def status(self, slug):
+        return KaggleKernelStatus("COMPLETE")
+
+    def logs(self, slug):
+        return ""
+
+    def download_output_file(self, slug, filename):
+        if filename.endswith(".png"):
+            return self.images[filename[:-4]]
+        if filename != "batch_report.json":
+            raise FileNotFoundError(filename)
+        reports = {}
+        for item_id, profile, subject, style in (
+            ("real", "animal_photo_premium", "animal", "photo"),
+            ("cute3d", "mascot_premium", "animal", "3d"),
+        ):
+            image = self.images[item_id]
+            reports[item_id] = {
+                "prompt": f"one {style} water buffalo",
+                "negative_prompt": "bad anatomy",
+                "subject_class": subject,
+                "style_class": style,
+                "semantic_profile": profile,
+                "planner_raw": "semantic output",
+                "planner_model": "Qwen/Qwen3-0.6B",
+                "image_sha256": hashlib.sha256(image).hexdigest(),
+                "model": "SG161222/RealVisXL_V5.0",
+                "model_variant": "fp16",
+                "width": 1024,
+                "height": 1024,
+                "review_text": '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}',
+            }
+        return json.dumps({
+            "gpu_name": "Tesla T4",
+            "model": "SG161222/RealVisXL_V5.0",
+            "model_variant": "fp16",
+            "items": reports,
+        }).encode()
+
+
+def semantic_provider(worker=None):
+    return KaggleSemanticImageBatchProvider(
+        worker=worker or SemanticFakeWorker(),
+        poll_interval=0,
+        profile_positive_constraints={
+            "human_photo_premium": "human quality",
+            "animal_photo_premium": "animal photo quality",
+            "mascot_premium": "3D mascot quality",
+            "general_premium": "general quality",
+        },
+        profile_negative_constraints={
+            "human_photo_premium": "bad hands",
+            "animal_photo_premium": "bad animal anatomy",
+            "mascot_premium": "bad 3D anatomy",
+            "general_premium": "bad geometry",
+        },
+        profile_rubrics={
+            "human_photo_premium": ("human anatomy",),
+            "animal_photo_premium": ("animal anatomy",),
+            "mascot_premium": ("3D mascot quality",),
+            "general_premium": ("general quality",),
+        },
+        profile_dimensions={
+            "human_photo_premium": (832, 1216),
+            "animal_photo_premium": (1024, 1024),
+            "mascot_premium": (1024, 1024),
+            "general_premium": (1024, 1024),
+        },
+    )
+
+
+def test_semantic_batch_loads_planner_image_model_and_vlm_once_for_all_items():
+    provider = semantic_provider()
+    items = (
+        SemanticImageBatchItem("real", "Tạo ảnh một con voi thật", 10),
+        SemanticImageBatchItem("cute3d", "Tạo ảnh một con voi 3D cute", 20),
+    )
+
+    source = provider._build_worker_source(items)
+    compile(source, "<semantic-batch-worker>", "exec")
+
+    assert source.count('AutoPipelineForText2Image.from_pretrained(CONFIG["model"]') == 1
+    assert source.count('Qwen3VLForConditionalGeneration.from_pretrained') == 1
+    assert "without a fixed species list" in source
+    assert "SUBJECT_CLASS" in source
+    assert "STYLE_CLASS" in source
+    assert "for item in compiled_items:" in source
+
+
+def test_semantic_batch_returns_two_styles_from_one_model_and_one_submission():
+    worker = SemanticFakeWorker()
+    provider = semantic_provider(worker)
+    result = provider.generate_batch((
+        SemanticImageBatchItem("real", "Tạo ảnh trâu thật", 10),
+        SemanticImageBatchItem("cute3d", "Tạo ảnh trâu 3D cute", 20),
+    ))
+
+    assert len(worker.submissions) == 1
+    assert set(result.artifacts) == {"real", "cute3d"}
+    assert {artifact.model for artifact in result.artifacts.values()} == {"SG161222/RealVisXL_V5.0"}
+    assert result.reports["real"]["semantic_profile"] == "animal_photo_premium"
+    assert result.reports["cute3d"]["semantic_profile"] == "mascot_premium"
+
+
+def test_semantic_batch_rejects_mismatched_profile_maps():
+    with pytest.raises(ValueError, match="matching keys"):
+        KaggleSemanticImageBatchProvider(
+            worker=SemanticFakeWorker(),
+            profile_positive_constraints={"animal_photo_premium": "good"},
+            profile_negative_constraints={"general_premium": "bad"},
+            profile_rubrics={"animal_photo_premium": ("quality",)},
+            profile_dimensions={"animal_photo_premium": (1024, 1024)},
+        )
