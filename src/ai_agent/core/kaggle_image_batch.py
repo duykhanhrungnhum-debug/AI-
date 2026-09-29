@@ -1124,6 +1124,27 @@ def valid_subject_name(value):
     return True
 
 
+def subject_name_matches_prompt(subject_name, prompt):
+    subject_tokens = [
+        token for token in "".join(
+            ch.casefold() if ch.isalnum() else " "
+            for ch in (subject_name or "")
+        ).split()
+        if len(token) >= 3
+    ]
+    prompt_tokens = set(
+        "".join(
+            ch.casefold() if ch.isalnum() else " "
+            for ch in (prompt or "")
+        ).split()
+    )
+    if not subject_tokens:
+        return False
+    matched = sum(1 for token in subject_tokens if token in prompt_tokens)
+    required = max(1, (len(subject_tokens) + 1) // 2)
+    return matched >= required
+
+
 def choose_profile(subject, style, fallback):
     if style in ("3d", "mascot"):
         return "mascot_premium"
@@ -1203,7 +1224,10 @@ def compile_items(model_name, pending):
             and "USER_COMMAND" not in parsed["prompt"]
             and not is_placeholder_prompt(parsed["prompt"])
         )
-        subject_name_valid = valid_subject_name(parsed.get("subject_name", ""))
+        subject_name_valid = (
+            valid_subject_name(parsed.get("subject_name", ""))
+            and subject_name_matches_prompt(parsed.get("subject_name", ""), parsed["prompt"])
+        )
         if not prompt_valid or not subject_name_valid:
             retries += 1
             retry_raw = generate_text(
@@ -1226,7 +1250,10 @@ def compile_items(model_name, pending):
             ):
                 parsed["prompt"] = retry_prompt
                 prompt_valid = True
-            if valid_subject_name(retry_subject_name):
+            if (
+                valid_subject_name(retry_subject_name)
+                and subject_name_matches_prompt(retry_subject_name, parsed["prompt"])
+            ):
                 parsed["subject_name"] = retry_subject_name
                 subject_name_valid = True
 
