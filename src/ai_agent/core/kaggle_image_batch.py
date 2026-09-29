@@ -1344,9 +1344,19 @@ for item in CONFIG["items"]:
     positive = CONFIG["profile_positive_constraints"][profile]
     negative = CONFIG["profile_negative_constraints"][profile]
     width, height = CONFIG["profile_dimensions"][profile]
+    final_prompt = parsed["prompt"].rstrip(" .") + ". Quality requirements: " + positive.rstrip(" .") + "."
+    if profile == "mascot_premium":
+        final_prompt += (
+            " Composition safety: keep the complete character fully inside the central 78 percent of the frame with generous clean margin "
+            "around every edge; horns, ears, tail and all feet must remain well inside the frame; keep the outer border visually simple and unmarked."
+        )
+        negative = (
+            negative.rstrip(" ,")
+            + ", border mark, corner symbol, pseudo-signature, pseudo-logo, stock badge, app icon, branding artifact"
+        )
     compiled_items.append({
         **item,
-        "prompt": parsed["prompt"].rstrip(" .") + ". Quality requirements: " + positive.rstrip(" .") + ".",
+        "prompt": final_prompt,
         "negative_prompt": negative,
         "subject_class": parsed["subject_class"],
         "style_class": parsed["style_class"],
@@ -1384,16 +1394,32 @@ for item in compiled_items:
         generate_started = time.perf_counter()
         candidate_seed = int(item["seed"]) + candidate_index
         generator = torch.Generator(device="cpu").manual_seed(candidate_seed)
+
+        final_width = int(item["width"])
+        final_height = int(item["height"])
+        safe_crop = item["semantic_profile"] == "mascot_premium"
+        if safe_crop:
+            render_width = ((int(final_width * 1.125) + 7) // 8) * 8
+            render_height = ((int(final_height * 1.125) + 7) // 8) * 8
+        else:
+            render_width = final_width
+            render_height = final_height
+
         result = pipe(
             prompt=item["prompt"],
             negative_prompt=item["negative_prompt"] or None,
-            width=item["width"],
-            height=item["height"],
+            width=render_width,
+            height=render_height,
             num_inference_steps=int(CONFIG["inference_steps"]),
             guidance_scale=float(CONFIG["guidance_scale"]),
             generator=generator,
         )
         image = result.images[0]
+        if safe_crop:
+            left = max(0, (image.width - final_width) // 2)
+            top = max(0, (image.height - final_height) // 2)
+            image = image.crop((left, top, left + final_width, top + final_height))
+
         output_path = Path("/kaggle/working") / (
             item["item_id"] + "__candidate_" + str(candidate_index) + ".png"
         )
@@ -1407,6 +1433,9 @@ for item in compiled_items:
             "image_sha256": sha256(data).hexdigest(),
             "model": CONFIG["model"],
             "model_variant": CONFIG.get("model_variant"),
+            "render_width": render_width,
+            "render_height": render_height,
+            "safe_border_crop": safe_crop,
             "image_generation_seconds": round(time.perf_counter() - generate_started, 3),
         })
     candidate_reports[item["item_id"]] = candidates

@@ -224,6 +224,7 @@ def test_benchmark_manifest_keeps_user_rejected_examples_but_generalizes_3d_qual
     assert "8e38371165a9c1017a1b56a414061f827ff11133cbe23231b7ab5aa800ffe1e9" in human["known_rejected_sha256"]
     assert any("species-correct" in item for item in mascot["must_pass"])
     assert any("plastic-toy" in item for item in mascot["must_pass"])
+    assert any("watermark" in item and "logo" in item for item in mascot["must_pass"])
     assert all("lily pad" not in item for item in mascot["must_pass"])
 
 

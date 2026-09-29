@@ -159,9 +159,11 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     assert "Qwen3VLForConditionalGeneration" in source
     assert "Qwen/Qwen3-VL-8B-Instruct" in source
     assert "views = [" in source
-    assert "three views of the SAME generated image" in source
+    assert "five views of the SAME generated image" in source
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
+    assert "HARD CLEAN-ASSET RULE" in source
+    assert "all four corner crops" in source
     assert "every score including benchmark_match_score is >= 8" in source
 
 
@@ -213,8 +215,10 @@ def test_vlm_quality_gate_rejects_low_structure_even_when_overall_score_is_high(
 def test_qwen3_worker_uses_multiview_and_hard_component_gates():
     verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
     source = verifier._build_worker_source((request(),))
-    assert 'image.crop((0, 0, width, max(1, height // 2)))' in source
-    assert 'image.crop((0, height // 2, width, height))' in source
+    assert 'image.crop((0, 0, half_w, half_h))' in source
+    assert 'image.crop((half_w, 0, width, half_h))' in source
+    assert 'image.crop((0, half_h, half_w, height))' in source
+    assert 'image.crop((half_w, half_h, width, height))' in source
     assert 'structure_score' in source
     assert 'detail_score' in source
     assert 'aesthetic_score' in source

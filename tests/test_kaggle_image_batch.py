@@ -481,3 +481,6 @@ def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
     assert "normalize_branding_findings" in source
     assert 'candidate_count = 3 if item["semantic_profile"] == "mascot_premium" else 1' in source
     assert '"candidate_summaries"' in source
+    assert "safe_border_crop" in source
+    assert "render_width" in source
+    assert "central 78 percent" in source

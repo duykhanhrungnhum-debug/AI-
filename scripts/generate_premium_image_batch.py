@@ -284,7 +284,15 @@ def main() -> int:
     fallback_requests = []
     for item_id, review in tuple(reviews.items()):
         request = requests[item_id]
-        if verifier._clear_fast_pass(review) or verifier._obvious_fast_reject(request, review):
+        obvious_reject = verifier._obvious_fast_reject(request, review)
+        if obvious_reject:
+            continue
+        if request.profile == MASCOT_PREMIUM.name:
+            # Mascot assets require an 8B final audit even when the 2B scorer says
+            # clear pass; small logos and subtle style misses are critical.
+            fallback_requests.append(request)
+            continue
+        if verifier._clear_fast_pass(review):
             continue
         fallback_requests.append(request)
 
@@ -354,6 +362,7 @@ def main() -> int:
         "hard_gate_retry_count": len(retry_ids),
         "hard_gate_retry_ids": sorted(retry_ids),
         "fallback_8b_seconds": fallback_elapsed,
+        "mascot_8b_final_required": True,
         "worker_report": {
             "planner_fast_timing": batch.batch_report.get("planner_fast_timing"),
             "planner_final_timing": batch.batch_report.get("planner_final_timing"),
