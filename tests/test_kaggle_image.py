@@ -39,7 +39,7 @@ class FakeWorker:
                 "width": 512,
                 "height": 512,
                 "seed": 42,
-                "model": "stabilityai/stable-diffusion-xl-base-1.0",
+                "model": "playgroundai/playground-v2.5-1024px-aesthetic",
                 "gpu_name": "Tesla T4",
                 "prompt_alignment_score": 0.35,
                 "visual_quality_margin": 0.05,
@@ -68,7 +68,9 @@ def test_kaggle_image_provider_runs_open_model_and_verifies_evidence(monkeypatch
     assert worker.submitted["is_private"] is True
     assert worker.submitted["title"] == "Ai Agent Image Worker"
     assert "AutoPipelineForText2Image.from_pretrained" in worker.submitted["source"]
-    assert "stable-diffusion-xl-base-1.0" in worker.submitted["source"]
+    assert "playgroundai/playground-v2.5-1024px-aesthetic" in worker.submitted["source"]
+    assert "EDMDPMSolverMultistepScheduler" in worker.submitted["source"]
+    assert '"scheduler": "edm_dpm"' in worker.submitted["source"]
     assert "visual_quality_margin" in worker.submitted["source"]
     assert artifact.data == b"PNG-BYTES"
     assert artifact.provider == "kaggle-gpu-local-model"
@@ -95,7 +97,7 @@ def test_kaggle_image_provider_rejects_hash_mismatch():
             "width": 512,
             "height": 512,
             "seed": 42,
-            "model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "model": "playgroundai/playground-v2.5-1024px-aesthetic",
             "gpu_name": "Tesla T4",
                 "prompt_alignment_score": 0.35,
                 "visual_quality_margin": 0.05,
@@ -120,7 +122,7 @@ def test_kaggle_image_provider_rejects_low_visual_quality_margin():
             "width": 512,
             "height": 512,
             "seed": 42,
-            "model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "model": "playgroundai/playground-v2.5-1024px-aesthetic",
             "gpu_name": "Tesla T4",
             "prompt_alignment_score": 0.35,
             "visual_quality_margin": -0.02,
@@ -132,3 +134,25 @@ def test_kaggle_image_provider_rejects_low_visual_quality_margin():
 
     with pytest.raises(ValueError, match="visual quality margin"):
         provider.generate(ImageGenerationRequest("scene", width=512, height=512, seed=42))
+
+
+def test_kaggle_image_provider_embeds_profile_specific_quality_critic():
+    provider = KaggleImageProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        quality_good_text="clean mascot geometry",
+        quality_bad_texts=("multiple repeated mascots", "malformed claws"),
+    )
+
+    source = provider._build_worker_source(
+        ImageGenerationRequest("one crab mascot", width=512, height=512, seed=42)
+    )
+
+    assert "clean mascot geometry" in source
+    assert "multiple repeated mascots" in source
+    assert "malformed claws" in source
+
+
+def test_kaggle_image_provider_rejects_unknown_scheduler():
+    with pytest.raises(ValueError, match="scheduler"):
+        KaggleImageProvider(worker=FakeWorker(), scheduler="unknown")

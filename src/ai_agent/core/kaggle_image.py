@@ -17,14 +17,23 @@ class KaggleImageProvider:
     """Run an open-weight image model on Kaggle GPU and return verified bytes."""
 
     worker: KaggleGpuWorker
-    model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    model: str = "playgroundai/playground-v2.5-1024px-aesthetic"
     kernel_slug: str = "ai-agent-image-worker"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
-    inference_steps: int = 24
-    guidance_scale: float = 6.0
+    inference_steps: int = 30
+    guidance_scale: float = 3.0
+    scheduler: str = "edm_dpm"
     prompt_alignment_threshold: float = 0.22
     visual_quality_margin_threshold: float = 0.015
+    quality_good_text: str = (
+        "premium production-ready image, coherent geometry, crisp detail, professional composition and lighting, "
+        "clean materials and textures, no obvious AI artifacts"
+    )
+    quality_bad_texts: tuple[str, ...] = (
+        "bad AI image with warped geometry, duplicated subjects or objects and broken perspective",
+        "low quality blurry noisy unfinished image with melted details and obvious AI artifacts",
+    )
     provider: str = "kaggle-gpu-local-model"
 
     def __post_init__(self) -> None:
@@ -36,6 +45,12 @@ class KaggleImageProvider:
             raise ValueError("poll configuration must be valid")
         if self.inference_steps <= 0:
             raise ValueError("inference_steps must be positive")
+        if self.scheduler not in {"default", "edm_dpm", "dpm_karras"}:
+            raise ValueError("scheduler must be default, edm_dpm or dpm_karras")
+        if not self.quality_good_text.strip() or not self.quality_bad_texts:
+            raise ValueError("visual quality critic text must be configured")
+        if any(not item.strip() for item in self.quality_bad_texts):
+            raise ValueError("visual quality critic bad texts must be non-empty")
         if not -1.0 <= self.prompt_alignment_threshold <= 1.0:
             raise ValueError("prompt_alignment_threshold must be in [-1, 1]")
         if not -2.0 <= self.visual_quality_margin_threshold <= 2.0:
@@ -135,6 +150,9 @@ class KaggleImageProvider:
             "seed": seed,
             "inference_steps": self.inference_steps,
             "guidance_scale": self.guidance_scale,
+            "scheduler": self.scheduler,
+            "quality_good_text": self.quality_good_text,
+            "quality_bad_texts": list(self.quality_bad_texts),
             "prompt_alignment_threshold": self.prompt_alignment_threshold,
             "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
         }
@@ -154,7 +172,7 @@ class KaggleImageProvider:
             try:
                 import torch
                 import torch.nn.functional as F
-                from diffusers import AutoPipelineForText2Image
+                from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
                 from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
             except ImportError:
                 subprocess.check_call([
@@ -163,7 +181,7 @@ class KaggleImageProvider:
                 ])
                 import torch
                 import torch.nn.functional as F
-                from diffusers import AutoPipelineForText2Image
+                from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
                 from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 
             if not torch.cuda.is_available():
@@ -176,6 +194,13 @@ class KaggleImageProvider:
                 CONFIG["model"],
                 torch_dtype=torch.float16,
             )
+            if CONFIG["scheduler"] == "edm_dpm":
+                pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+            elif CONFIG["scheduler"] == "dpm_karras":
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                    pipe.scheduler.config,
+                    use_karras_sigmas=True,
+                )
             pipe.enable_model_cpu_offload()
             pipe.enable_vae_slicing()
 
@@ -200,15 +225,10 @@ class KaggleImageProvider:
                     vector = clip_text(**values).text_embeds[0].float()
                 return F.normalize(vector, dim=0)
 
-            quality_good = text_embedding(
-                "high quality polished image, coherent anatomy or clean object geometry, crisp details, "
-                "natural lighting, professional composition, no obvious AI artifacts"
+            quality_good = text_embedding(CONFIG["quality_good_text"])
+            quality_bad = tuple(
+                text_embedding(text) for text in CONFIG["quality_bad_texts"]
             )
-            quality_bad = tuple(text_embedding(text) for text in (
-                "bad AI image with deformed anatomy, malformed hands, fused or extra fingers, distorted face",
-                "bad AI image with warped objects, melted geometry, broken perspective, duplicated details",
-                "low quality blurry noisy unfinished image with obvious AI artifacts",
-            ))
 
             result = pipe(
                 prompt=CONFIG["prompt"],

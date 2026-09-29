@@ -42,13 +42,15 @@ HUMAN_PHOTO_PREMIUM = MediaQualityProfile(
 MASCOT_PREMIUM = MediaQualityProfile(
     name="mascot_premium",
     positive_constraints=(
-        "premium polished 3D mascot asset, clean rounded geometry, coherent symmetrical appendages, "
-        "crisp silhouette and edges, expressive readable face, detailed clean materials, professional lighting, "
-        "balanced composition, production-ready final asset"
+        "premium polished 3D mascot asset, EXACTLY ONE main mascot subject, one body only, clean rounded geometry, "
+        "coherent symmetrical appendages, crisp silhouette and edges, expressive readable face, detailed clean materials, "
+        "professional studio lighting, balanced centered composition, production-ready final asset"
     ),
     negative_constraints=(
-        "malformed appendages, duplicated limbs, asymmetrical broken geometry, melted shape, warped shell, "
-        "messy outline, muddy texture, distorted face, inconsistent eyes, obvious AI artifacts, text, watermark, logo"
+        "multiple mascots, multiple crabs, duplicate character, repeated subject, crowd, duplicated body, "
+        "malformed appendages, duplicated limbs, extra claws, extra legs, asymmetrical broken geometry, melted shape, "
+        "warped shell, messy outline, muddy texture, distorted face, inconsistent eyes, obvious AI artifacts, "
+        "text, watermark, logo"
     ),
     width=1024,
     height=1024,
@@ -71,9 +73,81 @@ GENERAL_PREMIUM = MediaQualityProfile(
 
 
 @dataclass(frozen=True)
+class ImageModelConfig:
+    model: str
+    inference_steps: int
+    guidance_scale: float
+    scheduler: str
+    quality_good_text: str
+    quality_bad_texts: tuple[str, ...]
+
+
+HUMAN_IMAGE_MODEL = ImageModelConfig(
+    model="SG161222/RealVisXL_V4.0",
+    inference_steps=28,
+    guidance_scale=5.5,
+    scheduler="dpm_karras",
+    quality_good_text=(
+        "premium photorealistic professional photograph, natural face and expression, correct human anatomy, "
+        "realistic hands with coherent fingers, plausible shoulders elbows wrists and body proportions, "
+        "clean clothing skin hair, physically plausible objects and background geometry, crisp production-ready detail"
+    ),
+    quality_bad_texts=(
+        "bad AI portrait with deformed hands, fused fingers, extra or missing fingers, twisted wrists or arms",
+        "bad AI human image with distorted face, asymmetrical eyes, warped body, extra limbs or broken anatomy",
+        "bad AI photograph with melted clothing, warped furniture or objects, broken perspective and obvious artifacts",
+    ),
+)
+
+
+MASCOT_IMAGE_MODEL = ImageModelConfig(
+    model="playgroundai/playground-v2.5-1024px-aesthetic",
+    inference_steps=30,
+    guidance_scale=3.0,
+    scheduler="edm_dpm",
+    quality_good_text=(
+        "premium polished cute 3D mascot asset, exactly one subject, clean rounded geometry, coherent symmetrical "
+        "appendages, crisp silhouette, expressive clean eyes and mouth, detailed materials, studio lighting, "
+        "production-ready sticker or character asset"
+    ),
+    quality_bad_texts=(
+        "bad mascot image with multiple repeated characters, duplicated subject, crowd of copies",
+        "bad 3D mascot with malformed or duplicated limbs claws appendages, melted geometry or warped body",
+        "bad mascot asset with distorted eyes or mouth, messy silhouette, muddy textures and obvious AI artifacts",
+    ),
+)
+
+
+GENERAL_IMAGE_MODEL = ImageModelConfig(
+    model="playgroundai/playground-v2.5-1024px-aesthetic",
+    inference_steps=30,
+    guidance_scale=3.0,
+    scheduler="edm_dpm",
+    quality_good_text=(
+        "premium production-ready image, coherent geometry, crisp detail, professional composition and lighting, "
+        "clean materials and textures, no obvious AI artifacts"
+    ),
+    quality_bad_texts=(
+        "bad AI image with warped geometry, duplicated subjects or objects and broken perspective",
+        "low quality blurry noisy unfinished image with melted details and obvious AI artifacts",
+    ),
+)
+
+
+def image_model_config(profile: MediaQualityProfile | QualityProfileName) -> ImageModelConfig:
+    name = profile.name if isinstance(profile, MediaQualityProfile) else profile
+    if name == HUMAN_PHOTO_PREMIUM.name:
+        return HUMAN_IMAGE_MODEL
+    if name == MASCOT_PREMIUM.name:
+        return MASCOT_IMAGE_MODEL
+    return GENERAL_IMAGE_MODEL
+
+
+@dataclass(frozen=True)
 class MediaCommandPlan:
     mode: MediaMode
     profile: MediaQualityProfile
+    model_config: ImageModelConfig
     prompt: str
     negative_prompt: str
     motion_prompt: str = ""
@@ -133,6 +207,7 @@ class MediaCommandPlanner:
         return MediaCommandPlan(
             mode=mode,
             profile=profile,
+            model_config=image_model_config(profile),
             prompt=prompt,
             negative_prompt=negatives,
             motion_prompt=motion_prompt,
