@@ -332,7 +332,7 @@ def test_inline_planner_and_vlm_share_one_generated_worker():
     compile(source, "<generated-image-worker>", "exec")
     assert "Qwen/Qwen3-0.6B" in source
     assert "Qwen/Qwen3-1.7B" in source
-    assert "inline media planner did not produce a usable English prompt" in source
+    assert "inline media planner did not produce usable semantic routing" in source
     assert source.index("compile_prompt(") < source.index("AutoPipelineForText2Image.from_pretrained")
     assert source.index("AutoPipelineForText2Image.from_pretrained") < source.index(
         "Qwen3VLForConditionalGeneration.from_pretrained"
@@ -422,7 +422,7 @@ def test_inline_planner_semantically_routes_unlisted_animal_styles():
     assert "SUBJECT_CLASS: <animal|human|general>" in source
     assert "STYLE_CLASS: <photo|3d|mascot|illustration|general>" in source
     assert 'semantic_profile = "mascot_premium"' in source
-    assert '"tê giác"' in source
+    assert '"inline_planner_raw_command"' in source
     assert '("trâu", "buffalo", "water buffalo")' not in source
 
 
