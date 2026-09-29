@@ -176,10 +176,10 @@ class KaggleModelProvider:
             responses = []
             for prompt in CONFIG["prompts"]:
                 messages = [{{"role": "user", "content": prompt}}]
-                template_kwargs = {
+                template_kwargs = {{
                     "tokenize": False,
                     "add_generation_prompt": True,
-                }
+                }}
                 if CONFIG.get("enable_thinking") is not None:
                     template_kwargs["enable_thinking"] = bool(CONFIG["enable_thinking"])
                 rendered = tokenizer.apply_chat_template(
