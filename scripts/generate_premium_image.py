@@ -41,7 +41,7 @@ def main() -> int:
         kernel_slug="ai-agent-media-command-planner",
         poll_interval=15,
         max_poll_attempts=120,
-        max_new_tokens=500,
+        max_new_tokens=180,
         temperature=0.0,
     )
     plan = MediaCommandPlanner(language_model).plan(command)
@@ -63,6 +63,7 @@ def main() -> int:
         enforce_visual_quality_margin=False,
         quality_good_text=config.quality_good_text,
         quality_bad_texts=config.quality_bad_texts,
+        enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
     )
     seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
     request = ImageGenerationRequest(
