@@ -1,1 +1,1 @@
-reference-character-video-smoke-v9-sdxl-visual-quality
+reference-character-video-smoke-v10-realvisxl-quality
