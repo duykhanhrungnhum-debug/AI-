@@ -329,7 +329,7 @@ class KaggleVisionQualityVerifier:
 
                 rubric = "\n".join(f"- {{criterion}}" for criterion in item["rubric"])
                 expected = item.get("expected_subject_count")
-                instruction = f"""You are the final visual-quality inspector for a production image pipeline.
+                instruction = f'''You are the final visual-quality inspector for a production image pipeline.
 Be strict and judge what is actually visible, not what the prompt intended.
 PROFILE: {{item['profile']}}
 ORIGINAL PROMPT: {{item['prompt']}}
@@ -346,7 +346,7 @@ Set pass=true ONLY if quality_score >= 8, prompt_match_score >= 8, subject count
 Return JSON only with exactly these keys:
 {{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "subject_count": 1,
  "major_issues": [], "minor_issues": [], "summary": ""}}
-"""
+'''
                 messages = [{{
                     "role": "user",
                     "content": [
