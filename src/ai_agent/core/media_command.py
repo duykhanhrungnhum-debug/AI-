@@ -308,19 +308,17 @@ class MediaCommandPlanner:
 
     @classmethod
     def _parse_compiler_output(cls, raw: str) -> dict[str, str]:
-        """Accept Qwen compiler output in labeled, JSON, or clean single-prompt form."""
+        """Accept Qwen compiler output in JSON, labeled, or clean English prose form."""
         raw = raw.strip()
         if not raw:
             return {}
-
-        labeled = cls._parse_labeled(raw)
-        if labeled.get("PROMPT"):
-            return labeled
 
         cleaned = raw.strip().strip("`").strip()
         if cleaned.casefold().startswith("json"):
             cleaned = cleaned[4:].lstrip("\n :")
 
+        # JSON first: otherwise a JSON key such as {"prompt": ...} can be
+        # accidentally interpreted by the permissive labeled-line parser.
         candidates = [cleaned]
         first_brace = cleaned.find("{")
         last_brace = cleaned.rfind("}")
@@ -349,6 +347,10 @@ class MediaCommandPlanner:
             if prompt:
                 return {"PROMPT": prompt, "MOTION": motion}
 
+        labeled = cls._parse_labeled(cleaned)
+        if labeled.get("PROMPT"):
+            return labeled
+
         lines = [
             line.strip().lstrip("-*#> ").strip()
             for line in cleaned.splitlines()
@@ -356,8 +358,16 @@ class MediaCommandPlanner:
         ]
         boilerplate_prefixes = (
             "here is", "here's", "sure", "certainly", "of course",
-            "image prompt", "visual prompt", "description:",
+            "image prompt", "visual prompt", "description",
         )
+
+        # Qwen may answer: "Here is your translated image request: <prompt>".
+        if len(lines) == 1 and lines[0].casefold().startswith(boilerplate_prefixes):
+            if ":" in lines[0]:
+                tail = lines[0].split(":", 1)[1].strip()
+                if len(tail) >= 20 and not cls._looks_vietnamese(tail):
+                    return {"PROMPT": tail, "MOTION": ""}
+
         usable = [
             line for line in lines
             if len(line) >= 20
@@ -370,6 +380,7 @@ class MediaCommandPlanner:
         if (
             20 <= len(cleaned) <= 1800
             and "\n" not in cleaned
+            and not cleaned.casefold().startswith(boilerplate_prefixes)
             and not cls._looks_vietnamese(cleaned)
         ):
             return {"PROMPT": cleaned, "MOTION": ""}
