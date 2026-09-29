@@ -1,1 +1,1 @@
-natural-dog-photo-v2-realvisxl-v5-anatomy-9of10
+natural-dog-photo-v3-qwen3-vl-2b-fast-9of10
