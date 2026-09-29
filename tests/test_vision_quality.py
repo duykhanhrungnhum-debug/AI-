@@ -357,3 +357,20 @@ def test_qwen3_8b_worker_checks_bitsandbytes_import_before_model_load():
     source = verifier._build_worker_source((request(),))
     assert "import bitsandbytes" in source
     assert source.index("import bitsandbytes") < source.index("Qwen3VLForConditionalGeneration.from_pretrained")
+
+
+def test_qwen3_animal_photo_critic_rejects_overprocessed_photoshop_look():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((VisionQualityRequest(
+        item_id="dog-photo",
+        image=png_bytes(),
+        prompt="one realistic golden retriever outdoors",
+        profile="animal_photo_premium",
+        rubric=("natural unretouched camera realism", "no HDR or advertising retouch"),
+        expected_subject_count=1,
+    ),))
+    assert "HDR-like tone mapping" in source
+    assert "excessive sharpening" in source
+    assert "advertising-style retouch" in source
+    assert "Photoshopped rather than naturally camera-captured" in source
+    assert "Natural camera softness and small imperfections are desirable" in source
