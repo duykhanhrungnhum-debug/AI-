@@ -37,30 +37,34 @@ def main() -> int:
     )
     fast_model_name = os.environ.get("MEDIA_COMMAND_FAST_MODEL", MEDIA_COMMAND_FAST_MODEL)
     final_model_name = os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL)
-    fast_language_model = KaggleModelProvider(
-        worker=worker,
-        model=fast_model_name,
-        kernel_slug="ai-agent-media-command-fast",
-        poll_interval=15,
-        max_poll_attempts=120,
-        max_new_tokens=140,
-        temperature=0.0,
-        enable_thinking=False,
-    )
-    try:
-        plan = MediaCommandPlanner(fast_language_model).plan(command)
-    except Exception:
-        final_language_model = KaggleModelProvider(
+    use_inline_planner = os.environ.get("MEDIA_INLINE_PLANNER", "1") != "0"
+    if use_inline_planner:
+        plan = MediaCommandPlanner().plan(command)
+    else:
+        fast_language_model = KaggleModelProvider(
             worker=worker,
-            model=final_model_name,
-            kernel_slug="ai-agent-media-command-final",
+            model=fast_model_name,
+            kernel_slug="ai-agent-media-command-fast",
             poll_interval=15,
             max_poll_attempts=120,
-            max_new_tokens=180,
+            max_new_tokens=140,
             temperature=0.0,
             enable_thinking=False,
         )
-        plan = MediaCommandPlanner(final_language_model).plan(command)
+        try:
+            plan = MediaCommandPlanner(fast_language_model).plan(command)
+        except Exception:
+            final_language_model = KaggleModelProvider(
+                worker=worker,
+                model=final_model_name,
+                kernel_slug="ai-agent-media-command-final",
+                poll_interval=15,
+                max_poll_attempts=120,
+                max_new_tokens=180,
+                temperature=0.0,
+                enable_thinking=False,
+            )
+            plan = MediaCommandPlanner(final_language_model).plan(command)
     if plan.mode != "image":
         raise ValueError("MEDIA_COMMAND resolved to video; use the video pipeline")
 
@@ -81,6 +85,11 @@ def main() -> int:
         quality_bad_texts=config.quality_bad_texts,
         enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
         enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
+        enable_inline_planner=use_inline_planner,
+        inline_planner_fast_model=fast_model_name,
+        inline_planner_final_model=final_model_name,
+        inline_planner_raw_command=command if use_inline_planner else "",
+        inline_planner_positive_constraints=plan.profile.positive_constraints if use_inline_planner else "",
         enable_inline_vlm=True,
         inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
         inline_vlm_profile=plan.profile.name,
@@ -90,7 +99,7 @@ def main() -> int:
     )
     seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
     request = ImageGenerationRequest(
-        prompt=plan.prompt,
+        prompt=str(plan_data.get("prompt") or plan.prompt),
         negative_prompt=plan.negative_prompt,
         width=plan.profile.width,
         height=plan.profile.height,
@@ -138,6 +147,17 @@ def main() -> int:
                 repr(collect_exc) + "\n", encoding="utf-8"
             )
         raise
+
+    inline_planner_report = provider.last_report.get("inline_planner")
+    if isinstance(inline_planner_report, dict):
+        actual_prompt = str(provider.last_report.get("compiled_prompt") or "").strip()
+        if actual_prompt:
+            plan_data["compiler_output"] = str(inline_planner_report.get("raw_output") or "")
+            plan_data["prompt"] = actual_prompt
+            (output / "plan.json").write_text(
+                json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
 
     candidate_path = output / "candidate.png"
     candidate_path.write_bytes(artifact.data)
