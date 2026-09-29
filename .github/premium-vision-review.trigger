@@ -1,1 +1,1 @@
-qwen3-premium-review-v2-benchmark-v3
+qwen3-8b-adversarial-review-v1
