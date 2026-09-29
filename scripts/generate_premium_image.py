@@ -11,7 +11,7 @@ from ai_agent.core.image_model import ImageGenerationRequest
 from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
-from ai_agent.core.media_command import MediaCommandPlanner, benchmark_manifest
+from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MediaCommandPlanner, benchmark_manifest
 from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
 
 
@@ -37,7 +37,7 @@ def main() -> int:
     )
     language_model = KaggleModelProvider(
         worker=worker,
-        model=os.environ.get("MEDIA_COMMAND_MODEL", "Qwen/Qwen2.5-3B-Instruct"),
+        model=os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
         kernel_slug="ai-agent-media-command-planner",
         poll_interval=15,
         max_poll_attempts=120,
