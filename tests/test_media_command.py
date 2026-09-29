@@ -38,7 +38,7 @@ def test_routes_mascot_command_to_premium_mascot_profile():
 
     assert plan.mode == "image"
     assert plan.profile == MASCOT_PREMIUM
-    assert "clean rounded geometry" in plan.prompt
+    assert "premium polished cute 3D character render" in plan.prompt
     assert "malformed appendages" in plan.negative_prompt
     assert "multiple characters" in plan.negative_prompt
     assert plan.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
