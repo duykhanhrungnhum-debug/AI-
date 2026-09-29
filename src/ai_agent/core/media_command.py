@@ -11,7 +11,7 @@ from .model import ModelProvider
 MediaMode = Literal["image", "video"]
 QualityProfileName = Literal["human_photo_premium", "animal_photo_premium", "mascot_premium", "general_premium"]
 
-MEDIA_COMMAND_BRAIN_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+MEDIA_COMMAND_BRAIN_MODEL = "Qwen/Qwen3-1.7B"
 
 
 @dataclass(frozen=True)
