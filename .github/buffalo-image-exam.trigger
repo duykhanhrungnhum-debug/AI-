@@ -1,1 +1,1 @@
-buffalo-final-branding-style-v4
+buffalo-mascot-candidate-select-v5
