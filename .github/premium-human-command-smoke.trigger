@@ -1,1 +1,1 @@
-premium-human-command-v1\n
+premium-human-command-v2-strict-compiler
