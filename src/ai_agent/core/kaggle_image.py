@@ -422,7 +422,7 @@ class KaggleImageProvider:
 
             image_model_load_started = time.perf_counter()
 
-            pipe_kwargs = {"torch_dtype": torch.float16}
+            pipe_kwargs = {{"torch_dtype": torch.float16}}
             if CONFIG.get("model_variant"):
                 pipe_kwargs["variant"] = CONFIG["model_variant"]
             pipe = AutoPipelineForText2Image.from_pretrained(
