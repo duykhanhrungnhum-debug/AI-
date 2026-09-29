@@ -66,7 +66,7 @@ class BatchImageResult:
 @dataclass
 class KaggleBatchImageProvider:
     worker: KaggleGpuWorker
-    model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    model: str = "SG161222/RealVisXL_V4.0"
     ip_adapter_model: str = "h94/IP-Adapter"
     ip_adapter_weight: str = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
     identity_threshold: float = 0.60
@@ -75,8 +75,8 @@ class KaggleBatchImageProvider:
     kernel_slug: str = "ai-agent-image-batch"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
-    inference_steps: int = 24
-    guidance_scale: float = 6.0
+    inference_steps: int = 28
+    guidance_scale: float = 5.5
     min_pixel_std: float = 8.0
     provider: str = "kaggle-gpu-local-model-batch"
 
@@ -511,7 +511,7 @@ class KaggleBatchImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from PIL import Image
-                from diffusers import AutoPipelineForText2Image, DDIMScheduler
+                from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler
                 from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
             except ImportError:
                 subprocess.check_call([
@@ -522,7 +522,7 @@ class KaggleBatchImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from PIL import Image
-                from diffusers import AutoPipelineForText2Image, DDIMScheduler
+                from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler
                 from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 
             if not torch.cuda.is_available():
@@ -546,7 +546,10 @@ class KaggleBatchImageProvider:
                 **pipe_kwargs,
             )
             if "face" in adapter_weight.casefold():
-                pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                    pipe.scheduler.config,
+                    use_karras_sigmas=True,
+                )
 
             reference_image = None
             reference_embedding = None

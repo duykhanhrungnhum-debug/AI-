@@ -101,7 +101,14 @@ jobs:
               token_provider=oidc_token,
           )
           prior = learning.relevant("reference-character-video", limit=10)
-          scale = tuned_reference_scale(prior, base=0.70)
+          image_model = "SG161222/RealVisXL_V4.0"
+          adapter_weight = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
+          scale = tuned_reference_scale(
+              prior,
+              base=0.65,
+              model=image_model,
+              adapter_weight=adapter_weight,
+          )
 
           reference_url = (
               "https://huggingface.co/datasets/huggingface/documentation-images/"
@@ -122,13 +129,13 @@ jobs:
           )
           provider = KaggleBatchImageProvider(
               worker=worker,
-              model="stabilityai/stable-diffusion-xl-base-1.0",
-              ip_adapter_weight="ip-adapter-plus-face_sdxl_vit-h.safetensors",
+              model=image_model,
+              ip_adapter_weight=adapter_weight,
               kernel_slug="ai-agent-reference-video-smoke",
               poll_interval=15,
               max_poll_attempts=160,
-              inference_steps=24,
-              guidance_scale=6.0,
+              inference_steps=28,
+              guidance_scale=5.5,
               identity_threshold=0.60,
               prompt_alignment_threshold=0.22,
               visual_quality_margin_threshold=0.015,
@@ -175,6 +182,25 @@ jobs:
                   reference_image=reference,
                   reference_scale=scale,
               )
+
+              # Always persist the exact latest candidates before applying the gate.
+              # This allows visual inspection of failed images without another GPU run.
+              candidate_report = []
+              for index, scene in enumerate(batch.scenes):
+                  candidate_path = output / f"candidate-{index + 1:03d}.png"
+                  candidate_path.write_bytes(scene.artifact.data)
+                  candidate_report.append({
+                      "scene_id": scene.scene_id,
+                      "verified": scene.verified,
+                      "issues": list(scene.issues),
+                      "evidence": list(scene.artifact.evidence),
+                      "path": str(candidate_path),
+                  })
+              (output / "candidate-verification.json").write_text(
+                  json.dumps(candidate_report, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+
               if not batch.verified:
                   issues = [issue for scene in batch.scenes for issue in scene.issues]
                   try:
@@ -187,7 +213,11 @@ jobs:
                               else "model_output"
                           ),
                           lesson="Real reference video smoke failed; adjust only the failed factor on the next run.",
-                          config={"reference_scale": scale},
+                          config={
+                      "reference_scale": scale,
+                      "image_model": image_model,
+                      "ip_adapter_weight": adapter_weight,
+                  },
                           metrics={"failed_scene_ids": list(batch.failed_scene_ids)},
                           evidence=tuple(issues[:20]),
                       ))
@@ -238,7 +268,11 @@ jobs:
                       "Real IP-Adapter reference conditioning passed identity checks and produced "
                       "a verified final video; reuse this scale unless later runs regress."
                   ),
-                  config={"reference_scale": scale},
+                  config={
+                      "reference_scale": scale,
+                      "image_model": image_model,
+                      "ip_adapter_weight": adapter_weight,
+                  },
                   metrics={
                       "scene_count": len(batch.scenes),
                       "min_identity_score": min(identity_scores),
@@ -257,6 +291,8 @@ jobs:
                   "verified": True,
                   "prior_lessons_loaded": len(prior),
                   "reference_scale": scale,
+                  "image_model": image_model,
+                  "ip_adapter_weight": adapter_weight,
                   "reference_sha256": sha256(reference).hexdigest(),
                   "image_rounds": batch.rounds,
                   "identity_scores": identity_scores,

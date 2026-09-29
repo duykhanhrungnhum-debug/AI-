@@ -73,8 +73,8 @@ class ReferenceMotionVideoPipeline:
     motion_provider: KaggleBatchImageToVideoProvider
     speech_provider: SpeechProvider
     video_builder: ClipAssembler
-    image_width: int = 512
-    image_height: int = 288
+    image_width: int = 1024
+    image_height: int = 576
     motion_frames: int = 14
     motion_fps: int = 7
     composition: str = "16:9 widescreen"
@@ -120,14 +120,20 @@ class ReferenceMotionVideoPipeline:
 
         reference_hash = sha256(reference_image).hexdigest()
         lessons = ()
+        image_model = str(getattr(self.image_provider, "model", "") or "")
         adapter_weight = str(getattr(self.image_provider, "ip_adapter_weight", "") or "")
-        base_scale = 0.65 if "full-face" in adapter_weight else 0.80
+        base_scale = 0.65 if "face" in adapter_weight.casefold() else 0.80
         if self.learning_store is not None:
             try:
                 lessons = self.learning_store.relevant("reference-motion-video", limit=10)
             except Exception:
                 lessons = ()
-        reference_scale = tuned_reference_scale(lessons, base=base_scale)
+        reference_scale = tuned_reference_scale(
+            lessons,
+            base=base_scale,
+            model=image_model or None,
+            adapter_weight=adapter_weight or None,
+        )
 
         scene_plan = self.scene_planner.plan(
             script,
@@ -203,7 +209,11 @@ class ReferenceMotionVideoPipeline:
                         )
                     ),
                     lesson="Reference keyframe generation failed; retry only failed scenes or tune reference adherence.",
-                    config={"reference_scale": reference_scale},
+                    config={
+                        "reference_scale": reference_scale,
+                        "image_model": image_model,
+                        "ip_adapter_weight": adapter_weight,
+                    },
                     metrics={"failed_scene_ids": list(keyframes.failed_scene_ids)},
                     evidence=issues[:20],
                 )
@@ -272,7 +282,11 @@ class ReferenceMotionVideoPipeline:
                         )
                     ),
                     lesson="I2V animation failed verification; retry only failed motion scenes with adjusted motion controls.",
-                    config={"reference_scale": reference_scale},
+                    config={
+                        "reference_scale": reference_scale,
+                        "image_model": image_model,
+                        "ip_adapter_weight": adapter_weight,
+                    },
                     metrics={"failed_scene_ids": list(clips.failed_scene_ids)},
                     evidence=issues[:20],
                 )
@@ -335,6 +349,8 @@ class ReferenceMotionVideoPipeline:
             ),
             config={
                 "reference_scale": reference_scale,
+                "image_model": image_model,
+                "ip_adapter_weight": adapter_weight,
                 "motion_frames": self.motion_frames,
                 "motion_fps": self.motion_fps,
             },

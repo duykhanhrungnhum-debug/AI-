@@ -78,7 +78,7 @@ class FakeWorker:
                 "visual_quality_margin": 0.05,
             })
         return json.dumps({
-            "model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "model": "SG161222/RealVisXL_V4.0",
             "gpu_name": "Tesla T4",
             "scenes": scenes,
         }).encode()
@@ -102,7 +102,9 @@ def test_batch_loads_model_once_and_verifies_each_scene():
     assert len(worker.submissions) == 1
     source = worker.submissions[0]["source"]
     assert source.count("AutoPipelineForText2Image.from_pretrained") == 1
-    assert "stable-diffusion-xl-base-1.0" in source
+    assert "SG161222/RealVisXL_V4.0" in source
+    assert "DPMSolverMultistepScheduler" in source
+    assert "use_karras_sigmas=True" in source
     assert "for index, scene in enumerate" in source
     assert all("gpu:Tesla T4" in item.artifact.evidence for item in result.scenes)
 
