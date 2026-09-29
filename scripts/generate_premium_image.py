@@ -118,9 +118,21 @@ def main() -> int:
     candidate_path = output / "candidate.png"
     candidate_path.write_bytes(artifact.data)
 
-    rubric = tuple(
-        benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]
-    )
+    benchmark = benchmark_manifest()["profiles"][plan.profile.name]
+    candidate_digest = sha256(artifact.data).hexdigest()
+    if candidate_digest in set(benchmark.get("known_rejected_sha256", ())):
+        (output / "user-benchmark-rejection.json").write_text(
+            json.dumps({
+                "verified": False,
+                "stage": "user_benchmark",
+                "image_sha256": candidate_digest,
+                "reason": "exact image was previously rejected by the user",
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("generated image matches a user-rejected benchmark example")
+
+    rubric = tuple(benchmark["must_pass"])
     vlm = KaggleVisionQualityVerifier(
         worker=worker,
         kernel_slug="ai-agent-premium-image-vlm",
@@ -153,6 +165,11 @@ def main() -> int:
         "passed": visual_review.passed,
         "quality_score": visual_review.quality_score,
         "prompt_match_score": visual_review.prompt_match_score,
+        "structure_score": visual_review.structure_score,
+        "detail_score": visual_review.detail_score,
+        "aesthetic_score": visual_review.aesthetic_score,
+        "composition_score": visual_review.composition_score,
+        "benchmark_match_score": visual_review.benchmark_match_score,
         "subject_count": visual_review.subject_count,
         "major_issues": list(visual_review.major_issues),
         "minor_issues": list(visual_review.minor_issues),
