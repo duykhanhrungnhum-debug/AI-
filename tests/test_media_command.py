@@ -335,3 +335,14 @@ def test_buffalo_exam_routes_real_and_3d_to_different_profiles():
     assert real.model_config.model == "SG161222/RealVisXL_V5.0"
     assert cute.profile == MASCOT_PREMIUM
     assert cute.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
+
+
+
+def test_buffalo_species_is_preserved_when_compiler_says_cow():
+    planner = MediaCommandPlanner(FakeModel(
+        "PROMPT: A realistic Vietnamese cow standing in a natural field\nMOTION:"
+    ))
+    plan = planner.plan("Tạo ảnh một con trâu nước Việt Nam thật ngoài đồng")
+
+    assert "water buffalo" in plan.prompt.casefold()
+    assert " cow " not in (" " + plan.prompt.casefold() + " ")

@@ -404,6 +404,15 @@ class KaggleImageProvider:
                     planner_model_used = CONFIG["inline_planner_final_model"]
                 if not compiled_prompt:
                     raise RuntimeError("inline media planner did not produce a usable English prompt")
+
+                source_command = CONFIG["inline_planner_raw_command"].casefold()
+                if any(term in source_command for term in ("trâu", "buffalo", "water buffalo")):
+                    for wrong in ("Vietnamese cow", "cow", "cattle"):
+                        compiled_prompt = compiled_prompt.replace(wrong, "water buffalo")
+                        compiled_prompt = compiled_prompt.replace(wrong.title(), "Water buffalo")
+                    if "buffalo" not in compiled_prompt.casefold():
+                        compiled_prompt = "one water buffalo, " + compiled_prompt
+
                 CONFIG["prompt"] = (
                     compiled_prompt.rstrip(" .")
                     + ". Quality requirements: "
