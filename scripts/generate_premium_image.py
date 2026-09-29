@@ -60,6 +60,7 @@ def main() -> int:
         scheduler=config.scheduler,
         prompt_alignment_threshold=float(os.environ.get("MEDIA_PROMPT_ALIGNMENT_THRESHOLD", "0.22")),
         visual_quality_margin_threshold=float(os.environ.get("MEDIA_VISUAL_QUALITY_MARGIN_THRESHOLD", "0.015")),
+        enforce_visual_quality_margin=False,
         quality_good_text=config.quality_good_text,
         quality_bad_texts=config.quality_bad_texts,
     )
