@@ -44,15 +44,20 @@ HUMAN_PHOTO_PREMIUM = MediaQualityProfile(
 MASCOT_PREMIUM = MediaQualityProfile(
     name="mascot_premium",
     positive_constraints=(
-        "premium polished 3D mascot asset, EXACTLY ONE main mascot subject, one body only, clean rounded geometry, "
-        "coherent symmetrical appendages, crisp silhouette and edges, expressive readable face, detailed clean materials, "
-        "professional studio lighting, balanced centered composition, production-ready final asset"
+        "premium polished cute 3D sticker mascot matching the user benchmark quality, EXACTLY ONE main mascot subject, "
+        "squat low wide body resting naturally on a broad green lily pad, two large rounded frontal claws close to the body, "
+        "coherent crab legs and two short antennae, organic bumpy red-orange shell surface, soft cream underside and claw tips, "
+        "cute expressive face integrated into the crab anatomy, crisp white sticker/cutout outline around crab and lily pad, "
+        "clean black or transparent-style backdrop, visible natural water droplets, soft premium studio lighting, "
+        "tactile materials, clean rounded geometry, production-ready final character asset"
     ),
     negative_constraints=(
         "multiple mascots, multiple crabs, duplicate character, repeated subject, crowd, duplicated body, "
-        "malformed appendages, duplicated limbs, extra claws, extra legs, asymmetrical broken geometry, melted shape, "
-        "warped shell, messy outline, muddy texture, distorted face, inconsistent eyes, obvious AI artifacts, "
-        "text, watermark, logo"
+        "tall spherical balloon body, shiny plastic toy body, thin raised scissor claws, long spidery legs, "
+        "human eyebrows, human nose, human teeth, missing antennae, tiny disconnected claws, malformed appendages, "
+        "duplicated limbs, extra claws, extra legs, asymmetrical broken geometry, melted shape, warped shell, "
+        "dark glossy toy-render background, missing sticker outline, messy outline, muddy texture, distorted face, "
+        "inconsistent eyes, obvious AI artifacts, text, watermark, logo"
     ),
     width=1024,
     height=1024,
@@ -104,18 +109,20 @@ HUMAN_IMAGE_MODEL = ImageModelConfig(
 
 MASCOT_IMAGE_MODEL = ImageModelConfig(
     model="playgroundai/playground-v2.5-1024px-aesthetic",
-    inference_steps=30,
+    inference_steps=40,
     guidance_scale=3.0,
     scheduler="edm_dpm",
     quality_good_text=(
-        "premium polished cute 3D mascot asset, exactly one subject, clean rounded geometry, coherent symmetrical "
-        "appendages, crisp silhouette, expressive clean eyes and mouth, detailed materials, studio lighting, "
-        "production-ready sticker or character asset"
+        "premium polished cute 3D crab sticker asset matching a high-end character benchmark, one squat low wide crab, "
+        "two large rounded frontal claws, short antennae, organic bumpy red-orange shell, cream underside and claw tips, "
+        "crisp white cutout outline, broad green lily pad with water droplets, expressive integrated face, "
+        "soft studio lighting, tactile detailed materials, production-ready character asset"
     ),
     quality_bad_texts=(
-        "bad mascot image with multiple separate repeated characters, duplicated whole subject or crowd of copies",
-        "bad 3D mascot with fused disconnected broken claws or legs, melted joints, impossible attachment points, warped body",
-        "bad mascot asset with distorted inconsistent eyes or mouth, messy silhouette, muddy textures and obvious AI artifacts",
+        "bad mascot image with multiple repeated characters, duplicated whole subject, crowd of copies or extra body parts",
+        "bad 3D crab with tall spherical balloon body, thin raised scissor claws, spidery legs, missing antennae or disconnected appendages",
+        "bad glossy plastic toy crab with human eyebrows nose or teeth, dark toy-render background, missing white sticker outline",
+        "bad mascot asset with melted shell, distorted eyes or mouth, messy silhouette, muddy materials and obvious AI artifacts",
     ),
 )
 
