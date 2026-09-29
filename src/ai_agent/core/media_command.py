@@ -655,6 +655,7 @@ def benchmark_manifest() -> dict:
                     "clean paws/feet/legs/ears/tail or equivalent appendages with no duplication, fusion or detachment",
                     "soft polished studio-quality 3D lighting with strong depth and readable form",
                     "clean silhouette and background separation suitable for a finished character asset",
+                    "no unwanted text, pseudo-text, watermark, logo, signature, badge, emblem, icon, UI mark or branding anywhere in the frame",
                     "no melted geometry, duplicate parts, malformed anatomy, muddy textures or obvious AI artifacts",
                     "production-ready overall appearance at the same quality bar as the supplied 3D mascot references",
                 ],
