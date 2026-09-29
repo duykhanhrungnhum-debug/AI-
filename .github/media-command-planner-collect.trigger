@@ -1,1 +1,1 @@
-collect-media-command-planner-v1\n
+collect-media-command-planner-v2-latest
