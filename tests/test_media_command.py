@@ -323,3 +323,15 @@ def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
     assert any("Photoshop look" in item for item in cfg.quality_bad_texts)
     assert "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589" in manifest["known_rejected_sha256"]
     assert any("real camera" in item for item in manifest["must_pass"])
+
+
+
+def test_buffalo_exam_routes_real_and_3d_to_different_profiles():
+    planner = MediaCommandPlanner()
+    real = planner.plan("Tạo ảnh một con trâu nước thật, ảnh chụp chân thực ngoài đồng")
+    cute = planner.plan("Tạo ảnh một con trâu nước 3D cute, mascot toàn thân")
+
+    assert real.profile == ANIMAL_PHOTO_PREMIUM
+    assert real.model_config.model == "SG161222/RealVisXL_V5.0"
+    assert cute.profile == MASCOT_PREMIUM
+    assert cute.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"

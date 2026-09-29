@@ -360,7 +360,7 @@ class MediaCommandPlanner:
         )
         animal_terms = (
             "chó", "cún", "mèo", "thú cưng", "động vật", "dog", "puppy", "cat", "kitten", "animal", "pet",
-            "golden retriever", "corgi", "shiba"
+            "golden retriever", "corgi", "shiba", "trâu", "trâu nước", "buffalo", "water buffalo"
         )
         realistic_terms = (
             "thật", "chân thực", "ảnh chụp", "photorealistic", "realistic", "photo", "photograph"
