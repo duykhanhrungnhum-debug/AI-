@@ -2,6 +2,7 @@ import pytest
 
 from ai_agent.core.media_command import (
     HUMAN_PHOTO_PREMIUM,
+    MEDIA_COMMAND_BRAIN_MODEL,
     MASCOT_PREMIUM,
     MediaCommandPlanner,
     benchmark_manifest,
@@ -179,3 +180,28 @@ def test_qwen_spaced_prompt_label_is_normalized_without_using_alternative_descri
 
     assert plan.prompt.startswith("A high-quality full-body portrait")
     assert "alternative description" not in plan.prompt
+
+
+def test_media_command_brain_uses_qwen3_instruct_generation():
+    assert MEDIA_COMMAND_BRAIN_MODEL == "Qwen/Qwen3-4B-Instruct-2507"
+
+
+class CaptureModel(FakeModel):
+    def __init__(self, text):
+        super().__init__(text)
+        self.last_prompt = ""
+
+    def generate(self, prompt):
+        self.last_prompt = prompt
+        return super().generate(prompt)
+
+
+def test_command_brain_may_choose_professional_camera_without_changing_story_facts():
+    model = CaptureModel("PROMPT: one cute red crab mascot resting on a green lily pad\nMOTION:")
+    planner = MediaCommandPlanner(model)
+    plan = planner.plan("Tạo mascot con cua đỏ dễ thương nằm trên lá sen")
+
+    assert plan.profile == MASCOT_PREMIUM
+    assert "professional production-ready choices" in model.last_prompt
+    assert "without changing the scene or subject" in model.last_prompt
+    assert "one cute red crab mascot resting on a green lily pad" in plan.prompt

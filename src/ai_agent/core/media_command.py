@@ -11,6 +11,8 @@ from .model import ModelProvider
 MediaMode = Literal["image", "video"]
 QualityProfileName = Literal["human_photo_premium", "mascot_premium", "general_premium"]
 
+MEDIA_COMMAND_BRAIN_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+
 
 @dataclass(frozen=True)
 class MediaQualityProfile:
@@ -184,7 +186,9 @@ class MediaCommandPlanner:
                 "The PROMPT value MUST be English even when USER_COMMAND is Vietnamese or another language. "
                 "Preserve every requested subject count, person/object, action, location, clothing, held object, "
                 "camera/framing, time of day and visual style. Do not invent or remove story facts. "
-                "Keep identity/reference instructions if present. Do not lower quality requirements. "
+                "When camera/framing/lighting are not specified, choose professional production-ready choices that best "
+                "express the user's intent without changing the scene or subject. Resolve pronouns and implied references "
+                "from the command conservatively. Keep identity/reference instructions if present. Do not lower quality requirements. "
                 "Return exactly two plain-text labeled lines and no Markdown or commentary. "
                 "Return ONE image description only; do not propose alternatives, variants, close-ups or second prompts:\n"
                 "PROMPT: <one complete concise English still-image description>\n"
