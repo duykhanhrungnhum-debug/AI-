@@ -306,7 +306,7 @@ def test_qwen3_8b_worker_source_compiles_with_single_pass_critic():
     assert "load_in_4bit=True" in source
     assert "Act as scorer and defect hunter in this single pass" in source
     assert "uncertain_regions" in source
-    assert "max_new_tokens=220" in source
+    assert "max_new_tokens=200" in source
     assert "defect_review_text = review_text" in source
     assert "run_review(defect_instruction)" not in source
     compile(source, "<qwen3-8b-single-pass-worker>", "exec")
@@ -388,3 +388,32 @@ def test_single_pass_qa_keeps_strict_uncertainty_and_benchmark_fields():
     assert "pass MUST be false" in source
     assert "benchmark_match_score" in source
     assert source.count("run_review(instruction)") == 1
+
+
+def test_compact_vlm_review_schema_expands_without_losing_quality_fields():
+    parsed = KaggleVisionQualityVerifier._parse_review(
+        '{"p":true,"q":9.2,"m":9.1,"s":9.0,"d":8.8,"a":9.3,"c":9.0,"b":8.9,"n":1,"x":[],"f":[],"u":[],"i":["tiny issue"]}'
+    )
+    assert parsed["pass"] is True
+    assert parsed["quality_score"] == 9.2
+    assert parsed["prompt_match_score"] == 9.1
+    assert parsed["structure_score"] == 9.0
+    assert parsed["detail_score"] == 8.8
+    assert parsed["aesthetic_score"] == 9.3
+    assert parsed["composition_score"] == 9.0
+    assert parsed["benchmark_match_score"] == 8.9
+    assert parsed["subject_count"] == 1
+    assert parsed["critical_defects"] == []
+    assert parsed["benchmark_failures"] == []
+    assert parsed["uncertain_regions"] == []
+    assert parsed["minor_issues"] == ["tiny issue"]
+
+
+def test_compact_worker_prompt_requires_json_only_and_short_issue_phrases():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "Return ONLY one compact JSON object" in source
+    assert "Use short issue phrases" in source
+    assert "p=pass" in source
+    assert "torch.inference_mode()" in source
+    assert "use_cache=True" in source
