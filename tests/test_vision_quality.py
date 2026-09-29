@@ -350,3 +350,10 @@ def test_qwen3_8b_worker_requires_current_bitsandbytes_for_4bit():
     verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
     source = verifier._build_worker_source((request(),))
     assert "bitsandbytes>=0.46.1" in source
+
+
+def test_qwen3_8b_worker_checks_bitsandbytes_import_before_model_load():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "import bitsandbytes" in source
+    assert source.index("import bitsandbytes") < source.index("Qwen3VLForConditionalGeneration.from_pretrained")
