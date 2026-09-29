@@ -103,14 +103,14 @@ def test_profile_model_routing_uses_separate_human_and_mascot_stacks():
     assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
     assert human.model != mascot.model
     assert "hands" in human.quality_good_text
-    assert "exactly one subject" in mascot.quality_good_text
+    assert "one squat low wide crab" in mascot.quality_good_text
     assert any("duplicated whole subject" in item for item in mascot.quality_bad_texts)
 
 
 def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
     mascot = image_model_config(MASCOT_PREMIUM)
 
-    assert any("multiple separate repeated characters" in item for item in mascot.quality_bad_texts)
+    assert any("multiple repeated characters" in item for item in mascot.quality_bad_texts)
     assert any("fused disconnected broken claws or legs" in item for item in mascot.quality_bad_texts)
     assert all("duplicated limbs claws appendages" not in item for item in mascot.quality_bad_texts)
 
