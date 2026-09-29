@@ -128,10 +128,10 @@ HUMAN_IMAGE_MODEL = ImageModelConfig(
 
 
 ANIMAL_IMAGE_MODEL = ImageModelConfig(
-    model="SG161222/RealVisXL_V5.0",
-    inference_steps=28,
-    guidance_scale=4.0,
-    scheduler="dpm_karras",
+    model="SG161222/RealVisXL_V5.0_Lightning",
+    inference_steps=5,
+    guidance_scale=1.5,
+    scheduler="dpm_sde_karras",
     quality_good_text=(
         "natural unretouched camera photograph of an animal, species-correct anatomy, realistic eyes muzzle ears paws legs and tail, "
         "four distinct anatomically connected legs and natural separated paws when applicable, correct joints and biomechanically plausible gait, "
