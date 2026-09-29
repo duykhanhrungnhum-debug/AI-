@@ -68,3 +68,18 @@ def test_benchmark_manifest_has_human_and_mascot_acceptance_rubrics():
     assert "mascot_premium" in manifest["profiles"]
     assert "correct hand/finger anatomy" in manifest["profiles"]["human_photo_premium"]["must_pass"]
     assert "clean rounded geometry" in manifest["profiles"]["mascot_premium"]["must_pass"]
+
+
+def test_benchmark_manifest_pins_exact_user_reference_set():
+    manifest = benchmark_manifest()
+    refs = manifest["reference_set"]
+
+    assert manifest["version"] == 2
+    assert len(refs) == 4
+    assert {item["profile"] for item in refs} == {"human_photo_premium", "mascot_premium"}
+    assert {item["sha256"] for item in refs} == {
+        "4306fb1186c907ca568afc4953936b4bb1363373b0edeb78d21f6b9de3a98119",
+        "2bae56e56de0cf49d0423884e3d12f6d562cef66520560bd6093970f14d80fdb",
+        "eaa4e7f5f1bae39378d87a0e180dd223647ed2ac988b56c76521e3fac807ae1b",
+        "00c12e5cb4bd07b164a66cd58b06591f3455d53c6175f23c29aabc31e9fc2ad8",
+    }
