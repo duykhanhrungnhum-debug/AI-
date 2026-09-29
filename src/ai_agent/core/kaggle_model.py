@@ -33,6 +33,7 @@ class KaggleModelProvider:
     max_poll_attempts: int = 120
     max_new_tokens: int = 512
     temperature: float = 0.0
+    enable_thinking: bool | None = None
     provider: str = "kaggle-gpu-open-model"
 
     def __post_init__(self) -> None:
@@ -133,6 +134,7 @@ class KaggleModelProvider:
             "prompts": prompts,
             "max_new_tokens": self.max_new_tokens,
             "temperature": self.temperature,
+            "enable_thinking": self.enable_thinking,
         }
         config_json = json.dumps(config, ensure_ascii=False)
         return textwrap.dedent(
@@ -174,10 +176,15 @@ class KaggleModelProvider:
             responses = []
             for prompt in CONFIG["prompts"]:
                 messages = [{{"role": "user", "content": prompt}}]
+                template_kwargs = {
+                    "tokenize": False,
+                    "add_generation_prompt": True,
+                }
+                if CONFIG.get("enable_thinking") is not None:
+                    template_kwargs["enable_thinking"] = bool(CONFIG["enable_thinking"])
                 rendered = tokenizer.apply_chat_template(
                     messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
+                    **template_kwargs,
                 )
                 model_inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
                 generate_kwargs = {{
