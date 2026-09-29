@@ -318,6 +318,8 @@ class MediaCommandPlanner:
                     "media command compiler did not translate PROMPT to English; refusing image generation"
                 )
 
+        rewritten_prompt = self._preserve_species(command, rewritten_prompt)
+
         positive = profile.positive_constraints
         prompt = rewritten_prompt.rstrip(" .") + ". Quality requirements: " + positive + "."
         negatives = profile.negative_constraints
@@ -342,6 +344,20 @@ class MediaCommandPlanner:
             reference_required=has_reference_image,
             compiler_output=compiler_output,
         )
+
+    @staticmethod
+    def _preserve_species(command: str, prompt: str) -> str:
+        """Prevent small planners from translating buffalo as generic cow/cattle."""
+        source = command.casefold()
+        if any(term in source for term in ("trâu", "buffalo", "water buffalo")):
+            normalized = prompt
+            for wrong in ("Vietnamese cow", "cow", "cattle"):
+                normalized = normalized.replace(wrong, "water buffalo")
+                normalized = normalized.replace(wrong.title(), "Water buffalo")
+            if "buffalo" not in normalized.casefold():
+                normalized = "one water buffalo, " + normalized
+            return normalized
+        return prompt
 
     @staticmethod
     def _infer_mode(command: str) -> MediaMode:
