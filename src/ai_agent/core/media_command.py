@@ -46,16 +46,17 @@ ANIMAL_PHOTO_PREMIUM = MediaQualityProfile(
     positive_constraints=(
         "natural unretouched photorealistic animal photograph, exactly one main animal subject unless requested otherwise, "
         "species-correct anatomy and proportions, natural eyes nose mouth ears paws legs and tail, realistic irregular fur texture, "
-        "physically plausible pose and contact with the ground, ordinary natural daylight, believable camera exposure and lens rendering, "
-        "moderate contrast and saturation, realistic depth of field, subtle microcontrast, small natural imperfections, "
-        "clean coherent background geometry, authentic camera-captured look rather than polished advertising retouch"
+        "four distinct anatomically connected legs with plausible shoulders hips elbows hocks and paws when the species has four legs, "
+        "natural readable limb separation with no fused or ambiguous paws, biomechanically plausible gait, weight bearing and ground contact, "
+        "ordinary natural daylight, believable camera exposure and lens rendering, moderate contrast and saturation, realistic depth of field, "
+        "subtle microcontrast, small natural imperfections, clean coherent background geometry, authentic camera-captured look rather than polished advertising retouch"
     ),
     negative_constraints=(
         "cartoon, CGI, 3D render, plastic fur, airbrushed fur, beauty retouch, commercial advertising retouch, HDR look, "
         "oversharpening, excessive microcontrast, excessive contrast, oversaturated colors, artificial glow, fake bokeh, "
-        "perfectly smoothed surfaces, malformed paws, fused toes, extra legs, missing legs, duplicated limbs, warped face, "
-        "asymmetrical eyes, deformed muzzle, broken tail, melted fur, duplicate animal, broken perspective, obvious AI artifacts, "
-        "text, watermark, logo"
+        "perfectly smoothed surfaces, malformed paws, fused toes, fused legs, ambiguous paw count, extra legs, missing legs, duplicated limbs, "
+        "misplaced joints, impossible gait, floating paws, warped face, asymmetrical eyes, deformed muzzle, broken tail, melted fur, "
+        "duplicate animal, broken perspective, obvious AI artifacts, text, watermark, logo"
     ),
     width=1024,
     height=1024,
@@ -126,17 +127,18 @@ HUMAN_IMAGE_MODEL = ImageModelConfig(
 
 
 ANIMAL_IMAGE_MODEL = ImageModelConfig(
-    model="SG161222/RealVisXL_V4.0",
+    model="SG161222/RealVisXL_V5.0",
     inference_steps=28,
     guidance_scale=4.0,
     scheduler="dpm_karras",
     quality_good_text=(
         "natural unretouched camera photograph of an animal, species-correct anatomy, realistic eyes muzzle ears paws legs and tail, "
+        "four distinct anatomically connected legs and natural separated paws when applicable, correct joints and biomechanically plausible gait, "
         "irregular natural fur texture, physically plausible pose, ordinary daylight, believable lens rendering and exposure, "
         "moderate contrast and saturation, subtle realistic detail, authentic non-commercial pet-photo appearance"
     ),
     quality_bad_texts=(
-        "bad AI animal with malformed paws, extra or missing legs, duplicated limbs, fused toes or broken joints",
+        "bad AI animal with malformed paws, extra or missing legs, duplicated limbs, fused toes or legs, misplaced joints or impossible gait",
         "bad AI animal with distorted eyes, muzzle, ears or tail, melted fur, plastic CGI texture or impossible anatomy",
         "overprocessed pet photo with HDR contrast, oversharpening, excessive saturation, airbrushed fur, artificial glow or fake bokeh",
         "commercial advertising retouch with unnaturally perfect fur, exaggerated microcontrast, polished Photoshop look or synthetic depth",
@@ -279,6 +281,7 @@ class MediaCommandPlanner:
             "The PROMPT value MUST be English even when USER_COMMAND is Vietnamese or another language. "
             "Preserve every requested subject count, person/object, action, location, clothing, held object, "
             "camera/framing, time of day and visual style. Do not invent or remove story facts. "
+            "For full-body or moving animal subjects, preserve the requested action while choosing a natural view with readable limb and paw anatomy and minimal severe self-occlusion. "
             "When camera/framing/lighting are not specified, choose professional production-ready choices that best "
             "express the user's intent without changing the scene or subject. Resolve pronouns and implied references "
             "from the command conservatively. Keep identity/reference instructions if present. Do not lower quality requirements. "

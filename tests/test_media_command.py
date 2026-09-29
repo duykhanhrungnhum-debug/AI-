@@ -105,7 +105,7 @@ def test_profile_model_routing_uses_separate_photo_and_mascot_stacks():
     mascot = image_model_config(MASCOT_PREMIUM)
 
     assert human.model == "SG161222/RealVisXL_V4.0"
-    assert animal.model == "SG161222/RealVisXL_V4.0"
+    assert animal.model == "SG161222/RealVisXL_V5.0"
     assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
     assert animal.model != mascot.model
     assert "hands" in human.quality_good_text
@@ -232,7 +232,7 @@ def test_dog_exam_routes_real_photo_and_cute_3d_to_different_profiles():
     cute = planner.plan("Tạo ảnh một chú chó Golden Retriever 3D cute")
 
     assert real.profile == ANIMAL_PHOTO_PREMIUM
-    assert real.model_config.model == "SG161222/RealVisXL_V4.0"
+    assert real.model_config.model == "SG161222/RealVisXL_V5.0"
     assert "species-correct anatomy" in real.prompt
     assert "cartoon" in real.negative_prompt
 
@@ -310,6 +310,8 @@ def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
     manifest = benchmark_manifest()["profiles"]["animal_photo_premium"]
 
     assert "natural unretouched photorealistic animal photograph" in plan.prompt
+    assert "four distinct anatomically connected legs" in plan.prompt
+    assert "impossible gait" in plan.negative_prompt
     assert "HDR look" in plan.negative_prompt
     assert "oversharpening" in plan.negative_prompt
     assert "advertising retouch" in plan.negative_prompt
