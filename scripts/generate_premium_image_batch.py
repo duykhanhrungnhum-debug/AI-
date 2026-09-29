@@ -161,7 +161,7 @@ def main() -> int:
             model_variant="fp16" if "RealVisXL" in config.model else None,
             kernel_slug=f"ai-agent-image-{_slug(item_id)}",
             poll_interval=3,
-            max_poll_attempts=180,
+            max_poll_attempts=int(os.environ.get("MEDIA_IMAGE_MAX_POLL_ATTEMPTS", "360")),
             inference_steps=config.inference_steps,
             guidance_scale=config.guidance_scale,
             scheduler=config.scheduler,
