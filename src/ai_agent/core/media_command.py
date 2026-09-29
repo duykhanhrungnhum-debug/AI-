@@ -201,12 +201,9 @@ GENERAL_IMAGE_MODEL = ImageModelConfig(
 
 
 def image_model_config(profile: MediaQualityProfile | QualityProfileName) -> ImageModelConfig:
-    name = profile.name if isinstance(profile, MediaQualityProfile) else profile
-    if name == HUMAN_PHOTO_PREMIUM.name:
-        return HUMAN_IMAGE_MODEL
-    if name in {ANIMAL_PHOTO_PREMIUM.name, MASCOT_PREMIUM.name}:
-        return UNIFIED_ANIMAL_STYLE_IMAGE_MODEL
-    return GENERAL_IMAGE_MODEL
+    """Use one production image engine; profiles affect prompt/QA, not model selection."""
+    _ = profile
+    return UNIFIED_ANIMAL_STYLE_IMAGE_MODEL
 
 
 @dataclass(frozen=True)
