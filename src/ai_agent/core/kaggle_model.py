@@ -92,6 +92,7 @@ class KaggleModelProvider:
             f"gpu:{gpu_name}",
             f"model:{self.model}",
             f"response_count:{len(items)}",
+            f"hf_xet_high_performance:{bool(report.get('hf_xet_high_performance'))}",
         ]
         for index, (prompt, item) in enumerate(zip(prompts, items, strict=True)):
             if not isinstance(item, dict):
@@ -143,11 +144,14 @@ class KaggleModelProvider:
 
             from hashlib import sha256
             import json
+            import os
             import subprocess
             import sys
             from pathlib import Path
 
             CONFIG = json.loads({config_json!r})
+            os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
             try:
                 import torch
@@ -210,6 +214,7 @@ class KaggleModelProvider:
 
             report = {{
                 "model": CONFIG["model"],
+                "hf_xet_high_performance": os.environ.get("HF_XET_HIGH_PERFORMANCE") == "1",
                 "gpu_name": gpu_name,
                 "responses": responses,
             }}
