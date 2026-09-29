@@ -189,3 +189,38 @@ def test_visual_margin_can_be_advisory_when_external_vlm_gate_is_mandatory():
 
     assert "visual_quality_margin:0.001000" in artifact.evidence
     assert "visual_quality_margin_enforced:False" in artifact.evidence
+
+
+def test_clip_precheck_can_be_disabled_when_external_vlm_is_authoritative():
+    worker = FakeWorker()
+
+    def no_clip_report(slug, filename):
+        if filename == "generated.png":
+            return worker.image
+        return json.dumps({
+            "image_sha256": hashlib.sha256(worker.image).hexdigest(),
+            "width": 512,
+            "height": 512,
+            "seed": 42,
+            "model": "playgroundai/playground-v2.5-1024px-aesthetic",
+            "gpu_name": "Tesla T4",
+            "prompt_alignment_score": None,
+            "visual_quality_margin": None,
+            "visual_defect_score": None,
+            "clip_precheck": False,
+        }).encode()
+
+    worker.download_output_file = no_clip_report
+    provider = KaggleImageProvider(
+        worker=worker,
+        poll_interval=0,
+        enable_clip_precheck=False,
+    )
+    artifact = provider.generate(
+        ImageGenerationRequest("clean single mascot", width=512, height=512, seed=42)
+    )
+
+    assert "clip_precheck:False" in artifact.evidence
+    source = worker.submitted["source"]
+    assert 'if CONFIG["enable_clip_precheck"]:' in source
+    assert '"enable_clip_precheck": false' in source.lower()

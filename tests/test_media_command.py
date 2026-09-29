@@ -189,7 +189,7 @@ def test_qwen_spaced_prompt_label_is_normalized_without_using_alternative_descri
 
 
 def test_media_command_brain_uses_qwen3_instruct_generation():
-    assert MEDIA_COMMAND_BRAIN_MODEL == "Qwen/Qwen3-4B-Instruct-2507"
+    assert MEDIA_COMMAND_BRAIN_MODEL == "Qwen/Qwen3-1.7B"
 
 
 class CaptureModel(FakeModel):
@@ -261,3 +261,41 @@ def test_command_compiler_accepts_clean_single_english_prompt_without_label():
 
     assert plan.prompt.startswith("one premium cute 3D golden retriever puppy mascot")
     assert plan.profile == MASCOT_PREMIUM
+
+
+class FakeBatchModel:
+    def __init__(self, texts):
+        self.texts = tuple(texts)
+        self.calls = 0
+        self.batch_calls = 0
+
+    def generate(self, prompt):
+        self.calls += 1
+        return ModelResponse(self.texts[0], "fake", "fake-model")
+
+    def generate_many(self, prompts):
+        self.batch_calls += 1
+        responses = tuple(
+            ModelResponse(text, "fake", "fake-model")
+            for text in self.texts
+        )
+        return type("Batch", (), {"responses": responses})()
+
+
+def test_plan_many_uses_one_batch_model_call_for_multiple_commands():
+    model = FakeBatchModel((
+        "PROMPT: one photorealistic golden retriever on grass\nMOTION:",
+        "PROMPT: one cute 3D golden retriever mascot in studio lighting\nMOTION:",
+    ))
+    planner = MediaCommandPlanner(model)
+    plans = planner.plan_many((
+        "Tạo ảnh chó Golden Retriever thật ngoài trời",
+        "Tạo ảnh chó Golden Retriever 3D cute",
+    ))
+
+    assert model.batch_calls == 1
+    assert model.calls == 0
+    assert plans[0].profile == ANIMAL_PHOTO_PREMIUM
+    assert plans[1].profile == MASCOT_PREMIUM
+    assert plans[0].prompt.startswith("one photorealistic golden retriever")
+    assert plans[1].prompt.startswith("one cute 3D golden retriever")
