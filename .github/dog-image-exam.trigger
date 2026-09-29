@@ -1,1 +1,1 @@
-dog-image-speed-benchmark-v3-qwen3-1.7b-nonthinking
+dog-image-speed-benchmark-v4-gpu-resident-stage-timing
