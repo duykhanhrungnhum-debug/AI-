@@ -5,7 +5,7 @@ import json
 from PIL import Image
 
 from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
-from ai_agent.core.vision_quality import HybridVisionQualityVerifier, KaggleVisionQualityVerifier, VisionQualityRequest
+from ai_agent.core.vision_quality import HybridVisionQualityVerifier, KaggleVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
 
 
 class FakeWorker:
@@ -564,3 +564,62 @@ def test_hybrid_quality_gate_validates_confidence_band():
             worker=HybridFakeWorker(png_bytes(), _hybrid_review(9.0)),
             fast_reject_score=9.0,
         )
+
+
+
+def test_inline_review_parser_enforces_nine_out_of_ten():
+    image = png_bytes()
+    req = request(image=image)
+    review = json.dumps({
+        "p": True,
+        "q": 9,
+        "m": 9,
+        "s": 9,
+        "d": 9,
+        "a": 9,
+        "c": 9,
+        "b": 9,
+        "n": 1,
+        "x": [],
+        "f": [],
+        "u": [],
+        "i": [],
+    })
+    result = result_from_inline_review(
+        req,
+        review,
+        model="Qwen/Qwen3-VL-2B-Instruct",
+        evidence=("inline_vlm:True",),
+        min_quality_score=9.0,
+        min_prompt_match_score=9.0,
+    )
+    assert result.passed is True
+    assert result.quality_score == 9.0
+    assert "vlm_model:Qwen/Qwen3-VL-2B-Instruct" in result.evidence
+
+
+def test_inline_review_parser_rejects_visible_defect_even_with_high_scores():
+    image = png_bytes()
+    req = request(image=image)
+    review = json.dumps({
+        "p": False,
+        "q": 9,
+        "m": 9,
+        "s": 9,
+        "d": 9,
+        "a": 9,
+        "c": 9,
+        "b": 9,
+        "n": 1,
+        "x": ["fused paw"],
+        "f": [],
+        "u": [],
+        "i": [],
+    })
+    result = result_from_inline_review(
+        req,
+        review,
+        model="Qwen/Qwen3-VL-2B-Instruct",
+    )
+    assert result.passed is False
+    assert any("fused paw" in issue for issue in result.major_issues)
