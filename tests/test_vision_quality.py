@@ -41,6 +41,7 @@ class FakeWorker:
         return json.dumps({
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "gpu_name": "Tesla T4",
+            "attention_backend": "sdpa",
             "items": items,
         }).encode()
 
@@ -270,6 +271,7 @@ class DefectWorker(FakeWorker):
         return json.dumps({
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "gpu_name": "Tesla T4",
+            "attention_backend": "sdpa",
             "items": items,
         }).encode()
 
@@ -428,3 +430,21 @@ def test_qwen3_worker_records_latency_breakdown_without_changing_scoring():
     assert '"review_seconds"' in source
     assert '"worker_total_seconds"' in source
     compile(source, "<qwen3-qa-timing-worker>", "exec")
+
+
+def test_qwen3_worker_uses_sdpa_attention_without_changing_model_or_thresholds():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert verifier.model == "Qwen/Qwen3-VL-8B-Instruct"
+    assert verifier.min_quality_score == 8.0
+    assert verifier.min_prompt_match_score == 8.0
+    assert verifier.attention_backend == "sdpa"
+    assert 'attn_implementation=CONFIG["attention_backend"]' in source
+    assert '"attention_backend": "sdpa"' in source.lower()
+    compile(source, "<qwen3-sdpa-worker>", "exec")
+
+
+def test_qwen3_worker_rejects_unknown_attention_backend():
+    import pytest
+    with pytest.raises(ValueError, match="attention_backend"):
+        KaggleVisionQualityVerifier(worker=FakeWorker([]), attention_backend="unknown")

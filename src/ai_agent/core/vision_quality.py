@@ -84,6 +84,7 @@ class KaggleVisionQualityVerifier:
     max_poll_attempts: int = 120
     min_quality_score: float = 8.0
     min_prompt_match_score: float = 8.0
+    attention_backend: str = "sdpa"
     provider: str = "kaggle-gpu-vlm-quality"
 
     def __post_init__(self) -> None:
@@ -97,6 +98,8 @@ class KaggleVisionQualityVerifier:
             raise ValueError("min_quality_score must be in [0, 10]")
         if not 0 <= self.min_prompt_match_score <= 10:
             raise ValueError("min_prompt_match_score must be in [0, 10]")
+        if self.attention_backend not in {"sdpa", "eager"}:
+            raise ValueError("attention_backend must be sdpa or eager")
 
     def verify(self, request: VisionQualityRequest) -> VisionQualityResult:
         return self.verify_many((request,)).items[0]
@@ -141,6 +144,9 @@ class KaggleVisionQualityVerifier:
         gpu_name = str(report.get("gpu_name") or "").strip()
         if not gpu_name:
             raise ValueError("vision quality report does not contain GPU evidence")
+        report_attention_backend = str(report.get("attention_backend") or "").strip()
+        if report_attention_backend != self.attention_backend:
+            raise ValueError("vision quality report attention backend mismatch")
         timings = report.get("timings") if isinstance(report.get("timings"), dict) else {}
 
         entries = report.get("items")
@@ -268,6 +274,7 @@ class KaggleVisionQualityVerifier:
                     f"kaggle_kernel:{submission.ref}",
                     f"gpu:{gpu_name}",
                     f"vlm_model:{self.model}",
+                    f"attention_backend:{self.attention_backend}",
                     f"qa_dependency_seconds:{float(timings.get('dependency_seconds', -1.0)):.3f}",
                     f"qa_model_load_seconds:{float(timings.get('model_load_seconds', -1.0)):.3f}",
                     f"qa_review_seconds:{float(timings.get('review_seconds', -1.0)):.3f}",
@@ -401,6 +408,7 @@ class KaggleVisionQualityVerifier:
         }
         config = {
             "model": self.model,
+            "attention_backend": self.attention_backend,
             "items": [
                 {
                     "item_id": item.item_id,
@@ -464,6 +472,7 @@ class KaggleVisionQualityVerifier:
             "    quantization_config=quantization,",
             '    device_map="auto",',
             "    low_cpu_mem_usage=True,",
+            '    attn_implementation=CONFIG["attention_backend"],',
             ")",
             'processor = AutoProcessor.from_pretrained(CONFIG["model"])',
             "model.eval()",
@@ -560,6 +569,7 @@ class KaggleVisionQualityVerifier:
             "result = {",
             '    "model": CONFIG["model"],',
             '    "gpu_name": gpu_name,',
+            '    "attention_backend": CONFIG["attention_backend"],',
             '    "items": reports,',
             '    "timings": {',
             '        "dependency_seconds": round(dependencies_ready - worker_started, 3),',
