@@ -503,7 +503,7 @@ class KaggleVisionQualityVerifier:
             '        f"Be strict and judge what is actually visible, not what the prompt intended. "',
             '        f"PROFILE: {item[\'profile\']}; ORIGINAL PROMPT: {item[\'prompt\']}; "',
             '        f"EXPECTED MAIN SUBJECT COUNT: {expected}; QUALITY RUBRIC: {rubric}. "',
-            '        "You receive three views of the SAME generated image: full frame, upper crop, lower crop. "',
+            '        "You receive five views of the SAME generated image: full frame plus four quadrant crops. "',
             '        "Inspect specifically for wrong subject count and duplicated people/characters/objects before scoring local quality. "',
             '        "Use the crops as forensic zooms, never count them as extra subjects. Inspect malformed or fused hands/fingers/limbs, visible anatomy/appendages, face/eyes/mouth, "',
             '        "object connections, silhouette, materials, lighting, perspective, texture continuity and accidental pseudo-text. "',
