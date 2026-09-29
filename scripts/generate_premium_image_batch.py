@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+from time import perf_counter
 
 from ai_agent.core.image_model import ImageGenerationRequest
 from ai_agent.core.kaggle_image import KaggleImageProvider
@@ -72,6 +73,8 @@ def main() -> int:
         enable_thinking=False,
     )
     planner = MediaCommandPlanner(language_model)
+    timings: dict[str, float | dict[str, float]] = {"image_generation": {}}
+    planning_started = perf_counter()
     try:
         plans = planner.plan_many(tuple(command for _, command in items))
     except Exception as exc:
@@ -88,6 +91,7 @@ def main() -> int:
         except Exception:
             pass
         raise
+    timings["planning"] = round(perf_counter() - planning_started, 3)
 
     generated: dict[str, tuple[object, object, dict]] = {}
     statuses: dict[str, dict] = {}
@@ -145,9 +149,11 @@ def main() -> int:
             height=plan.profile.height,
             seed=seed,
         )
+        generation_started = perf_counter()
         try:
             artifact = provider.generate(request)
         except Exception as exc:
+            timings["image_generation"][item_id] = round(perf_counter() - generation_started, 3)
             statuses[item_id] = {"verified": False, "stage": "image_generation", "error": str(exc)}
             try:
                 candidate = worker.download_output_file(provider.kernel_slug, "generated.png")
@@ -155,6 +161,7 @@ def main() -> int:
             except Exception:
                 pass
             continue
+        timings["image_generation"][item_id] = round(perf_counter() - generation_started, 3)
 
         (item_dir / "candidate.png").write_bytes(artifact.data)
         benchmark = benchmark_manifest()["profiles"][plan.profile.name]
@@ -191,7 +198,9 @@ def main() -> int:
             min_quality_score=8.0,
             min_prompt_match_score=8.0,
         )
+        vlm_started = perf_counter()
         batch_review = verifier.verify_many(review_requests)
+        timings["vlm_quality"] = round(perf_counter() - vlm_started, 3)
         reviews = {item.item_id: item for item in batch_review.items}
 
     for item_id, (plan, artifact, plan_data) in generated.items():
@@ -237,6 +246,7 @@ def main() -> int:
         "brain_model": os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
         "clip_precheck": os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
         "cpu_offload": os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
+        "timing_seconds": timings,
         "statuses": statuses,
     }
     (output / "batch-status.json").write_text(
