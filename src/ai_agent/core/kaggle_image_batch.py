@@ -974,7 +974,7 @@ def normalize_style(value):
 
 def parse_compiled_result(raw):
     raw = (raw or "").strip().strip(chr(96)).strip()
-    result = {"prompt": "", "subject_class": "", "style_class": ""}
+    result = {"prompt": "", "subject_class": "", "style_class": "", "subject_name": ""}
     if not raw:
         return result
     cleaned = raw
@@ -1005,6 +1005,15 @@ def parse_compiled_result(raw):
         result["style_class"] = normalize_style(
             str(payload.get("STYLE_CLASS") or payload.get("style_class") or "")
         )
+        result["subject_name"] = str(
+            payload.get("SUBJECT_NAME")
+            or payload.get("subject_name")
+            or payload.get("SPECIES")
+            or payload.get("species")
+            or payload.get("ENTITY")
+            or payload.get("entity")
+            or ""
+        ).strip()
         if result["prompt"]:
             return result
 
@@ -1017,6 +1026,9 @@ def parse_compiled_result(raw):
         "SUBJECT": "subject_class",
         "STYLECLASS": "style_class",
         "STYLE": "style_class",
+        "SUBJECTNAME": "subject_name",
+        "SPECIES": "subject_name",
+        "ENTITY": "subject_name",
     }
     lines = []
     for line in cleaned.replace("：", ":").splitlines():
@@ -1077,6 +1089,39 @@ def parse_class_pair(raw):
 def looks_vietnamese(text):
     chars = set("ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồỗộớờởỡợúùủũụứừửữựýỳỷỹỵ")
     return any(ch in chars for ch in text.casefold())
+
+
+def is_placeholder_prompt(text):
+    normalized = " ".join((text or "").strip().casefold().split())
+    if not normalized:
+        return True
+    placeholders = {
+        "english image description",
+        "english prompt",
+        "image description",
+        "complete concise english image prompt",
+        "english image prompt",
+        "<english image description>",
+        "<english image prompt>",
+    }
+    if normalized in placeholders:
+        return True
+    if normalized.startswith(("english image description", "image description here", "prompt goes here")):
+        return True
+    if "<" in normalized or ">" in normalized:
+        return True
+    return False
+
+
+def valid_subject_name(value):
+    name = " ".join((value or "").strip().split())
+    if not (2 <= len(name) <= 100):
+        return False
+    if looks_vietnamese(name):
+        return False
+    if is_placeholder_prompt(name):
+        return False
+    return True
 
 
 def choose_profile(subject, style, fallback):
