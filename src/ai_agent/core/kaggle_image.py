@@ -35,6 +35,9 @@ class KaggleImageProvider:
     inline_planner_final_model: str = "Qwen/Qwen3-1.7B"
     inline_planner_raw_command: str = ""
     inline_planner_positive_constraints: str = ""
+    inline_profile_positive_constraints: dict[str, str] = field(default_factory=dict)
+    inline_profile_negative_constraints: dict[str, str] = field(default_factory=dict)
+    inline_profile_rubrics: dict[str, tuple[str, ...]] = field(default_factory=dict)
     enable_inline_vlm: bool = False
     inline_vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
     inline_vlm_profile: str = ""
@@ -79,6 +82,11 @@ class KaggleImageProvider:
                 raise ValueError("inline_planner_raw_command is required")
             if not self.inline_planner_positive_constraints.strip():
                 raise ValueError("inline_planner_positive_constraints is required")
+            if self.inline_profile_positive_constraints:
+                if set(self.inline_profile_positive_constraints) != set(self.inline_profile_negative_constraints):
+                    raise ValueError("inline semantic profile constraint maps must have matching keys")
+                if set(self.inline_profile_positive_constraints) != set(self.inline_profile_rubrics):
+                    raise ValueError("inline semantic profile rubric map must match constraint profiles")
         if self.enable_inline_vlm:
             if not self.inline_vlm_model.strip():
                 raise ValueError("inline_vlm_model is required")
@@ -222,6 +230,9 @@ class KaggleImageProvider:
             "inline_planner_final_model": self.inline_planner_final_model,
             "inline_planner_raw_command": self.inline_planner_raw_command,
             "inline_planner_positive_constraints": self.inline_planner_positive_constraints,
+            "inline_profile_positive_constraints": self.inline_profile_positive_constraints,
+            "inline_profile_negative_constraints": self.inline_profile_negative_constraints,
+            "inline_profile_rubrics": {key: list(value) for key, value in self.inline_profile_rubrics.items()},
             "enable_inline_vlm": self.enable_inline_vlm,
             "inline_vlm_model": self.inline_vlm_model,
             "inline_vlm_profile": self.inline_vlm_profile,
