@@ -163,6 +163,8 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
     assert "HARD CLEAN-ASSET RULE" in source
+    assert "HARD STRUCTURE RULE" in source
+    assert "Any extra or missing horn" in source
     assert "all four corner crops" in source
     assert "every score including benchmark_match_score is >= 8" in source
 
@@ -627,3 +629,22 @@ def test_inline_review_parser_rejects_visible_defect_even_with_high_scores():
     )
     assert result.passed is False
     assert any("fused paw" in issue for issue in result.major_issues)
+
+
+
+def test_qwen3_structure_contract_is_hard_gate():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((VisionQualityRequest(
+        item_id="buffalo-mascot",
+        image=png_bytes(),
+        prompt=(
+            "one cute 3D water buffalo mascot. STRUCTURAL CONTRACT (hard requirement): "
+            "exactly four legs, exactly two horns, exactly two ears, one tail, cloven hooves, no tusks."
+        ),
+        profile="mascot_premium",
+        rubric=("species-correct anatomy", "no unwanted branding"),
+        expected_subject_count=1,
+    ),))
+    assert "STRUCTURAL CONTRACT" in source
+    assert "every stated part/count as exact" in source
+    assert "critical defect and pass MUST be false" in source

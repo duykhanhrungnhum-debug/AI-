@@ -508,6 +508,7 @@ class KaggleVisionQualityVerifier:
             '        "Use the crops as forensic zooms, never count them as extra subjects. Inspect malformed or fused hands/fingers/limbs, visible anatomy/appendages, face/eyes/mouth, "',
             '        "object connections, silhouette, materials, lighting, perspective, texture continuity and accidental pseudo-text. "',
             '        "HARD CLEAN-ASSET RULE: reject any visible text, pseudo-text, signature, watermark, logo, emblem, badge, icon, UI/app mark or branding anywhere. Inspect all four corner crops carefully; any discrete corner mark is a blocking defect. "',
+            '        "HARD STRUCTURE RULE: when ORIGINAL PROMPT contains STRUCTURAL CONTRACT, treat every stated part/count as exact. Any extra or missing horn, antler, tusk, ear, leg, hoof/paw, tail, wing, fin or other listed/prominent appendage is a critical defect and pass MUST be false. "',
             '        "For human_photo_premium, reject any fused/missing/extra fingers, unnatural wrists/elbows/shoulders, distorted face, "',
             '        "plastic or melted clothing/skin, warped architecture or props, or obvious AI artifacts. "',
             '        "For animal_photo_premium, camera naturalism is a hard requirement: reject HDR-like tone mapping, excessive sharpening or microcontrast, "',
