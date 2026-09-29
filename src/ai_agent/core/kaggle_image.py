@@ -173,6 +173,7 @@ class KaggleImageProvider:
                 f"clip_precheck:{self.enable_clip_precheck}",
                 f"cpu_offload:{self.enable_cpu_offload}",
                 f"inline_vlm:{self.enable_inline_vlm}",
+                f"hf_xet_high_performance:{bool(report.get('hf_xet_high_performance'))}",
                 *((f"inline_vlm_model:{self.inline_vlm_model}",) if self.enable_inline_vlm else ()),
                 f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin and self.enable_clip_precheck}",
                 f"gpu:{report.get('gpu_name')}",
@@ -214,12 +215,15 @@ class KaggleImageProvider:
             from hashlib import sha256
             import gc
             import json
+            import os
             import subprocess
             import sys
             import time
             from pathlib import Path
 
             CONFIG = json.loads({config_json!r})
+            os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
             try:
                 import torch
@@ -451,6 +455,7 @@ class KaggleImageProvider:
                 "visual_quality_margin": visual_quality_margin,
                 "clip_precheck": bool(CONFIG["enable_clip_precheck"]),
                 "inline_vlm": inline_vlm,
+                "hf_xet_high_performance": os.environ.get("HF_XET_HIGH_PERFORMANCE") == "1",
                 "timings": {{
                     "image_model_load_seconds": round(image_model_ready - image_model_load_started, 3),
                     "image_generation_seconds": round(image_ready - image_model_ready, 3),
