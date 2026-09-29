@@ -17,12 +17,14 @@ class KaggleImageProvider:
     """Run an open-weight image model on Kaggle GPU and return verified bytes."""
 
     worker: KaggleGpuWorker
-    model: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    model: str = "stabilityai/stable-diffusion-xl-base-1.0"
     kernel_slug: str = "ai-agent-image-worker"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
-    inference_steps: int = 20
-    guidance_scale: float = 7.5
+    inference_steps: int = 24
+    guidance_scale: float = 6.0
+    prompt_alignment_threshold: float = 0.22
+    visual_quality_margin_threshold: float = 0.015
     provider: str = "kaggle-gpu-local-model"
 
     def __post_init__(self) -> None:
@@ -34,6 +36,10 @@ class KaggleImageProvider:
             raise ValueError("poll configuration must be valid")
         if self.inference_steps <= 0:
             raise ValueError("inference_steps must be positive")
+        if not -1.0 <= self.prompt_alignment_threshold <= 1.0:
+            raise ValueError("prompt_alignment_threshold must be in [-1, 1]")
+        if not -2.0 <= self.visual_quality_margin_threshold <= 2.0:
+            raise ValueError("visual_quality_margin_threshold must be in [-2, 2]")
 
     def generate(self, request: ImageGenerationRequest) -> ImageArtifact:
         assert_core_invariants()
@@ -81,6 +87,24 @@ class KaggleImageProvider:
             raise ValueError("Kaggle report model does not match configured model")
         if not str(report.get("gpu_name", "")).strip():
             raise ValueError("Kaggle image report does not contain GPU evidence")
+        try:
+            prompt_alignment_score = float(report.get("prompt_alignment_score"))
+        except (TypeError, ValueError):
+            prompt_alignment_score = -1.0
+        if prompt_alignment_score < self.prompt_alignment_threshold:
+            raise ValueError(
+                "prompt alignment below threshold: "
+                f"{prompt_alignment_score:.4f} < {self.prompt_alignment_threshold:.4f}"
+            )
+        try:
+            visual_quality_margin = float(report.get("visual_quality_margin"))
+        except (TypeError, ValueError):
+            visual_quality_margin = -2.0
+        if visual_quality_margin < self.visual_quality_margin_threshold:
+            raise ValueError(
+                "visual quality margin below threshold: "
+                f"{visual_quality_margin:.4f} < {self.visual_quality_margin_threshold:.4f}"
+            )
 
         return ImageArtifact(
             data=image,
@@ -92,6 +116,9 @@ class KaggleImageProvider:
                 f"image_sha256:{digest}",
                 f"dimensions:{request.width}x{request.height}",
                 f"seed:{report.get('seed')}",
+                f"prompt_alignment_score:{prompt_alignment_score:.6f}",
+                f"visual_quality_margin:{visual_quality_margin:.6f}",
+                f"visual_defect_score:{float(report.get('visual_defect_score', 0.0)):.6f}",
                 f"gpu:{report.get('gpu_name')}",
                 f"model:{self.model}",
             ),
@@ -108,6 +135,8 @@ class KaggleImageProvider:
             "seed": seed,
             "inference_steps": self.inference_steps,
             "guidance_scale": self.guidance_scale,
+            "prompt_alignment_threshold": self.prompt_alignment_threshold,
+            "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
         }
         config_json = json.dumps(config, ensure_ascii=False)
         return textwrap.dedent(
@@ -124,27 +153,62 @@ class KaggleImageProvider:
 
             try:
                 import torch
-                from diffusers import StableDiffusionPipeline
+                import torch.nn.functional as F
+                from diffusers import AutoPipelineForText2Image
+                from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
                     "diffusers<1", "transformers<5", "accelerate<2", "safetensors",
                 ])
                 import torch
-                from diffusers import StableDiffusionPipeline
+                import torch.nn.functional as F
+                from diffusers import AutoPipelineForText2Image
+                from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
 
             gpu_name = torch.cuda.get_device_name(0)
-            generator = torch.Generator(device="cuda").manual_seed(int(CONFIG["seed"]))
+            generator = torch.Generator(device="cpu").manual_seed(int(CONFIG["seed"]))
 
-            pipe = StableDiffusionPipeline.from_pretrained(
+            pipe = AutoPipelineForText2Image.from_pretrained(
                 CONFIG["model"],
                 torch_dtype=torch.float16,
             )
-            pipe.enable_attention_slicing()
-            pipe = pipe.to("cuda")
+            pipe.enable_model_cpu_offload()
+            pipe.enable_vae_slicing()
+
+            clip_image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+            clip_vision = CLIPVisionModelWithProjection.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            ).eval()
+            clip_text = CLIPTextModelWithProjection.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            ).eval()
+
+            def image_embedding(image):
+                values = clip_image_processor(images=image, return_tensors="pt").pixel_values
+                with torch.no_grad():
+                    vector = clip_vision(pixel_values=values).image_embeds[0].float()
+                return F.normalize(vector, dim=0)
+
+            def text_embedding(text):
+                values = clip_tokenizer([text], return_tensors="pt", padding=True, truncation=True)
+                with torch.no_grad():
+                    vector = clip_text(**values).text_embeds[0].float()
+                return F.normalize(vector, dim=0)
+
+            quality_good = text_embedding(
+                "high quality polished image, coherent anatomy or clean object geometry, crisp details, "
+                "natural lighting, professional composition, no obvious AI artifacts"
+            )
+            quality_bad = tuple(text_embedding(text) for text in (
+                "bad AI image with deformed anatomy, malformed hands, fused or extra fingers, distorted face",
+                "bad AI image with warped objects, melted geometry, broken perspective, duplicated details",
+                "low quality blurry noisy unfinished image with obvious AI artifacts",
+            ))
 
             result = pipe(
                 prompt=CONFIG["prompt"],
@@ -156,6 +220,15 @@ class KaggleImageProvider:
                 generator=generator,
             )
             image = result.images[0]
+            generated_embedding = image_embedding(image)
+            prompt_alignment_score = float(
+                torch.dot(text_embedding(CONFIG["prompt"]), generated_embedding).item()
+            )
+            visual_quality_score = float(torch.dot(quality_good, generated_embedding).item())
+            visual_defect_score = max(
+                float(torch.dot(bad, generated_embedding).item()) for bad in quality_bad
+            )
+            visual_quality_margin = visual_quality_score - visual_defect_score
 
             output = Path("/kaggle/working/generated.png")
             image.save(output, format="PNG")
@@ -170,6 +243,10 @@ class KaggleImageProvider:
                 "model": CONFIG["model"],
                 "gpu_name": gpu_name,
                 "prompt_sha256": sha256(CONFIG["prompt"].encode("utf-8")).hexdigest(),
+                "prompt_alignment_score": prompt_alignment_score,
+                "visual_quality_score": visual_quality_score,
+                "visual_defect_score": visual_defect_score,
+                "visual_quality_margin": visual_quality_margin,
             }}
             Path("/kaggle/working/image_report.json").write_text(
                 json.dumps(report, indent=2) + "\\n",

@@ -114,12 +114,14 @@ jobs:
           scene_planner = ScenePlanner(llm, max_scenes=3)
           image_provider = KaggleBatchImageProvider(
               worker=worker,
-              model="stable-diffusion-v1-5/stable-diffusion-v1-5",
+              model="stabilityai/stable-diffusion-xl-base-1.0",
               kernel_slug="ai-agent-e2e-images",
               poll_interval=15,
-              max_poll_attempts=120,
-              inference_steps=12,
-              guidance_scale=7.0,
+              max_poll_attempts=160,
+              inference_steps=24,
+              guidance_scale=6.0,
+              prompt_alignment_threshold=0.22,
+              visual_quality_margin_threshold=0.015,
           )
           voice_name = os.environ["PIPER_VOICE"]
           speech_provider = PiperTTSProvider(
@@ -139,8 +141,8 @@ jobs:
               image_provider=image_provider,
               speech_provider=speech_provider,
               video_builder=video_builder,
-              image_width=512,
-              image_height=288,
+              image_width=1024,
+              image_height=576,
               max_image_rounds=2,
           )
 

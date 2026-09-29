@@ -212,7 +212,7 @@ class ScenePlanner:
         fallback_prompt = (
             "SCENE_PLAN_PLAIN_ENGLISH_FALLBACK\n"
             "The structured JSON planner failed. Convert the supplied Vietnamese story scenes into robust English "
-            "prompts for Stable Diffusion 1.5. Do not output JSON or Markdown. Do not invent characters or events. "
+            "prompts for a premium image-generation model. Do not output JSON or Markdown. Do not invent characters or events. "
             "Keep the same recurring character identity and setting. Use exactly the requested labels, one per line. "
             f"Visual style: {visual_style}. Composition: {composition}.\n"
             "CONTINUITY: one concise English line describing identity/wardrobe/location/lighting facts that must stay fixed.\n"
