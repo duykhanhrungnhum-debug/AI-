@@ -29,7 +29,7 @@ def test_routes_natural_human_command_to_premium_human_profile():
     assert plan.profile == HUMAN_PHOTO_PREMIUM
     assert "anatomically correct body" in plan.prompt
     assert "deformed hands" in plan.negative_prompt
-    assert plan.model_config.model == "SG161222/RealVisXL_V4.0"
+    assert plan.model_config.model == "SG161222/RealVisXL_V5.0"
     assert plan.model_config.scheduler == "dpm_karras"
 
 
@@ -42,9 +42,9 @@ def test_routes_mascot_command_to_premium_mascot_profile():
     assert "premium polished cute 3D character render" in plan.prompt
     assert "malformed appendages" in plan.negative_prompt
     assert "multiple characters" in plan.negative_prompt
-    assert plan.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
-    assert plan.model_config.scheduler == "edm_dpm"
-    assert plan.model_config.guidance_scale == 3.0
+    assert plan.model_config.model == "SG161222/RealVisXL_V5.0"
+    assert plan.model_config.scheduler == "dpm_karras"
+    assert plan.model_config.guidance_scale == 4.0
 
 
 def test_video_command_adds_motion_and_preserves_reference_identity():
@@ -100,26 +100,24 @@ def test_benchmark_manifest_pins_exact_user_reference_set():
     }
 
 
-def test_profile_model_routing_uses_separate_photo_and_mascot_stacks():
+def test_profile_model_routing_uses_one_production_image_engine():
     human = image_model_config(HUMAN_PHOTO_PREMIUM)
     animal = image_model_config(ANIMAL_PHOTO_PREMIUM)
     mascot = image_model_config(MASCOT_PREMIUM)
 
-    assert human.model == "SG161222/RealVisXL_V4.0"
-    assert animal.model == "SG161222/RealVisXL_V5.0"
-    assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
-    assert animal.model != mascot.model
-    assert "hands" in human.quality_good_text
-    assert "species-correct anatomy" in animal.quality_good_text
-    assert "species-correct rounded anatomy" in mascot.quality_good_text
-    assert any("duplicated whole subject" in item for item in mascot.quality_bad_texts)
+    assert human.model == animal.model == mascot.model == "SG161222/RealVisXL_V5.0"
+    assert human.scheduler == animal.scheduler == mascot.scheduler == "dpm_karras"
+    assert human.inference_steps == animal.inference_steps == mascot.inference_steps == 28
+    assert "matching the requested visual style" in animal.quality_good_text
+    assert any("photo request" in item for item in animal.quality_bad_texts)
+    assert any("3D mascot request" in item for item in mascot.quality_bad_texts)
 
 
 def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
     mascot = image_model_config(MASCOT_PREMIUM)
 
     assert any("repeated characters" in item for item in mascot.quality_bad_texts)
-    assert any("malformed paws" in item or "impossible anatomy" in item for item in mascot.quality_bad_texts)
+    assert any("malformed paws" in item or "impossible pose" in item for item in mascot.quality_bad_texts)
     assert any("plastic toy" in item for item in mascot.quality_bad_texts)
 
 
@@ -311,8 +309,8 @@ class FakeBatchModel:
 
 def test_plan_many_uses_one_batch_model_call_for_multiple_commands():
     model = FakeBatchModel((
-        "PROMPT: one photorealistic golden retriever on grass\nMOTION:",
-        "PROMPT: one cute 3D golden retriever mascot in studio lighting\nMOTION:",
+        "SUBJECT_CLASS: animal\nSTYLE_CLASS: photo\nPROMPT: one photorealistic golden retriever on grass\nMOTION:",
+        "SUBJECT_CLASS: animal\nSTYLE_CLASS: 3d\nPROMPT: one cute 3D golden retriever mascot in studio lighting\nMOTION:",
     ))
     planner = MediaCommandPlanner(model)
     plans = planner.plan_many((
@@ -329,7 +327,12 @@ def test_plan_many_uses_one_batch_model_call_for_multiple_commands():
 
 
 def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
-    plan = MediaCommandPlanner().plan(
+    plan = MediaCommandPlanner(FakeModel(
+        "SUBJECT_CLASS: animal\n"
+        "STYLE_CLASS: photo\n"
+        "PROMPT: one photorealistic Golden Retriever outdoors in natural daylight\n"
+        "MOTION:"
+    )).plan(
         "Tạo ảnh một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời"
     )
     cfg = image_model_config(ANIMAL_PHOTO_PREMIUM)
