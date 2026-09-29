@@ -65,6 +65,7 @@ def main() -> int:
         quality_good_text=config.quality_good_text,
         quality_bad_texts=config.quality_bad_texts,
         enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
+        enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
     )
     seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
     request = ImageGenerationRequest(
