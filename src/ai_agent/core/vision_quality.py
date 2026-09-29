@@ -1,7 +1,7 @@
 """Multimodal final visual-quality gate for generated media."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from io import BytesIO
 import base64
@@ -590,3 +590,116 @@ class KaggleVisionQualityVerifier:
             "}, indent=2))",
         ]
         return "\n".join(lines) + "\n"
+
+
+@dataclass
+class HybridVisionQualityVerifier:
+    """Use a smaller Qwen3-VL fast gate and fall back to 8B only when needed."""
+
+    worker: KaggleGpuWorker
+    fast_model: str = "Qwen/Qwen3-VL-4B-Instruct"
+    final_model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    kernel_slug: str = "ai-agent-hybrid-vision-quality"
+    poll_interval: float = 15.0
+    max_poll_attempts: int = 120
+    min_quality_score: float = 9.0
+    min_prompt_match_score: float = 9.0
+    clear_pass_score: float = 9.2
+    attention_backend: str = "sdpa"
+    provider: str = "kaggle-gpu-hybrid-vlm-quality"
+
+    def __post_init__(self) -> None:
+        if not self.fast_model.strip() or not self.final_model.strip():
+            raise ValueError("fast_model and final_model are required")
+        if not self.kernel_slug.strip() or "/" in self.kernel_slug:
+            raise ValueError("kernel_slug must be a plain Kaggle slug")
+        if not 0 <= self.min_quality_score <= 10:
+            raise ValueError("min_quality_score must be in [0, 10]")
+        if not 0 <= self.min_prompt_match_score <= 10:
+            raise ValueError("min_prompt_match_score must be in [0, 10]")
+        if not max(self.min_quality_score, self.min_prompt_match_score) <= self.clear_pass_score <= 10:
+            raise ValueError("clear_pass_score must be >= configured minimum scores and <= 10")
+        if self.attention_backend not in {"sdpa", "eager"}:
+            raise ValueError("attention_backend must be sdpa or eager")
+
+    def _make_verifier(self, *, model: str, suffix: str) -> KaggleVisionQualityVerifier:
+        return KaggleVisionQualityVerifier(
+            worker=self.worker,
+            model=model,
+            kernel_slug=f"{self.kernel_slug}-{suffix}",
+            poll_interval=self.poll_interval,
+            max_poll_attempts=self.max_poll_attempts,
+            min_quality_score=self.min_quality_score,
+            min_prompt_match_score=self.min_prompt_match_score,
+            attention_backend=self.attention_backend,
+        )
+
+    def _clear_fast_pass(self, result: VisionQualityResult) -> bool:
+        scores = (
+            result.quality_score,
+            result.prompt_match_score,
+            result.structure_score,
+            result.detail_score,
+            result.aesthetic_score,
+            result.composition_score,
+            result.benchmark_match_score,
+        )
+        return (
+            result.passed
+            and not result.major_issues
+            and min(scores) >= self.clear_pass_score
+        )
+
+    def verify(self, request: VisionQualityRequest) -> VisionQualityResult:
+        return self.verify_many((request,)).items[0]
+
+    def verify_many(
+        self,
+        requests: tuple[VisionQualityRequest, ...] | list[VisionQualityRequest],
+    ) -> BatchVisionQualityResult:
+        requests = tuple(requests)
+        if not requests:
+            raise ValueError("at least one visual-quality request is required")
+
+        fast_batch = self._make_verifier(model=self.fast_model, suffix="fast").verify_many(requests)
+        fallback_requests = tuple(
+            request
+            for request, fast_result in zip(requests, fast_batch.items, strict=True)
+            if not self._clear_fast_pass(fast_result)
+        )
+
+        final_by_id: dict[str, VisionQualityResult] = {}
+        if fallback_requests:
+            final_batch = self._make_verifier(model=self.final_model, suffix="final").verify_many(
+                fallback_requests
+            )
+            final_by_id = {item.item_id: item for item in final_batch.items}
+
+        results: list[VisionQualityResult] = []
+        for request, fast_result in zip(requests, fast_batch.items, strict=True):
+            if self._clear_fast_pass(fast_result):
+                results.append(replace(
+                    fast_result,
+                    evidence=fast_result.evidence + (
+                        "hybrid_stage:fast_clear_pass",
+                        f"hybrid_fast_model:{self.fast_model}",
+                        f"hybrid_final_model:{self.final_model}",
+                        f"hybrid_clear_pass_score:{self.clear_pass_score:.2f}",
+                    ),
+                ))
+                continue
+
+            final_result = final_by_id[request.item_id]
+            results.append(replace(
+                final_result,
+                evidence=final_result.evidence + (
+                    "hybrid_stage:final_fallback",
+                    f"hybrid_fast_model:{self.fast_model}",
+                    f"hybrid_final_model:{self.final_model}",
+                    f"hybrid_fast_quality_score:{fast_result.quality_score:.2f}",
+                    f"hybrid_fast_structure_score:{fast_result.structure_score:.2f}",
+                    f"hybrid_clear_pass_score:{self.clear_pass_score:.2f}",
+                ),
+            ))
+
+        return BatchVisionQualityResult(tuple(results))

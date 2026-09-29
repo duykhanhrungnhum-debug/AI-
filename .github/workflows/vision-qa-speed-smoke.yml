@@ -46,7 +46,7 @@ jobs:
           gh run download 36543378475 -n natural-dog-photo-output -D qa-input
           find qa-input -maxdepth 3 -type f -print
 
-      - name: Benchmark single-pass Qwen3-VL QA
+      - name: Benchmark hybrid Qwen3-VL QA
         run: |
           python - <<'PY'
           import json
@@ -56,7 +56,7 @@ jobs:
 
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
           from ai_agent.core.media_command import ANIMAL_PHOTO_PREMIUM, benchmark_manifest
-          from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
+          from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest
 
           image_path = Path("qa-input/real/image.png")
           if not image_path.exists():
@@ -84,13 +84,14 @@ jobs:
               api_token=os.environ["KAGGLE_API_TOKEN"],
               username=os.environ["KAGGLE_USERNAME"],
           )
-          verifier = KaggleVisionQualityVerifier(
+          verifier = HybridVisionQualityVerifier(
               worker=worker,
               kernel_slug="ai-agent-vision-qa-speed-smoke",
               poll_interval=15,
               max_poll_attempts=120,
-              min_quality_score=8.0,
-              min_prompt_match_score=8.0,
+              min_quality_score=9.0,
+              min_prompt_match_score=9.0,
+              clear_pass_score=9.2,
           )
           start = time.monotonic()
           result = verifier.verify(request)

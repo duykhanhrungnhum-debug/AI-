@@ -12,7 +12,7 @@ from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MediaCommandPlanner, benchmark_manifest
-from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
+from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest
 
 
 def main() -> int:
@@ -136,13 +136,14 @@ def main() -> int:
         raise RuntimeError("generated image matches a user-rejected benchmark example")
 
     rubric = tuple(benchmark["must_pass"])
-    vlm = KaggleVisionQualityVerifier(
+    vlm = HybridVisionQualityVerifier(
         worker=worker,
         kernel_slug="ai-agent-premium-image-vlm",
         poll_interval=15,
         max_poll_attempts=120,
-        min_quality_score=8.0,
-        min_prompt_match_score=8.0,
+        min_quality_score=9.0,
+        min_prompt_match_score=9.0,
+        clear_pass_score=9.2,
     )
     try:
         visual_review = vlm.verify(VisionQualityRequest(
