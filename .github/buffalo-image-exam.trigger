@@ -1,1 +1,1 @@
-buffalo-standard-final-v3-subject-hard-gate
+buffalo-standard-final-v4-single-pass-hard-gate
