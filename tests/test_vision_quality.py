@@ -1,0 +1,129 @@
+import hashlib
+import json
+
+from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
+from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
+
+
+class FakeWorker:
+    def __init__(self, reviews):
+        self.reviews = reviews
+        self.submitted = None
+
+    def submit_script(self, **kwargs):
+        self.submitted = kwargs
+        return KaggleKernelSubmission("testuser", kwargs["slug"], 1, 1, None)
+
+    def status(self, slug):
+        return KaggleKernelStatus("COMPLETE")
+
+    def download_output_file(self, slug, filename):
+        assert filename == "vision_quality.json"
+        items = []
+        for item_id, image, review in self.reviews:
+            items.append({
+                "item_id": item_id,
+                "image_sha256": hashlib.sha256(image).hexdigest(),
+                "review_text": json.dumps(review),
+            })
+        return json.dumps({
+            "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+            "gpu_name": "Tesla T4",
+            "items": items,
+        }).encode()
+
+
+def request(item_id="human-1", image=b"IMAGE", expected=1):
+    return VisionQualityRequest(
+        item_id=item_id,
+        image=image,
+        prompt="one premium human portrait",
+        profile="human_photo_premium",
+        rubric=("correct anatomy", "no artifacts"),
+        expected_subject_count=expected,
+    )
+
+
+def test_vlm_quality_gate_passes_only_clean_high_scoring_image():
+    review = {
+        "pass": True,
+        "quality_score": 9.0,
+        "prompt_match_score": 9.5,
+        "subject_count": 1,
+        "major_issues": [],
+        "minor_issues": ["tiny background text"],
+        "summary": "production ready",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=FakeWorker([("human-1", b"IMAGE", review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(request())
+    assert result.passed is True
+    assert result.quality_score == 9.0
+    assert result.subject_count == 1
+    assert result.major_issues == ()
+    assert "gpu:Tesla T4" in result.evidence
+
+
+def test_vlm_quality_gate_rejects_major_visual_issue_even_with_high_scores():
+    review = {
+        "pass": False,
+        "quality_score": 9.0,
+        "prompt_match_score": 9.0,
+        "subject_count": 1,
+        "major_issues": ["right hand has fused fingers"],
+        "minor_issues": [],
+        "summary": "hand defect",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=FakeWorker([("human-1", b"IMAGE", review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(request())
+    assert result.passed is False
+    assert "right hand has fused fingers" in result.major_issues
+
+
+def test_vlm_quality_gate_rejects_wrong_subject_count():
+    review = {
+        "pass": True,
+        "quality_score": 9.0,
+        "prompt_match_score": 9.0,
+        "subject_count": 3,
+        "major_issues": [],
+        "minor_issues": [],
+        "summary": "three subjects",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=FakeWorker([("mascot-1", b"CRAB", review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(VisionQualityRequest(
+        item_id="mascot-1",
+        image=b"CRAB",
+        prompt="exactly one crab mascot",
+        profile="mascot_premium",
+        rubric=("exactly one subject", "clean geometry"),
+        expected_subject_count=1,
+    ))
+    assert result.passed is False
+    assert any("subject count mismatch" in issue for issue in result.major_issues)
+
+
+def test_vlm_review_parser_accepts_fenced_json():
+    raw = '```json\n{"pass": true, "quality_score": 8.5, "prompt_match_score": 9, "subject_count": 1, "major_issues": [], "minor_issues": []}\n```'
+    parsed = KaggleVisionQualityVerifier._parse_review(raw)
+    assert parsed["pass"] is True
+    assert parsed["quality_score"] == 8.5
+
+
+def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "Qwen2_5_VLForConditionalGeneration" in source
+    assert "Qwen/Qwen2.5-VL-3B-Instruct" in source
+    assert "process_vision_info" in source
+    assert "wrong subject count" in source
+    assert "malformed or fused hands/fingers/limbs" in source
+    assert "quality_score >= 8" in source
