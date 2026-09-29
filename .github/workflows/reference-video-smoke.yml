@@ -101,7 +101,7 @@ jobs:
               token_provider=oidc_token,
           )
           prior = learning.relevant("reference-character-video", limit=10)
-          scale = tuned_reference_scale(prior, base=0.65)
+          scale = tuned_reference_scale(prior, base=0.70)
 
           reference_url = (
               "https://huggingface.co/datasets/huggingface/documentation-images/"
@@ -122,14 +122,16 @@ jobs:
           )
           provider = KaggleBatchImageProvider(
               worker=worker,
-              ip_adapter_weight="ip-adapter-full-face_sd15.bin",
+              model="stabilityai/stable-diffusion-xl-base-1.0",
+              ip_adapter_weight="ip-adapter-plus-face_sdxl_vit-h.safetensors",
               kernel_slug="ai-agent-reference-video-smoke",
               poll_interval=15,
               max_poll_attempts=160,
-              inference_steps=16,
-              guidance_scale=7.0,
+              inference_steps=24,
+              guidance_scale=6.0,
               identity_threshold=0.60,
               prompt_alignment_threshold=0.22,
+              visual_quality_margin_threshold=0.015,
           )
           requests = (
               SceneImageRequest(
@@ -139,9 +141,13 @@ jobs:
                       "reference image enters a warm old library, medium shot, detailed shelves, "
                       "natural lighting, 16:9 widescreen composition"
                   ),
-                  negative_prompt="text, watermark, logo, changed face, different person, blurry",
-                  width=768,
-                  height=432,
+                  negative_prompt=(
+                      "text, watermark, logo, changed face, different person, blurry, bad anatomy, "
+                      "deformed hands, malformed fingers, fused fingers, extra fingers, missing fingers, "
+                      "extra limbs, twisted arms, distorted face, warped objects, broken perspective, AI artifacts"
+                  ),
+                  width=1024,
+                  height=576,
                   seed=2026092501,
               ),
               SceneImageRequest(
@@ -151,9 +157,13 @@ jobs:
                       "image studies an antique map at a wooden desk, medium shot, warm lamp light, "
                       "16:9 widescreen composition"
                   ),
-                  negative_prompt="text, watermark, logo, changed face, different person, blurry",
-                  width=768,
-                  height=432,
+                  negative_prompt=(
+                      "text, watermark, logo, changed face, different person, blurry, bad anatomy, "
+                      "deformed hands, malformed fingers, fused fingers, extra fingers, missing fingers, "
+                      "extra limbs, twisted arms, distorted face, warped objects, broken perspective, AI artifacts"
+                  ),
+                  width=1024,
+                  height=576,
                   seed=2026092502,
               ),
           )
@@ -187,6 +197,7 @@ jobs:
 
               image_paths = []
               identity_scores = []
+              visual_quality_margins = []
               for index, scene in enumerate(batch.scenes):
                   path = output / f"scene-{index + 1:03d}.png"
                   path.write_bytes(scene.artifact.data)
@@ -194,6 +205,8 @@ jobs:
                   for item in scene.artifact.evidence:
                       if item.startswith("identity_score:"):
                           identity_scores.append(float(item.split(":", 1)[1]))
+                      if item.startswith("visual_quality_margin:"):
+                          visual_quality_margins.append(float(item.split(":", 1)[1]))
 
               narration = output / "narration.wav"
               rate = 22050
@@ -230,6 +243,7 @@ jobs:
                       "scene_count": len(batch.scenes),
                       "min_identity_score": min(identity_scores),
                       "mean_identity_score": sum(identity_scores) / len(identity_scores),
+                      "min_visual_quality_margin": min(visual_quality_margins),
                       "duration_seconds": video.duration_seconds,
                   },
                   evidence=(
@@ -248,6 +262,8 @@ jobs:
                   "identity_scores": identity_scores,
                   "min_identity_score": min(identity_scores),
                   "mean_identity_score": sum(identity_scores) / len(identity_scores),
+                  "visual_quality_margins": visual_quality_margins,
+                  "min_visual_quality_margin": min(visual_quality_margins),
                   "final_video": {
                       "path": str(final_path),
                       "bytes": final_path.stat().st_size,

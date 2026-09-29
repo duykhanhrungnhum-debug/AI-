@@ -63,6 +63,7 @@ class FakeWorker:
             "seed": 10,
             "pixel_std": 1.0 if self.low_variation else 40.0,
             "prompt_alignment_score": 0.35,
+            "visual_quality_margin": 0.05,
         }]
         if "scene-2" in source:
             scenes.append({
@@ -74,9 +75,10 @@ class FakeWorker:
                 "seed": 20,
                 "pixel_std": 35.0,
                 "prompt_alignment_score": 0.34,
+                "visual_quality_margin": 0.05,
             })
         return json.dumps({
-            "model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+            "model": "stabilityai/stable-diffusion-xl-base-1.0",
             "gpu_name": "Tesla T4",
             "scenes": scenes,
         }).encode()
@@ -99,7 +101,8 @@ def test_batch_loads_model_once_and_verifies_each_scene():
     assert len(result.scenes) == 2
     assert len(worker.submissions) == 1
     source = worker.submissions[0]["source"]
-    assert source.count("StableDiffusionPipeline.from_pretrained") == 1
+    assert source.count("AutoPipelineForText2Image.from_pretrained") == 1
+    assert "stable-diffusion-xl-base-1.0" in source
     assert "for index, scene in enumerate" in source
     assert all("gpu:Tesla T4" in item.artifact.evidence for item in result.scenes)
 
@@ -134,7 +137,7 @@ def test_batch_marks_flat_image_as_failed():
     assert "image lacks visual variation" in result.scenes[0].issues[0]
 
 
-def test_reference_worker_does_not_enable_attention_slicing_before_ip_adapter():
+def test_reference_worker_uses_sdxl_face_adapter_and_cpu_offload():
     provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
     source = provider._build_worker_source(
         (SceneImageRequest("scene-1", "same character in a library", seed=1),),
@@ -142,12 +145,10 @@ def test_reference_worker_does_not_enable_attention_slicing_before_ip_adapter():
         reference_scale=0.75,
     )
 
-    load_at = source.index("pipe.load_ip_adapter(")
-    slicing_at = source.index("pipe.enable_attention_slicing()")
-    conditional_at = source.index('if not CONFIG.get("reference_b64"):')
-
-    assert conditional_at < slicing_at < load_at
-    assert source[conditional_at:load_at].count("pipe.enable_attention_slicing()") == 1
+    assert "ip-adapter-plus-face_sdxl_vit-h.safetensors" in source
+    assert '"sdxl_models" if is_sdxl else "models"' in source
+    assert "pipe.enable_model_cpu_offload()" in source
+    assert "pipe.enable_vae_slicing()" in source
 
 
 def test_safety_checker_block_is_reported():
@@ -162,6 +163,7 @@ def test_safety_checker_block_is_reported():
             "pixel_std": 40.0,
             "safety_blocked": True,
             "prompt_alignment_score": 0.35,
+            "visual_quality_margin": 0.05,
         },
         image,
         digest,
@@ -220,6 +222,7 @@ def test_prompt_alignment_below_threshold_is_rejected():
             "pixel_std": 40.0,
             "safety_blocked": False,
             "prompt_alignment_score": 0.10,
+            "visual_quality_margin": 0.05,
         },
         image,
         digest,
@@ -253,3 +256,41 @@ def test_worker_uses_shared_clip_projection_space_for_dot_product():
 
     assert "clip_vision(pixel_values=values).image_embeds[0].float()" in source
     assert "clip_text(**values).text_embeds[0].float()" in source
+
+
+def test_visual_quality_margin_below_threshold_is_rejected():
+    provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
+    request = SceneImageRequest("scene-1", "elderly scholar at a desk", seed=10)
+    image = png_bytes()
+    digest = hashlib.sha256(image).hexdigest()
+
+    issues = provider._verify_scene(
+        request,
+        {
+            "image_sha256": digest,
+            "pixel_std": 40.0,
+            "safety_blocked": False,
+            "prompt_alignment_score": 0.35,
+            "visual_quality_margin": -0.01,
+        },
+        image,
+        digest,
+    )
+
+    assert any("visual quality margin below threshold" in issue for issue in issues)
+
+
+def test_worker_scores_visual_defects_separately_from_prompt_alignment():
+    provider = KaggleBatchImageProvider(worker=FakeWorker(), poll_interval=0)
+    source = provider._build_worker_source(
+        (SceneImageRequest("scene-1", "elderly scholar at a desk", seed=1),),
+        reference_image=b"reference-image-bytes",
+        reference_scale=0.75,
+    )
+
+    assert "quality_good_text" in source
+    assert "quality_bad_texts" in source
+    assert "visual_defect_score" in source
+    assert "visual_quality_margin" in source
+    assert "deformed hands" in source
+    assert "warped books" in source

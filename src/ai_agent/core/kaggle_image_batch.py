@@ -66,16 +66,17 @@ class BatchImageResult:
 @dataclass
 class KaggleBatchImageProvider:
     worker: KaggleGpuWorker
-    model: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    model: str = "stabilityai/stable-diffusion-xl-base-1.0"
     ip_adapter_model: str = "h94/IP-Adapter"
-    ip_adapter_weight: str = "ip-adapter_sd15.bin"
+    ip_adapter_weight: str = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
     identity_threshold: float = 0.60
     prompt_alignment_threshold: float = 0.22
+    visual_quality_margin_threshold: float = 0.015
     kernel_slug: str = "ai-agent-image-batch"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
-    inference_steps: int = 16
-    guidance_scale: float = 7.0
+    inference_steps: int = 24
+    guidance_scale: float = 6.0
     min_pixel_std: float = 8.0
     provider: str = "kaggle-gpu-local-model-batch"
 
@@ -92,6 +93,8 @@ class KaggleBatchImageProvider:
             raise ValueError("identity_threshold must be in [-1, 1]")
         if not -1.0 <= self.prompt_alignment_threshold <= 1.0:
             raise ValueError("prompt_alignment_threshold must be in [-1, 1]")
+        if not -2.0 <= self.visual_quality_margin_threshold <= 2.0:
+            raise ValueError("visual_quality_margin_threshold must be in [-2, 2]")
 
     def generate_batch(
         self,
@@ -174,6 +177,8 @@ class KaggleBatchImageProvider:
                         f"pixel_std:{entry.get('pixel_std')}",
                         *((f"identity_score:{float(entry.get('identity_score')):.6f}", f"reference_scale:{float(entry.get('reference_scale')):.3f}") if entry.get("identity_score") is not None else ()),
                         *((f"prompt_alignment_score:{float(entry.get('prompt_alignment_score')):.6f}",) if entry.get("prompt_alignment_score") is not None else ()),
+                        *((f"visual_quality_margin:{float(entry.get('visual_quality_margin')):.6f}",) if entry.get("visual_quality_margin") is not None else ()),
+                        *((f"visual_defect_score:{float(entry.get('visual_defect_score')):.6f}",) if entry.get("visual_defect_score") is not None else ()),
                         f"safety_blocked:{bool(entry.get('safety_blocked'))}",
                         f"gpu:{gpu_name}",
                         f"model:{self.model}",
@@ -291,6 +296,18 @@ class KaggleBatchImageProvider:
             )
             negatives.extend(("unrelated scene", "wrong location", "unrequested people", "wrong action"))
 
+        if "visual quality margin" in issue_text or "visual anatomy quality" in issue_text:
+            refinements.append(
+                "STRICT HUMAN QUALITY: natural human anatomy, coherent shoulders and elbows, two anatomically plausible hands "
+                "when visible, five distinct fingers per visible hand, natural wrists, undistorted face, physically plausible "
+                "books/furniture and clean object geometry"
+            )
+            negatives.extend((
+                "bad anatomy", "deformed hands", "malformed hands", "fused fingers", "extra fingers",
+                "missing fingers", "extra limbs", "twisted arms", "distorted face", "warped objects",
+                "broken perspective", "AI artifacts",
+            ))
+
         if "duplicate image" in issue_text or "retry loop" in issue_text:
             refinements.append(
                 "Use a clearly different pose, staging or camera framing while preserving the locked identity "
@@ -405,6 +422,16 @@ class KaggleBatchImageProvider:
             issues.append(
                 f"prompt alignment below threshold: {prompt_alignment:.4f} < {self.prompt_alignment_threshold:.4f}"
             )
+
+        try:
+            visual_quality_margin = float(entry.get("visual_quality_margin"))
+        except (TypeError, ValueError):
+            visual_quality_margin = -2.0
+        if visual_quality_margin < self.visual_quality_margin_threshold:
+            issues.append(
+                "visual quality margin below threshold: "
+                f"{visual_quality_margin:.4f} < {self.visual_quality_margin_threshold:.4f}"
+            )
         return issues
 
     @staticmethod
@@ -448,6 +475,7 @@ class KaggleBatchImageProvider:
             "reference_scale": reference_scale,
             "identity_threshold": self.identity_threshold,
             "prompt_alignment_threshold": self.prompt_alignment_threshold,
+            "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
             "inference_steps": self.inference_steps,
             "guidance_scale": self.guidance_scale,
             "scenes": [
@@ -483,7 +511,7 @@ class KaggleBatchImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from PIL import Image
-                from diffusers import DDIMScheduler, StableDiffusionPipeline
+                from diffusers import AutoPipelineForText2Image, DDIMScheduler
                 from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
             except ImportError:
                 subprocess.check_call([
@@ -494,27 +522,31 @@ class KaggleBatchImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from PIL import Image
-                from diffusers import DDIMScheduler, StableDiffusionPipeline
+                from diffusers import AutoPipelineForText2Image, DDIMScheduler
                 from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
 
             gpu_name = torch.cuda.get_device_name(0)
-            pipe = StableDiffusionPipeline.from_pretrained(
+            adapter_weight = str(CONFIG.get("ip_adapter_weight") or "")
+            is_sdxl = "sdxl" in adapter_weight.casefold() or "xl" in str(CONFIG["model"]).casefold()
+            image_encoder = None
+            if CONFIG.get("reference_b64") and is_sdxl:
+                image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                    CONFIG["ip_adapter_model"],
+                    subfolder="models/image_encoder",
+                    torch_dtype=torch.float16,
+                )
+            pipe_kwargs = {{"torch_dtype": torch.float16}}
+            if image_encoder is not None:
+                pipe_kwargs["image_encoder"] = image_encoder
+            pipe = AutoPipelineForText2Image.from_pretrained(
                 CONFIG["model"],
-                torch_dtype=torch.float16,
+                **pipe_kwargs,
             )
-            if "full-face" in str(CONFIG.get("ip_adapter_weight") or ""):
+            if "face" in adapter_weight.casefold():
                 pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-            # Diffusers IP-Adapter installs its own attention processors. Enabling
-            # slicing first replaces them with SlicedAttnProcessor and causes
-            # load_ip_adapter() to fail because that processor requires slice_size.
-            # SD1.5 + IP-Adapter fits on Kaggle T4 without slicing, so only use
-            # attention slicing for the non-reference path.
-            if not CONFIG.get("reference_b64"):
-                pipe.enable_attention_slicing()
-            pipe = pipe.to("cuda")
 
             reference_image = None
             reference_embedding = None
@@ -548,18 +580,35 @@ class KaggleBatchImageProvider:
                 reference_image = Image.open(BytesIO(reference_bytes)).convert("RGB")
                 pipe.load_ip_adapter(
                     CONFIG["ip_adapter_model"],
-                    subfolder="models",
+                    subfolder="sdxl_models" if is_sdxl else "models",
                     weight_name=CONFIG["ip_adapter_weight"],
                 )
                 pipe.set_ip_adapter_scale(float(CONFIG["reference_scale"]))
                 reference_embedding = image_embedding(reference_image)
+
+            # SDXL + IP-Adapter can exceed T4 VRAM when kept fully resident.
+            # CPU offload trades a little latency for much safer memory use.
+            pipe.enable_model_cpu_offload()
+            pipe.enable_vae_slicing()
+
+            quality_good_text = (
+                "high quality realistic photograph, natural human anatomy, coherent shoulders elbows wrists, "
+                "realistic hands and fingers, undistorted face, physically plausible body, clean detailed objects"
+            )
+            quality_bad_texts = (
+                "bad AI generated image with deformed hands, malformed fingers, fused fingers, extra fingers, missing fingers",
+                "bad AI generated image with extra limbs, twisted arms, broken anatomy, distorted face",
+                "bad AI generated image with warped books, melted furniture, broken perspective, obvious visual artifacts",
+            )
+            quality_good_embedding = text_embedding(quality_good_text)
+            quality_bad_embeddings = tuple(text_embedding(text) for text in quality_bad_texts)
 
             output_dir = Path("/kaggle/working/batch_images")
             output_dir.mkdir(parents=True, exist_ok=True)
             reports = []
 
             for index, scene in enumerate(CONFIG["scenes"]):
-                generator = torch.Generator(device="cuda").manual_seed(int(scene["seed"]))
+                generator = torch.Generator(device="cpu").manual_seed(int(scene["seed"]))
                 generation = {{
                     "prompt": scene["prompt"],
                     "negative_prompt": scene["negative_prompt"] or None,
@@ -584,6 +633,14 @@ class KaggleBatchImageProvider:
                 prompt_alignment_score = float(
                     torch.dot(text_embedding(scene["prompt"]), generated_embedding).item()
                 )
+                visual_quality_score = float(
+                    torch.dot(quality_good_embedding, generated_embedding).item()
+                )
+                visual_defect_score = max(
+                    float(torch.dot(bad_embedding, generated_embedding).item())
+                    for bad_embedding in quality_bad_embeddings
+                )
+                visual_quality_margin = visual_quality_score - visual_defect_score
                 filename = f"scene_{{index:04d}}.png"
                 path = output_dir / filename
                 image.save(path, format="PNG")
@@ -604,6 +661,9 @@ class KaggleBatchImageProvider:
                     "pixel_max": float(pixels.max()),
                     "identity_score": identity_score,
                     "prompt_alignment_score": prompt_alignment_score,
+                    "visual_quality_score": visual_quality_score,
+                    "visual_defect_score": visual_defect_score,
+                    "visual_quality_margin": visual_quality_margin,
                     "reference_scale": float(CONFIG["reference_scale"]) if reference_image is not None else None,
                     "safety_blocked": safety_blocked,
                 }})
