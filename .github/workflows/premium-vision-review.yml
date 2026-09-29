@@ -113,7 +113,7 @@ jobs:
           ).verify_many(requests)
 
           payload = {
-              "model": "Qwen/Qwen3-VL-4B-Instruct",
+              "model": "Qwen/Qwen3-VL-8B-Instruct",
               "passed": result.passed,
               "items": [
                   {
