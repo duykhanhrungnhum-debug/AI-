@@ -946,6 +946,32 @@ started = time.perf_counter()
 gpu_name = torch.cuda.get_device_name(0)
 
 
+def normalize_subject(value):
+    token = (value or "").strip().casefold().replace("_", " ").replace("-", " ")
+    if token in {"animal", "animals", "creature", "creatures", "pet", "wildlife"}:
+        return "animal"
+    if token in {"human", "person", "people", "man", "woman"}:
+        return "human"
+    if token in {"general", "object", "scene", "other"}:
+        return "general"
+    return ""
+
+
+def normalize_style(value):
+    token = (value or "").strip().casefold().replace("_", " ").replace("-", " ")
+    if token in {"photo", "photograph", "photorealistic", "realistic photo", "real photo"}:
+        return "photo"
+    if token in {"3d", "3 d", "3d render", "cgi", "cg"}:
+        return "3d"
+    if token in {"mascot", "3d mascot"}:
+        return "mascot"
+    if token in {"illustration", "drawing", "painted", "painting"}:
+        return "illustration"
+    if token in {"general", "other"}:
+        return "general"
+    return ""
+
+
 def parse_compiled_result(raw):
     raw = (raw or "").strip().strip(chr(96)).strip()
     result = {"prompt": "", "subject_class": "", "style_class": ""}
@@ -966,22 +992,38 @@ def parse_compiled_result(raw):
             continue
         if not isinstance(payload, dict):
             continue
-        result["prompt"] = str(payload.get("PROMPT") or payload.get("prompt") or "").strip()
-        result["subject_class"] = str(payload.get("SUBJECT_CLASS") or payload.get("subject_class") or "").strip().casefold()
-        result["style_class"] = str(payload.get("STYLE_CLASS") or payload.get("style_class") or "").strip().casefold()
+        result["prompt"] = str(
+            payload.get("PROMPT")
+            or payload.get("prompt")
+            or payload.get("image_prompt")
+            or payload.get("description")
+            or ""
+        ).strip()
+        result["subject_class"] = normalize_subject(
+            str(payload.get("SUBJECT_CLASS") or payload.get("subject_class") or "")
+        )
+        result["style_class"] = normalize_style(
+            str(payload.get("STYLE_CLASS") or payload.get("style_class") or "")
+        )
         if result["prompt"]:
             return result
+
     aliases = {
         "PROMPT": "prompt",
         "PROMT": "prompt",
         "PROMP": "prompt",
+        "DESCRIPTION": "prompt",
         "SUBJECTCLASS": "subject_class",
         "SUBJECT": "subject_class",
         "STYLECLASS": "style_class",
         "STYLE": "style_class",
     }
+    lines = []
     for line in cleaned.replace("：", ":").splitlines():
-        line = line.strip().lstrip("-*# ").strip()
+        line = line.strip().lstrip("-*#> ").strip()
+        if not line:
+            continue
+        lines.append(line)
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
@@ -989,9 +1031,47 @@ def parse_compiled_result(raw):
         canonical = aliases.get(key)
         if canonical and value.strip() and not result[canonical]:
             result[canonical] = value.strip().strip(chr(96)).strip()
-    result["subject_class"] = result["subject_class"].casefold()
-    result["style_class"] = result["style_class"].casefold()
+
+    result["subject_class"] = normalize_subject(result["subject_class"])
+    result["style_class"] = normalize_style(result["style_class"])
+
+    if not result["prompt"]:
+        boilerplate = (
+            "here is", "here's", "sure", "certainly", "output", "result",
+            "subject_class", "style_class", "user_command",
+        )
+        usable = []
+        for line in lines:
+            lowered = line.casefold()
+            if lowered.startswith(boilerplate):
+                if ":" in line and lowered.startswith(("here is", "here's")):
+                    tail = line.split(":", 1)[1].strip()
+                    if len(tail) >= 20:
+                        usable.append(tail)
+                continue
+            if len(line) >= 20:
+                usable.append(line)
+        if usable:
+            result["prompt"] = max(usable, key=len).strip().strip(chr(96)).strip()
+
     return result
+
+
+def parse_class_pair(raw):
+    text = (raw or "").strip().casefold()
+    if not text:
+        return "", ""
+    cleaned = text.replace("subject_class", "").replace("style_class", "")
+    cleaned = cleaned.replace(":", " ").replace("|", " ").replace(",", " ").replace("/", " ")
+    tokens = [token.strip() for token in cleaned.split() if token.strip()]
+    subject = ""
+    style = ""
+    for token in tokens:
+        if not subject:
+            subject = normalize_subject(token)
+        if not style:
+            style = normalize_style(token)
+    return subject, style
 
 
 def looks_vietnamese(text):
@@ -1027,19 +1107,8 @@ def compile_items(model_name, pending):
     outputs = {}
     valid_subjects = {"animal", "human", "general"}
     valid_styles = {"photo", "3d", "mascot", "illustration", "general"}
-    for item in pending:
-        instruction = (
-            "MEDIA_COMMAND_COMPILE\n"
-            "Understand USER_COMMAND semantically without a fixed species list. "
-            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species, subject count, action, location and requested style. "
-            "SUBJECT_CLASS must be exactly animal, human, or general. "
-            "STYLE_CLASS must be exactly photo, 3d, mascot, illustration, or general. "
-            "Return exactly three lines and no commentary:\n"
-            "SUBJECT_CLASS: <animal|human|general>\n"
-            "STYLE_CLASS: <photo|3d|mascot|illustration|general>\n"
-            "PROMPT: <English image description>\n"
-            "USER_COMMAND: " + item["command"]
-        )
+
+    def generate_text(instruction, max_new_tokens):
         rendered = tokenizer.apply_chat_template(
             [{"role": "user", "content": instruction}],
             tokenize=False,
@@ -1047,31 +1116,113 @@ def compile_items(model_name, pending):
             enable_thinking=False,
         )
         inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
-        gen_started = time.perf_counter()
         with torch.inference_mode():
             generated = model.generate(
                 **inputs,
-                max_new_tokens=150,
+                max_new_tokens=max_new_tokens,
                 do_sample=False,
                 use_cache=True,
-                repetition_penalty=1.05,
-                no_repeat_ngram_size=3,
+                repetition_penalty=1.03,
             )
         new_tokens = generated[:, inputs.input_ids.shape[1]:]
-        raw = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+        text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+        del generated, inputs
+        return text
+
+    for item in pending:
+        gen_started = time.perf_counter()
+        instruction = (
+            "MEDIA_COMMAND_COMPILE\n"
+            "Understand USER_COMMAND semantically without a fixed species list. "
+            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species, subject count, action, location and requested style. "
+            "SUBJECT_CLASS must be exactly animal, human, or general. "
+            "STYLE_CLASS must be exactly photo, 3d, mascot, illustration, or general. "
+            "Return exactly three lines and no commentary:\n"
+            "SUBJECT_CLASS: animal|human|general\n"
+            "STYLE_CLASS: photo|3d|mascot|illustration|general\n"
+            "PROMPT: English image description\n"
+            "USER_COMMAND: " + item["command"]
+        )
+        raw = generate_text(instruction, 180)
         parsed = parse_compiled_result(raw)
-        valid = (
+        retry_raw = ""
+        class_raw = ""
+        retries = 0
+
+        prompt_valid = (
             len(parsed["prompt"]) >= 20
             and not looks_vietnamese(parsed["prompt"])
-            and parsed["subject_class"] in valid_subjects
+            and "USER_COMMAND" not in parsed["prompt"]
+        )
+        if not prompt_valid:
+            retries += 1
+            retry_raw = generate_text(
+                "Translate this image request into one complete concise ENGLISH image prompt. "
+                "Preserve the exact species, count, action, location and requested photo/3D style. "
+                "Return ONLY the English prompt sentence and nothing else. REQUEST: " + item["command"],
+                140,
+            )
+            retry_parsed = parse_compiled_result(retry_raw)
+            retry_prompt = (retry_parsed["prompt"] or retry_raw).strip().strip(chr(96)).strip()
+            if (
+                len(retry_prompt) >= 20
+                and not looks_vietnamese(retry_prompt)
+                and "USER_COMMAND" not in retry_prompt
+            ):
+                parsed["prompt"] = retry_prompt
+                prompt_valid = True
+
+        classes_valid = (
+            parsed["subject_class"] in valid_subjects
             and parsed["style_class"] in valid_styles
         )
+        routing_fallback_used = False
+        if prompt_valid and not classes_valid:
+            retries += 1
+            class_raw = generate_text(
+                "Classify the image request semantically. Do not name the species. "
+                "Return ONLY two tokens separated by a vertical bar: "
+                "first token animal, human, or general; second token photo, 3d, mascot, illustration, or general. "
+                "REQUEST: " + item["command"] + "\nENGLISH_PROMPT: " + parsed["prompt"],
+                24,
+            )
+            subject, style = parse_class_pair(class_raw)
+            if subject in valid_subjects:
+                parsed["subject_class"] = subject
+            if style in valid_styles:
+                parsed["style_class"] = style
+            classes_valid = (
+                parsed["subject_class"] in valid_subjects
+                and parsed["style_class"] in valid_styles
+            )
+
+        if prompt_valid and not classes_valid:
+            routing_fallback_used = True
+            fallback = item.get("fallback_profile") or "general_premium"
+            parsed["subject_class"] = (
+                "human" if fallback == "human_photo_premium"
+                else "animal" if fallback == "animal_photo_premium"
+                else "general"
+            )
+            parsed["style_class"] = (
+                "3d" if fallback == "mascot_premium"
+                else "photo" if fallback in {"human_photo_premium", "animal_photo_premium"}
+                else "general"
+            )
+            classes_valid = True
+
+        valid = prompt_valid and classes_valid
         outputs[item["item_id"]] = {
             "valid": valid,
             "raw": raw,
+            "retry_raw": retry_raw,
+            "class_raw": class_raw,
             "parsed": parsed,
+            "routing_fallback_used": routing_fallback_used,
+            "retry_count": retries,
             "generate_seconds": round(time.perf_counter() - gen_started, 3),
         }
+
     timing = {
         "model_load_seconds": round(ready - load_started, 3),
         "total_seconds": round(time.perf_counter() - load_started, 3),
