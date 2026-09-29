@@ -460,7 +460,14 @@ class MediaCommandPlanner:
                     motion = value.strip()
                     break
             if prompt:
-                return {"PROMPT": prompt, "MOTION": motion}
+                subject = str(payload.get("SUBJECT_CLASS") or payload.get("subject_class") or "").strip()
+                style = str(payload.get("STYLE_CLASS") or payload.get("style_class") or "").strip()
+                return {
+                    "PROMPT": prompt,
+                    "MOTION": motion,
+                    "SUBJECT_CLASS": subject,
+                    "STYLE_CLASS": style,
+                }
 
         labeled = cls._parse_labeled(cleaned)
         if labeled.get("PROMPT"):
@@ -514,6 +521,10 @@ class MediaCommandPlanner:
             "MOTION": "MOTION",
             "MOTON": "MOTION",
             "MOTIN": "MOTION",
+            "SUBJECTCLASS": "SUBJECT_CLASS",
+            "SUBJECT": "SUBJECT_CLASS",
+            "STYLECLASS": "STYLE_CLASS",
+            "STYLE": "STYLE_CLASS",
         }
         for line in normalized.splitlines():
             line = line.strip().lstrip("-*# ").strip()
