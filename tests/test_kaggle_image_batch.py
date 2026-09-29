@@ -335,6 +335,7 @@ class SemanticFakeWorker:
                 "negative_prompt": "bad anatomy",
                 "subject_class": subject,
                 "style_class": style,
+                "subject_name": "water buffalo",
                 "semantic_profile": profile,
                 "planner_raw": "semantic output",
                 "planner_model": "Qwen/Qwen3-0.6B",
@@ -344,6 +345,20 @@ class SemanticFakeWorker:
                 "width": 1024,
                 "height": 1024,
                 "review_text": '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}',
+                "hard_gate": {
+                    "passed": True,
+                    "subject_name": "water buffalo",
+                    "requires_full_body": True,
+                    "checks": {
+                        "subject_ok": True,
+                        "style_ok": True,
+                        "count_ok": True,
+                        "framing_ok": True,
+                        "anatomy_ok": True,
+                        "no_text_logo": True,
+                    },
+                    "issues": [],
+                },
             }
         return json.dumps({
             "gpu_name": "Tesla T4",
@@ -399,6 +414,10 @@ def test_semantic_batch_loads_planner_image_model_and_vlm_once_for_all_items():
     assert "without a fixed species list" in source
     assert "SUBJECT_CLASS" in source
     assert "STYLE_CLASS" in source
+    assert "SUBJECT_NAME" in source
+    assert "is_placeholder_prompt" in source
+    assert "EXPECTED EXACT SUBJECT/SPECIES/ENTITY" in source
+    assert "no_text_logo" in source
     assert "for item in compiled_items:" in source
 
 
@@ -426,3 +445,30 @@ def test_semantic_batch_rejects_mismatched_profile_maps():
             profile_rubrics={"animal_photo_premium": ("quality",)},
             profile_dimensions={"animal_photo_premium": (1024, 1024)},
         )
+
+
+
+def test_semantic_worker_rejects_schema_placeholder_prompt():
+    provider = semantic_provider()
+    source = provider._build_worker_source((
+        SemanticImageBatchItem("real", "Tạo ảnh một con trâu nước thật", 10),
+    ))
+    compile(source, "<semantic-batch-worker>", "exec")
+
+    assert '"english image description"' in source
+    assert "not is_placeholder_prompt(parsed[\"prompt\"])" in source
+    assert "valid_subject_name" in source
+    assert "SUBJECT_NAME: <exact English common subject/entity name>" in source
+
+
+def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
+    provider = semantic_provider()
+    source = provider._build_worker_source((
+        SemanticImageBatchItem("cute3d", "Tạo ảnh trâu nước 3D cute toàn thân", 20),
+    ))
+    compile(source, "<semantic-batch-worker>", "exec")
+
+    assert "Reject if the visible subject is a different species/entity" in source
+    assert "logo, watermark, emblem, signature" in source
+    assert '"subject_ok"' in source
+    assert '"no_text_logo"' in source
