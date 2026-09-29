@@ -41,35 +41,32 @@ jobs:
       - name: Give both exam questions to project AI
         id: exam
         shell: bash
+        env:
+          MEDIA_OUTPUT_DIR: dog-exam
+          MEDIA_CLIP_PRECHECK: "0"
+          MEDIA_COMMANDS_JSON: >-
+            [{"id":"real","command":"Tạo ảnh đúng một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời trên bãi cỏ trong ánh sáng ban ngày tự nhiên, toàn thân, giải phẫu chính xác, lông chi tiết, khuôn mặt và bàn chân tự nhiên, chất lượng ảnh thú cưng chuyên nghiệp."},{"id":"cute3d","command":"Tạo ảnh đúng một chú chó Golden Retriever 3D cute, nhân vật mascot cao cấp, toàn thân, tỷ lệ dễ thương nhưng giải phẫu chó mạch lạc, mắt biểu cảm, tai chân bàn chân và đuôi đúng cấu trúc, lông 3D có chi tiết mềm mại, ánh sáng studio đẹp, chất lượng nhân vật hoạt hình 3D cao cấp."}]
         run: |
           set +e
-          mkdir -p dog-exam/real dog-exam/cute3d
-
-          echo "=== EXAM 1: REAL DOG ==="
-          MEDIA_COMMAND="Tạo ảnh đúng một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời trên bãi cỏ trong ánh sáng ban ngày tự nhiên, toàn thân, giải phẫu chính xác, lông chi tiết, khuôn mặt và bàn chân tự nhiên, chất lượng ảnh thú cưng chuyên nghiệp."           MEDIA_OUTPUT_DIR="dog-exam/real"           python scripts/generate_premium_image.py
-          REAL_EXIT=$?
-
-          echo "=== EXAM 2: CUTE 3D DOG ==="
-          MEDIA_COMMAND="Tạo ảnh đúng một chú chó Golden Retriever 3D cute, nhân vật mascot cao cấp, toàn thân, tỷ lệ dễ thương nhưng giải phẫu chó mạch lạc, mắt biểu cảm, tai chân bàn chân và đuôi đúng cấu trúc, lông 3D có chi tiết mềm mại, ánh sáng studio đẹp, chất lượng nhân vật hoạt hình 3D cao cấp."           MEDIA_OUTPUT_DIR="dog-exam/cute3d"           python scripts/generate_premium_image.py
-          CUTE_EXIT=$?
-
+          START=$(date +%s)
+          python scripts/generate_premium_image_batch.py
+          EXIT=$?
+          END=$(date +%s)
           python - <<PY
           import json
           from pathlib import Path
-          payload = {
-              "real_dog_exit": int("$REAL_EXIT"),
-              "cute_3d_dog_exit": int("$CUTE_EXIT"),
-              "both_completed": True,
-          }
-          Path("dog-exam/exam-status.json").write_text(
-              json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+          start = int("$START")
+          end = int("$END")
+          Path("dog-exam/speed-benchmark.json").write_text(
+              json.dumps({
+                  "elapsed_seconds": end - start,
+                  "baseline_seconds": 1278,
+                  "baseline_source_run": 36532564560,
+              }, indent=2) + "\n",
+              encoding="utf-8",
           )
-          print(json.dumps(payload, indent=2))
           PY
-
-          if [ "$REAL_EXIT" -ne 0 ] || [ "$CUTE_EXIT" -ne 0 ]; then
-            exit 1
-          fi
+          exit "$EXIT"
 
       - name: Upload exam papers
         if: always()
