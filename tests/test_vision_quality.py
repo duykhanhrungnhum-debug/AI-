@@ -29,10 +29,17 @@ class FakeWorker:
                 "item_id": item_id,
                 "image_sha256": hashlib.sha256(image).hexdigest(),
                 "review_image_sha256": hashlib.sha256(review_image).hexdigest(),
+                "defect_review_text": json.dumps({
+                    "reject": False,
+                    "critical_defects": [],
+                    "benchmark_failures": [],
+                    "uncertain_regions": [],
+                    "summary": "no blocking defects",
+                }),
                 "review_text": json.dumps(review),
             })
         return json.dumps({
-            "model": "Qwen/Qwen3-VL-4B-Instruct",
+            "model": "Qwen/Qwen3-VL-8B-Instruct",
             "gpu_name": "Tesla T4",
             "items": items,
         }).encode()
@@ -149,7 +156,7 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
     source = verifier._build_worker_source((request(),))
     assert "Qwen3VLForConditionalGeneration" in source
-    assert "Qwen/Qwen3-VL-4B-Instruct" in source
+    assert "Qwen/Qwen3-VL-8B-Instruct" in source
     assert "views = [" in source
     assert "five views of the SAME generated image" in source
     assert "wrong subject count" in source
@@ -239,3 +246,64 @@ def test_vlm_quality_gate_rejects_low_benchmark_match_even_if_generic_quality_is
     assert result.passed is False
     assert result.benchmark_match_score == 5.0
     assert any("benchmark_match score below threshold" in issue for issue in result.major_issues)
+
+
+class DefectWorker(FakeWorker):
+    def download_output_file(self, slug, filename):
+        assert filename == "vision_quality.json"
+        items = []
+        for item_id, image, review in self.reviews:
+            review_image = KaggleVisionQualityVerifier._compact_review_image(image)
+            items.append({
+                "item_id": item_id,
+                "image_sha256": hashlib.sha256(image).hexdigest(),
+                "review_image_sha256": hashlib.sha256(review_image).hexdigest(),
+                "defect_review_text": json.dumps({
+                    "reject": True,
+                    "critical_defects": ["right hand has fused fingers"],
+                    "benchmark_failures": [],
+                    "uncertain_regions": [],
+                    "summary": "blocking anatomy defect",
+                }),
+                "review_text": json.dumps(review),
+            })
+        return json.dumps({
+            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "gpu_name": "Tesla T4",
+            "items": items,
+        }).encode()
+
+
+def test_adversarial_defect_hunter_can_veto_high_scoring_scorer():
+    review = {
+        "pass": True,
+        "quality_score": 9.8,
+        "prompt_match_score": 9.8,
+        "structure_score": 9.8,
+        "detail_score": 9.8,
+        "aesthetic_score": 9.8,
+        "composition_score": 9.8,
+        "benchmark_match_score": 9.8,
+        "subject_count": 1,
+        "major_issues": [],
+        "minor_issues": [],
+        "summary": "looks excellent",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=DefectWorker([("human-1", png_bytes(), review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(request())
+    assert result.passed is False
+    assert any("defect hunter:" in issue for issue in result.major_issues)
+    assert any("defect_hunter_reject:True" == item for item in result.evidence)
+
+
+def test_qwen3_8b_worker_source_compiles_with_two_pass_critic():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "Qwen/Qwen3-VL-8B-Instruct" in source
+    assert "load_in_4bit=True" in source
+    assert "adversarial visual defect hunter" in source
+    assert "uncertain_regions" in source
+    compile(source, "<qwen3-8b-adversarial-worker>", "exec")

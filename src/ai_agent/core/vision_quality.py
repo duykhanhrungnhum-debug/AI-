@@ -77,7 +77,7 @@ class KaggleVisionQualityVerifier:
     """Use a small open VLM as the final 'eyes-on-image' quality critic."""
 
     worker: KaggleGpuWorker
-    model: str = "Qwen/Qwen3-VL-4B-Instruct"
+    model: str = "Qwen/Qwen3-VL-8B-Instruct"
     kernel_slug: str = "ai-agent-vision-quality"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
@@ -162,6 +162,13 @@ class KaggleVisionQualityVerifier:
                 raise ValueError(f"vision quality review image hash mismatch: {request.item_id}")
 
             parsed = self._parse_review(str(entry.get("review_text") or ""))
+            defect_parsed = self._parse_review(str(entry.get("defect_review_text") or ""))
+            defect_issues = tuple(dict.fromkeys((
+                *self._string_tuple(defect_parsed.get("critical_defects")),
+                *self._string_tuple(defect_parsed.get("benchmark_failures")),
+                *self._string_tuple(defect_parsed.get("uncertain_regions")),
+            )))
+            defect_reject = defect_parsed.get("reject") is True or bool(defect_issues)
             quality_score = self._score(parsed.get("quality_score"))
             prompt_match_score = self._score(parsed.get("prompt_match_score"))
             structure_score = self._score(parsed.get("structure_score"))
@@ -169,7 +176,10 @@ class KaggleVisionQualityVerifier:
             aesthetic_score = self._score(parsed.get("aesthetic_score"))
             composition_score = self._score(parsed.get("composition_score"))
             benchmark_match_score = self._score(parsed.get("benchmark_match_score"))
-            major_issues = self._string_tuple(parsed.get("major_issues"))
+            major_issues = tuple(dict.fromkeys((
+                *self._string_tuple(parsed.get("major_issues")),
+                *(f"defect hunter: {issue}" for issue in defect_issues),
+            )))
             minor_issues = self._string_tuple(parsed.get("minor_issues"))
             try:
                 subject_count = int(parsed.get("subject_count"))
@@ -193,6 +203,7 @@ class KaggleVisionQualityVerifier:
                 and quality_score >= self.min_quality_score
                 and prompt_match_score >= self.min_prompt_match_score
                 and all(score >= self.min_quality_score for score in component_scores)
+                and not defect_reject
                 and not major_issues
                 and count_pass
             )
@@ -225,7 +236,10 @@ class KaggleVisionQualityVerifier:
             if not vlm_pass and not issues:
                 issues.append("VLM rejected image")
 
-            review_text = str(entry.get("review_text") or "")
+            review_text = (
+                "DEFECT_HUNTER:\n" + str(entry.get("defect_review_text") or "")
+                + "\nSCORER:\n" + str(entry.get("review_text") or "")
+            )
             results.append(VisionQualityResult(
                 item_id=request.item_id,
                 passed=passed,
@@ -254,6 +268,9 @@ class KaggleVisionQualityVerifier:
                     f"aesthetic_score:{aesthetic_score:.2f}",
                     f"composition_score:{composition_score:.2f}",
                     f"benchmark_match_score:{benchmark_match_score:.2f}",
+                    f"defect_hunter_reject:{defect_reject}",
+                    f"defect_hunter_issue_count:{len(defect_issues)}",
+                    "review_passes:2",
                     "review_views:5",
                     f"subject_count:{subject_count}",
                     f"profile:{request.profile}",
@@ -380,25 +397,32 @@ class KaggleVisionQualityVerifier:
             "try:",
             "    import torch",
             "    from PIL import Image",
-            "    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration",
+            "    from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration",
             "except ImportError:",
             "    subprocess.check_call([",
             '        sys.executable, "-m", "pip", "install", "--quiet",',
             '        "transformers>=4.57,<5", "accelerate<2", "safetensors",',
-            '        "Pillow",',
+            '        "bitsandbytes>=0.45", "Pillow",',
             "    ])",
             "    import torch",
             "    from PIL import Image",
-            "    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration",
+            "    from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration",
             "",
             "if not torch.cuda.is_available():",
             '    raise RuntimeError("CUDA GPU is not available")',
             "",
             "gpu_name = torch.cuda.get_device_name(0)",
+            "quantization = BitsAndBytesConfig(",
+            "    load_in_4bit=True,",
+            '    bnb_4bit_quant_type="nf4",',
+            "    bnb_4bit_use_double_quant=True,",
+            "    bnb_4bit_compute_dtype=torch.float16,",
+            ")",
             "model = Qwen3VLForConditionalGeneration.from_pretrained(",
             '    CONFIG["model"],',
-            "    dtype=torch.float16,",
+            "    quantization_config=quantization,",
             '    device_map="auto",',
+            "    low_cpu_mem_usage=True,",
             ")",
             'processor = AutoProcessor.from_pretrained(CONFIG["model"])',
             "model.eval()",
@@ -444,38 +468,56 @@ class KaggleVisionQualityVerifier:
             '        \'"detail_score": 0.0, "aesthetic_score": 0.0, "composition_score": 0.0, "benchmark_match_score": 0.0, "subject_count": 1, \'',
             '        \'"major_issues": [], "minor_issues": [], "summary": ""}\'',
             "    )",
-            "    content = [{\"type\": \"image\", \"image\": view} for view in views]",
-            '    content.append({"type": "text", "text": instruction})',
-            '    messages = [{"role": "user", "content": content}]',
-            "    inputs = processor.apply_chat_template(",
-            "        messages,",
-            "        tokenize=True,",
-            "        add_generation_prompt=True,",
-            "        return_dict=True,",
-            '        return_tensors="pt",',
-            "    ).to(model.device)",
-            "    with torch.no_grad():",
-            "        generated = model.generate(",
-            "            **inputs,",
-            "            max_new_tokens=420,",
-            "            do_sample=False,",
-            "            repetition_penalty=1.04,",
-            "        )",
-            "    generated_trimmed = [",
-            "        output_ids[len(input_ids):]",
-            "        for input_ids, output_ids in zip(inputs.input_ids, generated)",
-            "    ]",
-            "    review_text = processor.batch_decode(",
-            "        generated_trimmed,",
-            "        skip_special_tokens=True,",
-            "        clean_up_tokenization_spaces=False,",
-            "    )[0].strip()",
-            "    if not review_text:",
-            '        raise RuntimeError("vision-quality model returned empty review")',
+            "    defect_instruction = (",
+            '        f"You are an adversarial visual defect hunter. Your job is to FIND reasons this image should be rejected, not to praise it. "',
+            '        f"PROFILE: {item[\'profile\']}; ORIGINAL PROMPT: {item[\'prompt\']}; EXPECTED SUBJECT COUNT: {expected}; BENCHMARK RUBRIC: {rubric}. "',
+            '        "You receive full frame plus four forensic crops of the SAME image. Examine every visible hand/finger/limb/appendage, face, eye, mouth, "',
+            '        "silhouette, object connection, geometry, material, texture, outline, background and perspective. Compare against EACH benchmark criterion. "',
+            '        "For mascot_premium specifically reject tall balloon-like bodies, thin raised scissor claws, spidery legs, missing short antennae, glossy plastic-toy material, "',
+            '        "human-like eyebrows/nose/teeth, dark toy-render background, missing crisp white sticker outline, weak lily-pad/water-droplet presentation, or generic 3D that misses the benchmark language. "',
+            '        "For human_photo_premium reject any suspicious hand/finger anatomy, warped joint, face distortion, synthetic waxy skin/clothing, broken architecture/railings/props or CGI-looking geometry. "',
+            '        "If a critical region is ambiguous or too unclear to verify, put it in uncertain_regions and reject rather than guessing it is correct. "',
+            '        "Return JSON only: {\\"reject\\": true, \\"critical_defects\\": [], \\"benchmark_failures\\": [], \\"uncertain_regions\\": [], \\"summary\\": \\"\\"}."',
+            "    )",
+            "",
+            "    def run_review(text_instruction):",
+            "        content = [{\"type\": \"image\", \"image\": view} for view in views]",
+            '        content.append({"type": "text", "text": text_instruction})',
+            '        messages = [{"role": "user", "content": content}]',
+            "        inputs = processor.apply_chat_template(",
+            "            messages,",
+            "            tokenize=True,",
+            "            add_generation_prompt=True,",
+            "            return_dict=True,",
+            '            return_tensors="pt",',
+            "        ).to(model.device)",
+            "        with torch.no_grad():",
+            "            generated = model.generate(",
+            "                **inputs,",
+            "                max_new_tokens=520,",
+            "                do_sample=False,",
+            "                repetition_penalty=1.04,",
+            "            )",
+            "        generated_trimmed = [",
+            "            output_ids[len(input_ids):]",
+            "            for input_ids, output_ids in zip(inputs.input_ids, generated)",
+            "        ]",
+            "        text = processor.batch_decode(",
+            "            generated_trimmed,",
+            "            skip_special_tokens=True,",
+            "            clean_up_tokenization_spaces=False,",
+            "        )[0].strip()",
+            "        if not text:",
+            '            raise RuntimeError("vision-quality model returned empty review")',
+            "        return text",
+            "",
+            "    defect_review_text = run_review(defect_instruction)",
+            "    review_text = run_review(instruction)",
             "    reports.append({",
             '        "item_id": item["item_id"],',
             '        "image_sha256": item["image_sha256"],',
             '        "review_image_sha256": item["review_image_sha256"],',
+            '        "defect_review_text": defect_review_text,',
             '        "review_text": review_text,',
             "    })",
             "",
