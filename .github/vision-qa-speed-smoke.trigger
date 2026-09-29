@@ -1,1 +1,1 @@
-vision-qa-speed-v2-compact-json
+vision-qa-speed-v3-profiled
