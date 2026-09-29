@@ -420,6 +420,7 @@ class KaggleVisionQualityVerifier:
             '        f"PROFILE: {item[\'profile\']}; ORIGINAL PROMPT: {item[\'prompt\']}; "',
             '        f"EXPECTED MAIN SUBJECT COUNT: {expected}; QUALITY RUBRIC: {rubric}. "',
             '        "You receive five views of the SAME generated image: full frame, upper crop, lower crop, left crop, right crop. "',
+            '        "Inspect specifically for wrong subject count and duplicated people/characters/objects before scoring local quality. "',
             '        "Use the crops as forensic zooms, never count them as extra subjects. Inspect visible anatomy/appendages, face/eyes/mouth, "',
             '        "object connections, silhouette, materials, lighting, perspective, texture continuity and accidental pseudo-text. "',
             '        "For human_photo_premium, reject any fused/missing/extra fingers, unnatural wrists/elbows/shoulders, distorted face, "',
