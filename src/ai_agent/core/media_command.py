@@ -148,6 +148,24 @@ ANIMAL_IMAGE_MODEL = ImageModelConfig(
 )
 
 
+UNIFIED_ANIMAL_STYLE_IMAGE_MODEL = ImageModelConfig(
+    model="SG161222/RealVisXL_V5.0",
+    inference_steps=28,
+    guidance_scale=4.0,
+    scheduler="dpm_karras",
+    quality_good_text=(
+        "premium production-ready animal image matching the requested visual style, species-correct anatomy and proportions, "
+        "coherent limbs joints face eyes ears horns paws hooves wings fins or tail as applicable, clean silhouette, "
+        "high-quality natural or 3D materials appropriate to the request, coherent lighting and geometry"
+    ),
+    quality_bad_texts=(
+        "bad AI animal with malformed anatomy, extra or missing limbs, fused appendages, misplaced joints or impossible pose",
+        "bad AI animal with distorted face eyes muzzle beak horns ears tail wings fins paws or hooves",
+        "image that ignores the requested photo versus 3D style, broken geometry, duplicated subject, text watermark or obvious artifacts",
+    ),
+)
+
+
 MASCOT_IMAGE_MODEL = ImageModelConfig(
     model="playgroundai/playground-v2.5-1024px-aesthetic",
     inference_steps=40,
@@ -186,10 +204,8 @@ def image_model_config(profile: MediaQualityProfile | QualityProfileName) -> Ima
     name = profile.name if isinstance(profile, MediaQualityProfile) else profile
     if name == HUMAN_PHOTO_PREMIUM.name:
         return HUMAN_IMAGE_MODEL
-    if name == ANIMAL_PHOTO_PREMIUM.name:
-        return ANIMAL_IMAGE_MODEL
-    if name == MASCOT_PREMIUM.name:
-        return MASCOT_IMAGE_MODEL
+    if name in {ANIMAL_PHOTO_PREMIUM.name, MASCOT_PREMIUM.name}:
+        return UNIFIED_ANIMAL_STYLE_IMAGE_MODEL
     return GENERAL_IMAGE_MODEL
 
 
