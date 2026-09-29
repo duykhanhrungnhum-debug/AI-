@@ -3,6 +3,7 @@ from ai_agent.core.media_command import (
     MASCOT_PREMIUM,
     MediaCommandPlanner,
     benchmark_manifest,
+    image_model_config,
 )
 from ai_agent.core.model import ModelResponse
 
@@ -23,6 +24,8 @@ def test_routes_natural_human_command_to_premium_human_profile():
     assert plan.profile == HUMAN_PHOTO_PREMIUM
     assert "anatomically correct body" in plan.prompt
     assert "deformed hands" in plan.negative_prompt
+    assert plan.model_config.model == "SG161222/RealVisXL_V4.0"
+    assert plan.model_config.scheduler == "dpm_karras"
 
 
 def test_routes_mascot_command_to_premium_mascot_profile():
@@ -33,6 +36,10 @@ def test_routes_mascot_command_to_premium_mascot_profile():
     assert plan.profile == MASCOT_PREMIUM
     assert "clean rounded geometry" in plan.prompt
     assert "duplicated limbs" in plan.negative_prompt
+    assert "multiple crabs" in plan.negative_prompt
+    assert plan.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
+    assert plan.model_config.scheduler == "edm_dpm"
+    assert plan.model_config.guidance_scale == 3.0
 
 
 def test_video_command_adds_motion_and_preserves_reference_identity():
@@ -83,3 +90,15 @@ def test_benchmark_manifest_pins_exact_user_reference_set():
         "eaa4e7f5f1bae39378d87a0e180dd223647ed2ac988b56c76521e3fac807ae1b",
         "00c12e5cb4bd07b164a66cd58b06591f3455d53c6175f23c29aabc31e9fc2ad8",
     }
+
+
+def test_profile_model_routing_uses_separate_human_and_mascot_stacks():
+    human = image_model_config(HUMAN_PHOTO_PREMIUM)
+    mascot = image_model_config(MASCOT_PREMIUM)
+
+    assert human.model == "SG161222/RealVisXL_V4.0"
+    assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
+    assert human.model != mascot.model
+    assert "hands" in human.quality_good_text
+    assert "exactly one subject" in mascot.quality_good_text
+    assert any("duplicated subject" in item for item in mascot.quality_bad_texts)
