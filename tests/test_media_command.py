@@ -162,3 +162,20 @@ def test_qwen_real_label_typos_use_first_prompt_and_ignore_later_variant():
     assert plan.prompt.startswith("A high-quality full-body portrait")
     assert "close-up alternative" not in plan.prompt
     assert plan.motion_prompt == ""
+
+
+def test_qwen_spaced_prompt_label_is_normalized_without_using_alternative_description():
+    raw = (
+        "PROM PT: A high-quality full-body portrait of a young Asian girl running on a modern glass bridge "
+        "in the morning, wearing sportswear in black and jade green, holding a water bottle, smiling naturally, "
+        "clear from head to toe, correct anatomical hands and fingers, natural light, high-end realistic photography style, "
+        "one person in the frame.\n\n"
+        "MOTION:\n\n"
+        "IMAGE_DESCRIPTION: an alternative description that must not replace PROM PT"
+    )
+    plan = MediaCommandPlanner(FakeModel(raw)).plan(
+        "Tạo ảnh toàn thân cô gái chạy bộ trên cầu kính"
+    )
+
+    assert plan.prompt.startswith("A high-quality full-body portrait")
+    assert "alternative description" not in plan.prompt
