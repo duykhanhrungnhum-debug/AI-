@@ -1,3 +1,5 @@
+import pytest
+
 from ai_agent.core.media_command import (
     HUMAN_PHOTO_PREMIUM,
     MASCOT_PREMIUM,
@@ -110,3 +112,34 @@ def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
     assert any("multiple separate repeated characters" in item for item in mascot.quality_bad_texts)
     assert any("fused disconnected broken claws or legs" in item for item in mascot.quality_bad_texts)
     assert all("duplicated limbs claws appendages" not in item for item in mascot.quality_bad_texts)
+
+
+def test_command_compiler_accepts_fullwidth_label_separator_and_records_output():
+    raw = (
+        "PROMPT：one young Asian woman jogging on a modern glass bridge, full body, morning light\n"
+        "MOTION："
+    )
+    plan = MediaCommandPlanner(FakeModel(raw)).plan(
+        "Tạo ảnh cô gái châu Á chạy bộ trên cầu kính"
+    )
+
+    assert plan.prompt.startswith("one young Asian woman jogging")
+    assert plan.compiler_output == raw
+
+
+def test_command_compiler_rejects_untranslated_vietnamese_prompt_before_image_gpu():
+    planner = MediaCommandPlanner(FakeModel(
+        "PROMPT: Tạo ảnh cô gái đang chạy bộ ngoài trời trên cầu kính\nMOTION:"
+    ))
+
+    with pytest.raises(ValueError, match="translate PROMPT to English"):
+        planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời trên cầu kính")
+
+
+def test_command_compiler_rejects_missing_prompt_label_before_image_gpu():
+    planner = MediaCommandPlanner(FakeModel(
+        "Here is your translated image request: a woman jogging on a bridge"
+    ))
+
+    with pytest.raises(ValueError, match="did not return a PROMPT line"):
+        planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời")
