@@ -79,6 +79,7 @@ def main() -> int:
         "inference_steps": config.inference_steps,
         "guidance_scale": config.guidance_scale,
         "scheduler": config.scheduler,
+        "compiler_output": plan.compiler_output,
         "prompt": plan.prompt,
         "negative_prompt": plan.negative_prompt,
         "width": plan.profile.width,

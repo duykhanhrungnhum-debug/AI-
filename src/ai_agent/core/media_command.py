@@ -152,6 +152,7 @@ class MediaCommandPlan:
     negative_prompt: str
     motion_prompt: str = ""
     reference_required: bool = False
+    compiler_output: str = ""
 
 
 class MediaCommandPlanner:
@@ -174,21 +175,33 @@ class MediaCommandPlanner:
         profile = self._infer_profile(command)
         rewritten_prompt = command
         motion_prompt = ""
+        compiler_output = ""
 
         if self.provider is not None:
-            prompt = (
+            compiler_prompt = (
                 "MEDIA_COMMAND_COMPILE\n"
-                "Convert the user's request into concise English visual instructions without adding people, objects, "
-                "actions or story facts that the user did not request. Keep identity/reference instructions if present. "
-                "Do not lower quality requirements. Return exactly two labeled lines and no Markdown:\n"
-                "PROMPT: <one concise still-image description>\n"
-                "MOTION: <only requested or natural minimal motion; empty if image-only>\n"
+                "Translate and compile the user's request into concise ENGLISH visual instructions. "
+                "The PROMPT value MUST be English even when USER_COMMAND is Vietnamese or another language. "
+                "Preserve every requested subject count, person/object, action, location, clothing, held object, "
+                "camera/framing, time of day and visual style. Do not invent or remove story facts. "
+                "Keep identity/reference instructions if present. Do not lower quality requirements. "
+                "Return exactly two plain-text labeled lines and no Markdown or commentary:\n"
+                "PROMPT: <one complete concise English still-image description>\n"
+                "MOTION: <English motion only when video is requested; otherwise leave empty>\n"
                 f"USER_COMMAND: {command}"
             )
-            raw = self.provider.generate(prompt).text.strip()
-            parsed = self._parse_labeled(raw)
-            rewritten_prompt = parsed.get("PROMPT", "").strip() or command
+            compiler_output = self.provider.generate(compiler_prompt).text.strip()
+            parsed = self._parse_labeled(compiler_output)
+            rewritten_prompt = parsed.get("PROMPT", "").strip()
             motion_prompt = parsed.get("MOTION", "").strip()
+            if not rewritten_prompt:
+                raise ValueError(
+                    "media command compiler did not return a PROMPT line; refusing to send an uncompiled command to the image model"
+                )
+            if self._looks_vietnamese(rewritten_prompt):
+                raise ValueError(
+                    "media command compiler did not translate PROMPT to English; refusing image generation"
+                )
 
         positive = profile.positive_constraints
         prompt = rewritten_prompt.rstrip(" .") + ". Quality requirements: " + positive + "."
@@ -212,6 +225,7 @@ class MediaCommandPlanner:
             negative_prompt=negatives,
             motion_prompt=motion_prompt,
             reference_required=has_reference_image,
+            compiler_output=compiler_output,
         )
 
     @staticmethod
@@ -242,14 +256,29 @@ class MediaCommandPlanner:
     @staticmethod
     def _parse_labeled(raw: str) -> dict[str, str]:
         values: dict[str, str] = {}
-        for line in raw.splitlines():
+        normalized = raw.replace("：", ":")
+        for line in normalized.splitlines():
+            line = line.strip().lstrip("-*# ").strip()
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
-            key = key.strip().upper()
+            key = key.strip().upper().replace(" ", "_")
             if key in {"PROMPT", "MOTION"}:
-                values[key] = value.strip()
+                values[key] = value.strip().strip(chr(96)).strip()
         return values
+
+    @staticmethod
+    def _looks_vietnamese(text: str) -> bool:
+        lowered = text.casefold()
+        vietnamese_chars = set("ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ")
+        if any(char in vietnamese_chars for char in lowered):
+            return True
+        common_words = (
+            " cô gái ", " phụ nữ ", " đàn ông ", " chạy bộ ", " ngoài trời ", " buổi sáng ",
+            " trang phục ", " chai nước ", " gương mặt ", " toàn thân ", " chỉ một ",
+        )
+        padded = " " + lowered + " "
+        return sum(term in padded for term in common_words) >= 2
 
 
 def benchmark_manifest() -> dict:
