@@ -85,3 +85,14 @@ def test_kaggle_model_provider_can_disable_qwen3_thinking():
 
     assert '"enable_thinking": false' in source.lower()
     assert 'template_kwargs["enable_thinking"] = bool(CONFIG["enable_thinking"])' in source
+
+
+
+def test_model_worker_enables_hf_xet_high_performance():
+    worker = FakeWorker([{"prompt": "hello", "text": "world"}])
+    provider = KaggleModelProvider(worker=worker, poll_interval=0)
+
+    source = provider._build_worker_source(("hello",))
+
+    assert 'HF_XET_HIGH_PERFORMANCE' in source
+    assert 'HF_HUB_DISABLE_TELEMETRY' in source
