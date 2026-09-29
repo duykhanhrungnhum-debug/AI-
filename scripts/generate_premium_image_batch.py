@@ -64,55 +64,63 @@ def main() -> int:
     )
     fast_model_name = os.environ.get("MEDIA_COMMAND_FAST_MODEL", MEDIA_COMMAND_FAST_MODEL)
     final_model_name = os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL)
-    fast_language_model = KaggleModelProvider(
-        worker=worker,
-        model=fast_model_name,
-        kernel_slug="ai-agent-media-command-fast",
-        poll_interval=15,
-        max_poll_attempts=120,
-        max_new_tokens=140,
-        temperature=0.0,
-        enable_thinking=False,
-    )
+    use_inline_planner = os.environ.get("MEDIA_INLINE_PLANNER", "1") != "0"
     timings: dict[str, float | dict[str, float]] = {
         "image_generation": {},
         "image_worker": {},
+        "inline_planner_worker": {},
         "inline_vlm_worker": {},
     }
     planning_started = perf_counter()
-    planner_model_used = fast_model_name
+    planner_model_used = "inline-per-item" if use_inline_planner else fast_model_name
     planner_fallback_used = False
-    try:
-        plans = MediaCommandPlanner(fast_language_model).plan_many(
+    if use_inline_planner:
+        plans = MediaCommandPlanner().plan_many(
             tuple(command for _, command in items)
         )
-    except Exception as fast_exc:
-        planner_fallback_used = True
-        final_language_model = KaggleModelProvider(
+    else:
+        fast_language_model = KaggleModelProvider(
             worker=worker,
-            model=final_model_name,
-            kernel_slug="ai-agent-media-command-final",
+            model=fast_model_name,
+            kernel_slug="ai-agent-media-command-fast",
             poll_interval=15,
             max_poll_attempts=120,
-            max_new_tokens=180,
+            max_new_tokens=140,
             temperature=0.0,
             enable_thinking=False,
         )
         try:
-            plans = MediaCommandPlanner(final_language_model).plan_many(
+            plans = MediaCommandPlanner(fast_language_model).plan_many(
                 tuple(command for _, command in items)
             )
-            planner_model_used = final_model_name
-        except Exception as final_exc:
-            (output / "planning-failure.json").write_text(
-                json.dumps({
-                    "fast_error": str(fast_exc),
-                    "final_error": str(final_exc),
-                }, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+        except Exception as fast_exc:
+            planner_fallback_used = True
+            final_language_model = KaggleModelProvider(
+                worker=worker,
+                model=final_model_name,
+                kernel_slug="ai-agent-media-command-final",
+                poll_interval=15,
+                max_poll_attempts=120,
+                max_new_tokens=180,
+                temperature=0.0,
+                enable_thinking=False,
             )
-            raise
+            try:
+                plans = MediaCommandPlanner(final_language_model).plan_many(
+                    tuple(command for _, command in items)
+                )
+                planner_model_used = final_model_name
+            except Exception as final_exc:
+                (output / "planning-failure.json").write_text(
+                    json.dumps({
+                        "fast_error": str(fast_exc),
+                        "final_error": str(final_exc),
+                    }, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                raise
     timings["planning"] = round(perf_counter() - planning_started, 3)
+    planner_models_used: dict[str, str] = {}
 
     generated: dict[str, tuple[object, object, dict]] = {}
     inline_reviews: dict[str, tuple[VisionQualityRequest, object]] = {}
@@ -161,6 +169,11 @@ def main() -> int:
             enforce_visual_quality_margin=False,
             enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
             enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
+            enable_inline_planner=use_inline_planner,
+            inline_planner_fast_model=fast_model_name,
+            inline_planner_final_model=final_model_name,
+            inline_planner_raw_command=command if use_inline_planner else "",
+            inline_planner_positive_constraints=plan.profile.positive_constraints if use_inline_planner else "",
             quality_good_text=config.quality_good_text,
             quality_bad_texts=config.quality_bad_texts,
             enable_inline_vlm=True,
@@ -171,7 +184,7 @@ def main() -> int:
             inline_vlm_min_score=9.0,
         )
         request = ImageGenerationRequest(
-            prompt=plan.prompt,
+            prompt=str(plan_data.get("prompt") or plan.prompt),
             negative_prompt=plan.negative_prompt,
             width=plan.profile.width,
             height=plan.profile.height,
@@ -193,6 +206,23 @@ def main() -> int:
         report_timings = provider.last_report.get("timings")
         if isinstance(report_timings, dict):
             timings["image_worker"][item_id] = report_timings
+        inline_planner_report = provider.last_report.get("inline_planner")
+        if isinstance(inline_planner_report, dict):
+            planner_models_used[item_id] = str(inline_planner_report.get("model") or "")
+            if isinstance(inline_planner_report.get("timings"), dict):
+                timings["inline_planner_worker"][item_id] = {
+                    **inline_planner_report["timings"],
+                    "total_stage_seconds": inline_planner_report.get("total_stage_seconds"),
+                    "fallback_used": bool(inline_planner_report.get("fallback_used")),
+                }
+            actual_prompt = str(provider.last_report.get("compiled_prompt") or "").strip()
+            if actual_prompt:
+                plan_data["compiler_output"] = str(inline_planner_report.get("raw_output") or "")
+                plan_data["prompt"] = actual_prompt
+                (item_dir / "plan.json").write_text(
+                    json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
         inline_report = provider.last_report.get("inline_vlm")
         if isinstance(inline_report, dict) and isinstance(inline_report.get("timings"), dict):
             timings["inline_vlm_worker"][item_id] = inline_report["timings"]
@@ -229,7 +259,7 @@ def main() -> int:
         review_request = VisionQualityRequest(
             item_id=item_id,
             image=artifact.data,
-            prompt=plan.prompt,
+            prompt=str(plan_data.get("prompt") or plan.prompt),
             profile=plan.profile.name,
             rubric=tuple(benchmark["must_pass"]),
             expected_subject_count=1,
@@ -338,6 +368,8 @@ def main() -> int:
         "planner_fast_model": fast_model_name,
         "planner_final_model": final_model_name,
         "planner_fallback_used": planner_fallback_used,
+        "inline_planner": use_inline_planner,
+        "planner_models_used": planner_models_used,
         "clip_precheck": os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
         "cpu_offload": os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
         "timing_seconds": timings,
