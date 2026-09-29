@@ -32,7 +32,7 @@ class FakeWorker:
                 "review_text": json.dumps(review),
             })
         return json.dumps({
-            "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+            "model": "Qwen/Qwen3-VL-4B-Instruct",
             "gpu_name": "Tesla T4",
             "items": items,
         }).encode()
@@ -61,6 +61,10 @@ def test_vlm_quality_gate_passes_only_clean_high_scoring_image():
         "pass": True,
         "quality_score": 9.0,
         "prompt_match_score": 9.5,
+        "structure_score": 9.0,
+        "detail_score": 9.0,
+        "aesthetic_score": 9.0,
+        "composition_score": 9.0,
         "subject_count": 1,
         "major_issues": [],
         "minor_issues": ["tiny background text"],
@@ -83,6 +87,10 @@ def test_vlm_quality_gate_rejects_major_visual_issue_even_with_high_scores():
         "pass": False,
         "quality_score": 9.0,
         "prompt_match_score": 9.0,
+        "structure_score": 9.0,
+        "detail_score": 9.0,
+        "aesthetic_score": 9.0,
+        "composition_score": 9.0,
         "subject_count": 1,
         "major_issues": ["right hand has fused fingers"],
         "minor_issues": [],
@@ -102,6 +110,10 @@ def test_vlm_quality_gate_rejects_wrong_subject_count():
         "pass": True,
         "quality_score": 9.0,
         "prompt_match_score": 9.0,
+        "structure_score": 9.0,
+        "detail_score": 9.0,
+        "aesthetic_score": 9.0,
+        "composition_score": 9.0,
         "subject_count": 3,
         "major_issues": [],
         "minor_issues": [],
@@ -133,12 +145,13 @@ def test_vlm_review_parser_accepts_fenced_json():
 def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
     source = verifier._build_worker_source((request(),))
-    assert "Qwen2_5_VLForConditionalGeneration" in source
-    assert "Qwen/Qwen2.5-VL-3B-Instruct" in source
-    assert "process_vision_info" in source
+    assert "Qwen3VLForConditionalGeneration" in source
+    assert "Qwen/Qwen3-VL-4B-Instruct" in source
+    assert "views = [" in source
+    assert "five views of the SAME generated image" in source
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
-    assert "quality_score >= 8" in source
+    assert "every score is >= 8" in source
 
 
 def test_vlm_review_image_compaction_stays_far_below_kaggle_source_limit():
@@ -160,3 +173,38 @@ def test_worker_source_is_valid_python_after_prompt_embedding():
     verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
     source = verifier._build_worker_source((request(),))
     compile(source, "<vision-quality-worker>", "exec")
+
+
+def test_vlm_quality_gate_rejects_low_structure_even_when_overall_score_is_high():
+    review = {
+        "pass": True,
+        "quality_score": 9.2,
+        "prompt_match_score": 9.1,
+        "structure_score": 6.5,
+        "detail_score": 9.0,
+        "aesthetic_score": 9.0,
+        "composition_score": 9.0,
+        "subject_count": 1,
+        "major_issues": [],
+        "minor_issues": [],
+        "summary": "good overall but hand structure is weak",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=FakeWorker([("human-1", png_bytes(), review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(request())
+    assert result.passed is False
+    assert any("structure score below threshold" in issue for issue in result.major_issues)
+
+
+def test_qwen3_worker_uses_multiview_and_hard_component_gates():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert 'image.crop((0, 0, width, max(1, height // 2)))' in source
+    assert 'image.crop((0, height // 2, width, height))' in source
+    assert 'structure_score' in source
+    assert 'detail_score' in source
+    assert 'aesthetic_score' in source
+    assert 'composition_score' in source
+    compile(source, "<qwen3-vision-quality-worker>", "exec")

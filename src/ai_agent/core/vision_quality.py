@@ -47,6 +47,10 @@ class VisionQualityResult:
     passed: bool
     quality_score: float
     prompt_match_score: float
+    structure_score: float
+    detail_score: float
+    aesthetic_score: float
+    composition_score: float
     subject_count: int | None
     major_issues: tuple[str, ...]
     minor_issues: tuple[str, ...]
@@ -72,7 +76,7 @@ class KaggleVisionQualityVerifier:
     """Use a small open VLM as the final 'eyes-on-image' quality critic."""
 
     worker: KaggleGpuWorker
-    model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    model: str = "Qwen/Qwen3-VL-4B-Instruct"
     kernel_slug: str = "ai-agent-vision-quality"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
@@ -159,6 +163,10 @@ class KaggleVisionQualityVerifier:
             parsed = self._parse_review(str(entry.get("review_text") or ""))
             quality_score = self._score(parsed.get("quality_score"))
             prompt_match_score = self._score(parsed.get("prompt_match_score"))
+            structure_score = self._score(parsed.get("structure_score"))
+            detail_score = self._score(parsed.get("detail_score"))
+            aesthetic_score = self._score(parsed.get("aesthetic_score"))
+            composition_score = self._score(parsed.get("composition_score"))
             major_issues = self._string_tuple(parsed.get("major_issues"))
             minor_issues = self._string_tuple(parsed.get("minor_issues"))
             try:
@@ -171,10 +179,17 @@ class KaggleVisionQualityVerifier:
                 request.expected_subject_count is None
                 or subject_count == request.expected_subject_count
             )
+            component_scores = (
+                structure_score,
+                detail_score,
+                aesthetic_score,
+                composition_score,
+            )
             passed = (
                 vlm_pass
                 and quality_score >= self.min_quality_score
                 and prompt_match_score >= self.min_prompt_match_score
+                and all(score >= self.min_quality_score for score in component_scores)
                 and not major_issues
                 and count_pass
             )
@@ -189,6 +204,16 @@ class KaggleVisionQualityVerifier:
                     "VLM prompt match below threshold: "
                     f"{prompt_match_score:.2f} < {self.min_prompt_match_score:.2f}"
                 )
+            for label, score in (
+                ("structure", structure_score),
+                ("detail", detail_score),
+                ("aesthetic", aesthetic_score),
+                ("composition", composition_score),
+            ):
+                if score < self.min_quality_score:
+                    issues.append(
+                        f"VLM {label} score below threshold: {score:.2f} < {self.min_quality_score:.2f}"
+                    )
             if not count_pass:
                 issues.append(
                     f"VLM subject count mismatch: expected {request.expected_subject_count}, got {subject_count}"
@@ -202,6 +227,10 @@ class KaggleVisionQualityVerifier:
                 passed=passed,
                 quality_score=quality_score,
                 prompt_match_score=prompt_match_score,
+                structure_score=structure_score,
+                detail_score=detail_score,
+                aesthetic_score=aesthetic_score,
+                composition_score=composition_score,
                 subject_count=subject_count,
                 major_issues=tuple(dict.fromkeys(issues)),
                 minor_issues=minor_issues,
@@ -215,6 +244,11 @@ class KaggleVisionQualityVerifier:
                     f"review_image_bytes:{len(review_image)}",
                     f"quality_score:{quality_score:.2f}",
                     f"prompt_match_score:{prompt_match_score:.2f}",
+                    f"structure_score:{structure_score:.2f}",
+                    f"detail_score:{detail_score:.2f}",
+                    f"aesthetic_score:{aesthetic_score:.2f}",
+                    f"composition_score:{composition_score:.2f}",
+                    "review_views:5",
                     f"subject_count:{subject_count}",
                     f"profile:{request.profile}",
                 ),
@@ -340,26 +374,24 @@ class KaggleVisionQualityVerifier:
             "try:",
             "    import torch",
             "    from PIL import Image",
-            "    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration",
-            "    from qwen_vl_utils import process_vision_info",
+            "    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration",
             "except ImportError:",
             "    subprocess.check_call([",
             '        sys.executable, "-m", "pip", "install", "--quiet",',
-            '        "transformers>=4.49,<5", "accelerate<2", "safetensors",',
-            '        "Pillow", "qwen-vl-utils",',
+            '        "transformers>=4.57,<5", "accelerate<2", "safetensors",',
+            '        "Pillow",',
             "    ])",
             "    import torch",
             "    from PIL import Image",
-            "    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration",
-            "    from qwen_vl_utils import process_vision_info",
+            "    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration",
             "",
             "if not torch.cuda.is_available():",
             '    raise RuntimeError("CUDA GPU is not available")',
             "",
             "gpu_name = torch.cuda.get_device_name(0)",
-            "model = Qwen2_5_VLForConditionalGeneration.from_pretrained(",
+            "model = Qwen3VLForConditionalGeneration.from_pretrained(",
             '    CONFIG["model"],',
-            "    torch_dtype=torch.float16,",
+            "    dtype=torch.float16,",
             '    device_map="auto",',
             ")",
             'processor = AutoProcessor.from_pretrained(CONFIG["model"])',
@@ -371,6 +403,14 @@ class KaggleVisionQualityVerifier:
             '    if sha256(image_bytes).hexdigest() != item["review_image_sha256"]:',
             '        raise RuntimeError("vision-quality review image hash mismatch")',
             '    image = Image.open(BytesIO(image_bytes)).convert("RGB")',
+            '    width, height = image.size',
+            '    views = [',
+            '        image,',
+            '        image.crop((0, 0, width, max(1, height // 2))),',
+            '        image.crop((0, height // 2, width, height)),',
+            '        image.crop((0, 0, max(1, width // 2), height)),',
+            '        image.crop((width // 2, 0, width, height)),',
+            '    ]',
             "",
             '    rubric = "\\n".join(f"- {criterion}" for criterion in item["rubric"])',
             '    expected = item.get("expected_subject_count")',
@@ -379,35 +419,31 @@ class KaggleVisionQualityVerifier:
             '        f"Be strict and judge what is actually visible, not what the prompt intended. "',
             '        f"PROFILE: {item[\'profile\']}; ORIGINAL PROMPT: {item[\'prompt\']}; "',
             '        f"EXPECTED MAIN SUBJECT COUNT: {expected}; QUALITY RUBRIC: {rubric}. "',
-            '        "Inspect specifically for wrong subject count, duplicated people/characters/objects, "',
-            '        "malformed or fused hands/fingers/limbs, broken anatomy, distorted face/eyes/mouth, "',
-            '        "warped geometry, impossible object connections, bad perspective, unreadable accidental "',
-            '        "pseudo-text, muddy or unfinished details, identity drift when visually evident, and prompt mismatch. "',
-            '        "Minor stylistic preferences are not major defects. A clean anatomically plausible stylized mascot "',
-            '        "may have its normal species limbs. Score production readiness from 0 to 10 and prompt match from 0 to 10. "',
-            '        "Set pass=true ONLY if quality_score >= 8, prompt_match_score >= 8, subject count is correct, and "',
-            '        "major_issues is empty. Return JSON only with exactly these keys: "',
-            '        \'{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "subject_count": 1, \'',
+            '        "You receive five views of the SAME generated image: full frame, upper crop, lower crop, left crop, right crop. "',
+            '        "Inspect specifically for wrong subject count and duplicated people/characters/objects before scoring local quality. "',
+            '        "Use the crops as forensic zooms, never count them as extra subjects. Inspect malformed or fused hands/fingers/limbs, visible anatomy/appendages, face/eyes/mouth, "',
+            '        "object connections, silhouette, materials, lighting, perspective, texture continuity and accidental pseudo-text. "',
+            '        "For human_photo_premium, reject any fused/missing/extra fingers, unnatural wrists/elbows/shoulders, distorted face, "',
+            '        "plastic or melted clothing/skin, warped architecture or props, or obvious AI artifacts. "',
+            '        "For mascot_premium, reject crude or generic 3D, malformed/duplicated claws or legs, melted shell/body, inconsistent eyes, "',
+            '        "weak expression, muddy materials, flat lighting, dirty silhouette/cutout edges, or anything below polished studio asset quality. "',
+            '        "Score 0-10: quality_score overall production readiness; prompt_match_score; structure_score anatomy/geometry; "',
+            '        "detail_score local materials/textures/edges; aesthetic_score polish/lighting/expression; composition_score framing/background. "',
+            '        "Set pass=true ONLY if every score is >= 8, subject count is correct, and major_issues is empty. "',
+            '        "If a critical region is visibly suspicious or malformed, list it as a major issue rather than averaging it away. "',
+            '        "Return JSON only with exactly these keys: "',
+            '        \'{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "structure_score": 0.0, \'',
+            '        \'"detail_score": 0.0, "aesthetic_score": 0.0, "composition_score": 0.0, "subject_count": 1, \'',
             '        \'"major_issues": [], "minor_issues": [], "summary": ""}\'',
             "    )",
-            "    messages = [{",
-            '        "role": "user",',
-            '        "content": [',
-            '            {"type": "image", "image": image},',
-            '            {"type": "text", "text": instruction},',
-            "        ],",
-            "    }]",
-            "    rendered = processor.apply_chat_template(",
+            "    content = [{\"type\": \"image\", \"image\": view} for view in views]",
+            '    content.append({"type": "text", "text": instruction})',
+            '    messages = [{"role": "user", "content": content}]',
+            "    inputs = processor.apply_chat_template(",
             "        messages,",
-            "        tokenize=False,",
+            "        tokenize=True,",
             "        add_generation_prompt=True,",
-            "    )",
-            "    image_inputs, video_inputs = process_vision_info(messages)",
-            "    inputs = processor(",
-            "        text=[rendered],",
-            "        images=image_inputs,",
-            "        videos=video_inputs,",
-            "        padding=True,",
+            "        return_dict=True,",
             '        return_tensors="pt",',
             "    ).to(model.device)",
             "    with torch.no_grad():",
