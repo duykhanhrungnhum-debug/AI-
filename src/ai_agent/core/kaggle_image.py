@@ -296,8 +296,8 @@ class KaggleImageProvider:
                     cleaned = raw
                     if cleaned.casefold().startswith("json"):
                         cleaned = cleaned[4:].lstrip("\n :")
-                    first_brace = cleaned.find("{")
-                    last_brace = cleaned.rfind("}")
+                    first_brace = cleaned.find("{{")
+                    last_brace = cleaned.rfind("}}")
                     candidates = [cleaned]
                     if 0 <= first_brace < last_brace:
                         candidates.insert(0, cleaned[first_brace:last_brace + 1])
@@ -318,7 +318,7 @@ class KaggleImageProvider:
                             continue
                         key, value = line.split(":", 1)
                         key = "".join(ch for ch in key.strip().upper() if ch.isalpha())
-                        if key in {"PROMPT", "PROMT", "PROMP"} and value.strip():
+                        if key in {{"PROMPT", "PROMT", "PROMP"}} and value.strip():
                             return value.strip().strip(chr(96)).strip()
                     lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
                     if len(lines) == 1:
@@ -351,12 +351,12 @@ class KaggleImageProvider:
                         "PROMPT: <English image description>\nUSER_COMMAND: "
                         + CONFIG["inline_planner_raw_command"]
                     )
-                    messages = [{"role": "user", "content": instruction}]
-                    template_kwargs = {
+                    messages = [{{"role": "user", "content": instruction}}]
+                    template_kwargs = {{
                         "tokenize": False,
                         "add_generation_prompt": True,
                         "enable_thinking": False,
-                    }
+                    }}
                     rendered = tokenizer.apply_chat_template(messages, **template_kwargs)
                     inputs = tokenizer([rendered], return_tensors="pt").to(planner_model.device)
                     generate_started = time.perf_counter()
@@ -378,11 +378,11 @@ class KaggleImageProvider:
                         and not looks_vietnamese(compiled)
                         and "USER_COMMAND" not in compiled
                     )
-                    timing = {
+                    timing = {{
                         "model_load_seconds": round(model_ready - load_started, 3),
                         "generate_seconds": round(generate_finished - generate_started, 3),
                         "total_seconds": round(generate_finished - load_started, 3),
-                    }
+                    }}
                     del generated, inputs, planner_model, tokenizer
                     gc.collect()
                     torch.cuda.empty_cache()
@@ -407,7 +407,7 @@ class KaggleImageProvider:
                     + CONFIG["inline_planner_positive_constraints"].strip().rstrip(" .")
                     + "."
                 )
-                inline_planner = {
+                inline_planner = {{
                     "model": planner_model_used,
                     "fallback_used": planner_fallback_used,
                     "raw_output": planner_raw,
@@ -415,7 +415,7 @@ class KaggleImageProvider:
                     "final_prompt": CONFIG["prompt"],
                     "timings": planner_timing,
                     "total_stage_seconds": round(time.perf_counter() - planner_started, 3),
-                }
+                }}
 
             image_model_load_started = time.perf_counter()
 
