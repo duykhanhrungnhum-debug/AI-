@@ -1,6 +1,7 @@
 import pytest
 
 from ai_agent.core.media_command import (
+    ANIMAL_PHOTO_PREMIUM,
     HUMAN_PHOTO_PREMIUM,
     MEDIA_COMMAND_BRAIN_MODEL,
     MASCOT_PREMIUM,
@@ -38,8 +39,8 @@ def test_routes_mascot_command_to_premium_mascot_profile():
     assert plan.mode == "image"
     assert plan.profile == MASCOT_PREMIUM
     assert "clean rounded geometry" in plan.prompt
-    assert "duplicated limbs" in plan.negative_prompt
-    assert "multiple crabs" in plan.negative_prompt
+    assert "malformed appendages" in plan.negative_prompt
+    assert "multiple characters" in plan.negative_prompt
     assert plan.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
     assert plan.model_config.scheduler == "edm_dpm"
     assert plan.model_config.guidance_scale == 3.0
@@ -71,13 +72,15 @@ def test_model_cannot_remove_deterministic_quality_constraints():
     assert "obvious AI artifacts" in plan.negative_prompt
 
 
-def test_benchmark_manifest_has_human_and_mascot_acceptance_rubrics():
+def test_benchmark_manifest_has_human_animal_and_mascot_acceptance_rubrics():
     manifest = benchmark_manifest()
 
     assert "human_photo_premium" in manifest["profiles"]
+    assert "animal_photo_premium" in manifest["profiles"]
     assert "mascot_premium" in manifest["profiles"]
     assert any("hand/finger anatomy" in item for item in manifest["profiles"]["human_photo_premium"]["must_pass"])
-    assert any("crab silhouette" in item or "rounded" in item for item in manifest["profiles"]["mascot_premium"]["must_pass"])
+    assert any("species-correct" in item for item in manifest["profiles"]["animal_photo_premium"]["must_pass"])
+    assert any("species-correct" in item or "3D mascot" in item for item in manifest["profiles"]["mascot_premium"]["must_pass"])
 
 
 def test_benchmark_manifest_pins_exact_user_reference_set():
@@ -95,24 +98,27 @@ def test_benchmark_manifest_pins_exact_user_reference_set():
     }
 
 
-def test_profile_model_routing_uses_separate_human_and_mascot_stacks():
+def test_profile_model_routing_uses_separate_photo_and_mascot_stacks():
     human = image_model_config(HUMAN_PHOTO_PREMIUM)
+    animal = image_model_config(ANIMAL_PHOTO_PREMIUM)
     mascot = image_model_config(MASCOT_PREMIUM)
 
     assert human.model == "SG161222/RealVisXL_V4.0"
+    assert animal.model == "SG161222/RealVisXL_V4.0"
     assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
-    assert human.model != mascot.model
+    assert animal.model != mascot.model
     assert "hands" in human.quality_good_text
-    assert "one squat low wide crab" in mascot.quality_good_text
+    assert "species-correct anatomy" in animal.quality_good_text
+    assert "species-correct rounded anatomy" in mascot.quality_good_text
     assert any("duplicated whole subject" in item for item in mascot.quality_bad_texts)
 
 
 def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
     mascot = image_model_config(MASCOT_PREMIUM)
 
-    assert any("multiple repeated characters" in item for item in mascot.quality_bad_texts)
-    assert any("thin raised scissor claws" in item or "disconnected appendages" in item for item in mascot.quality_bad_texts)
-    assert all("duplicated limbs claws appendages" not in item for item in mascot.quality_bad_texts)
+    assert any("repeated characters" in item for item in mascot.quality_bad_texts)
+    assert any("malformed paws" in item or "impossible anatomy" in item for item in mascot.quality_bad_texts)
+    assert any("plastic toy" in item for item in mascot.quality_bad_texts)
 
 
 def test_command_compiler_accepts_fullwidth_label_separator_and_records_output():
@@ -207,29 +213,31 @@ def test_command_brain_may_choose_professional_camera_without_changing_story_fac
     assert "one cute red crab mascot resting on a green lily pad" in plan.prompt
 
 
-def test_benchmark_manifest_encodes_user_rejected_current_candidates_and_3d_style_target():
+def test_benchmark_manifest_keeps_user_rejected_examples_but_generalizes_3d_quality():
     manifest = benchmark_manifest()
     mascot = manifest["profiles"]["mascot_premium"]
     human = manifest["profiles"]["human_photo_premium"]
 
     assert "2525bafcc74e14444cb64e9c355a882d280417c712a23d1eaadd126aa3c28034" in mascot["known_rejected_sha256"]
     assert "8e38371165a9c1017a1b56a414061f827ff11133cbe23231b7ab5aa800ffe1e9" in human["known_rejected_sha256"]
-    assert any("squat low wide crab silhouette" in item for item in mascot["must_pass"])
-    assert any("NOT a tall spherical balloon body" in item for item in mascot["must_pass"])
-    assert any("crisp white outline" in item for item in mascot["must_pass"])
-    assert any("NOT shiny plastic-toy material" in item for item in mascot["must_pass"])
+    assert any("species-correct" in item for item in mascot["must_pass"])
+    assert any("plastic-toy" in item for item in mascot["must_pass"])
+    assert all("lily pad" not in item for item in mascot["must_pass"])
 
 
-def test_mascot_generation_profile_matches_user_3d_benchmark_semantics():
-    plan = MediaCommandPlanner().plan("Tạo mascot con cua 3D dễ thương")
-    cfg = image_model_config(MASCOT_PREMIUM)
+def test_dog_exam_routes_real_photo_and_cute_3d_to_different_profiles():
+    planner = MediaCommandPlanner()
+    real = planner.plan("Tạo ảnh một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời")
+    cute = planner.plan("Tạo ảnh một chú chó Golden Retriever 3D cute")
 
-    assert "squat low wide body" in plan.prompt
-    assert "large rounded frontal claws" in plan.prompt
-    assert "short antennae" in plan.prompt
-    assert "white sticker/cutout outline" in plan.prompt
-    assert "tall spherical balloon body" in plan.negative_prompt
-    assert "shiny plastic toy body" in plan.negative_prompt
-    assert "human eyebrows" in plan.negative_prompt
-    assert cfg.inference_steps == 40
-    assert "crisp white cutout outline" in cfg.quality_good_text
+    assert real.profile == ANIMAL_PHOTO_PREMIUM
+    assert real.model_config.model == "SG161222/RealVisXL_V4.0"
+    assert "species-correct anatomy" in real.prompt
+    assert "cartoon" in real.negative_prompt
+
+    assert cute.profile == MASCOT_PREMIUM
+    assert cute.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
+    assert "premium polished cute 3D character render" in cute.prompt
+    assert "crab" not in cute.prompt.casefold()
+    assert "lily pad" not in cute.prompt.casefold()
+    assert cute.model_config.inference_steps == 40
