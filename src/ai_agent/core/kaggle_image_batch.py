@@ -974,7 +974,7 @@ def normalize_style(value):
 
 def parse_compiled_result(raw):
     raw = (raw or "").strip().strip(chr(96)).strip()
-    result = {"prompt": "", "subject_class": "", "style_class": ""}
+    result = {"prompt": "", "subject_class": "", "style_class": "", "subject_name": ""}
     if not raw:
         return result
     cleaned = raw
@@ -1005,6 +1005,15 @@ def parse_compiled_result(raw):
         result["style_class"] = normalize_style(
             str(payload.get("STYLE_CLASS") or payload.get("style_class") or "")
         )
+        result["subject_name"] = str(
+            payload.get("SUBJECT_NAME")
+            or payload.get("subject_name")
+            or payload.get("SPECIES")
+            or payload.get("species")
+            or payload.get("ENTITY")
+            or payload.get("entity")
+            or ""
+        ).strip()
         if result["prompt"]:
             return result
 
@@ -1017,6 +1026,9 @@ def parse_compiled_result(raw):
         "SUBJECT": "subject_class",
         "STYLECLASS": "style_class",
         "STYLE": "style_class",
+        "SUBJECTNAME": "subject_name",
+        "SPECIES": "subject_name",
+        "ENTITY": "subject_name",
     }
     lines = []
     for line in cleaned.replace("：", ":").splitlines():
@@ -1079,6 +1091,39 @@ def looks_vietnamese(text):
     return any(ch in chars for ch in text.casefold())
 
 
+def is_placeholder_prompt(text):
+    normalized = " ".join((text or "").strip().casefold().split())
+    if not normalized:
+        return True
+    placeholders = {
+        "english image description",
+        "english prompt",
+        "image description",
+        "complete concise english image prompt",
+        "english image prompt",
+        "<english image description>",
+        "<english image prompt>",
+    }
+    if normalized in placeholders:
+        return True
+    if normalized.startswith(("english image description", "image description here", "prompt goes here")):
+        return True
+    if "<" in normalized or ">" in normalized:
+        return True
+    return False
+
+
+def valid_subject_name(value):
+    name = " ".join((value or "").strip().split())
+    if not (2 <= len(name) <= 100):
+        return False
+    if looks_vietnamese(name):
+        return False
+    if is_placeholder_prompt(name):
+        return False
+    return True
+
+
 def choose_profile(subject, style, fallback):
     if style in ("3d", "mascot"):
         return "mascot_premium"
@@ -1134,13 +1179,16 @@ def compile_items(model_name, pending):
         instruction = (
             "MEDIA_COMMAND_COMPILE\n"
             "Understand USER_COMMAND semantically without a fixed species list. "
-            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species, subject count, action, location and requested style. "
+            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species/entity, subject count, action, location and requested style. "
             "SUBJECT_CLASS must be exactly animal, human, or general. "
             "STYLE_CLASS must be exactly photo, 3d, mascot, illustration, or general. "
-            "Return exactly three lines and no commentary:\n"
-            "SUBJECT_CLASS: animal|human|general\n"
-            "STYLE_CLASS: photo|3d|mascot|illustration|general\n"
-            "PROMPT: English image description\n"
+            "SUBJECT_NAME must be the exact English common name of the requested main species/entity, for example water buffalo, giraffe, woman, red sports car. "
+            "Do NOT copy schema examples or placeholder wording into any value. "
+            "Return exactly four labeled lines and no commentary:\n"
+            "SUBJECT_CLASS: <choose one allowed class>\n"
+            "STYLE_CLASS: <choose one allowed style>\n"
+            "SUBJECT_NAME: <exact English subject/entity name>\n"
+            "PROMPT: <complete English image description that explicitly names SUBJECT_NAME>\n"
             "USER_COMMAND: " + item["command"]
         )
         raw = generate_text(instruction, 180)
@@ -1153,24 +1201,34 @@ def compile_items(model_name, pending):
             len(parsed["prompt"]) >= 20
             and not looks_vietnamese(parsed["prompt"])
             and "USER_COMMAND" not in parsed["prompt"]
+            and not is_placeholder_prompt(parsed["prompt"])
         )
-        if not prompt_valid:
+        subject_name_valid = valid_subject_name(parsed.get("subject_name", ""))
+        if not prompt_valid or not subject_name_valid:
             retries += 1
             retry_raw = generate_text(
-                "Translate this image request into one complete concise ENGLISH image prompt. "
-                "Preserve the exact species, count, action, location and requested photo/3D style. "
-                "Return ONLY the English prompt sentence and nothing else. REQUEST: " + item["command"],
-                140,
+                "Translate the image request into English and identify the exact requested main species/entity. "
+                "Do not generalize or substitute the subject. Do not use placeholders. "
+                "Return exactly two labeled lines:\n"
+                "SUBJECT_NAME: <exact English common subject/entity name>\n"
+                "PROMPT: <one complete English image prompt that explicitly names that subject/entity>\n"
+                "REQUEST: " + item["command"],
+                170,
             )
             retry_parsed = parse_compiled_result(retry_raw)
-            retry_prompt = (retry_parsed["prompt"] or retry_raw).strip().strip(chr(96)).strip()
+            retry_prompt = (retry_parsed["prompt"] or "").strip().strip(chr(96)).strip()
+            retry_subject_name = (retry_parsed.get("subject_name") or "").strip()
             if (
                 len(retry_prompt) >= 20
                 and not looks_vietnamese(retry_prompt)
                 and "USER_COMMAND" not in retry_prompt
+                and not is_placeholder_prompt(retry_prompt)
             ):
                 parsed["prompt"] = retry_prompt
                 prompt_valid = True
+            if valid_subject_name(retry_subject_name):
+                parsed["subject_name"] = retry_subject_name
+                subject_name_valid = True
 
         classes_valid = (
             parsed["subject_class"] in valid_subjects
@@ -1180,7 +1238,7 @@ def compile_items(model_name, pending):
         if prompt_valid and not classes_valid:
             retries += 1
             class_raw = generate_text(
-                "Classify the image request semantically. Do not name the species. "
+                "Classify the image request semantically. "
                 "Return ONLY two tokens separated by a vertical bar: "
                 "first token animal, human, or general; second token photo, 3d, mascot, illustration, or general. "
                 "REQUEST: " + item["command"] + "\nENGLISH_PROMPT: " + parsed["prompt"],
@@ -1211,7 +1269,7 @@ def compile_items(model_name, pending):
             )
             classes_valid = True
 
-        valid = prompt_valid and classes_valid
+        valid = prompt_valid and subject_name_valid and classes_valid
         outputs[item["item_id"]] = {
             "valid": valid,
             "raw": raw,
@@ -1265,6 +1323,7 @@ for item in CONFIG["items"]:
         "negative_prompt": negative,
         "subject_class": parsed["subject_class"],
         "style_class": parsed["style_class"],
+        "subject_name": parsed["subject_name"],
         "semantic_profile": profile,
         "planner_raw": entry["raw"],
         "planner_retry_raw": entry.get("retry_raw", ""),
@@ -1331,33 +1390,22 @@ qa_processor = AutoProcessor.from_pretrained(CONFIG["vlm_model"])
 qa_model.eval()
 qa_ready = time.perf_counter()
 
-for item in compiled_items:
-    image = Image.open(Path("/kaggle/working") / (item["item_id"] + ".png")).convert("RGB")
-    image.thumbnail((1024, 1024))
-    width, height = image.size
-    views = [
-        image,
-        image.crop((0, 0, width, max(1, height // 2))),
-        image.crop((0, height // 2, width, height)),
-    ]
-    rubric = "\n".join(
-        "- " + value
-        for value in CONFIG["profile_rubrics"][item["semantic_profile"]]
-    )
-    instruction = (
-        "You are the strict final visual-quality inspector for a production image pipeline. "
-        "Judge only what is visible. PROFILE: " + item["semantic_profile"]
-        + "; ORIGINAL PROMPT: " + item["prompt"]
-        + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
-        "Inspect anatomy/geometry, appendages, face/eyes, materials, lighting, perspective, texture continuity, background coherence and AI artifacts. "
-        "For animal photo profile require real-camera realism and correct species anatomy. "
-        "For mascot profile require the requested premium 3D style, species-correct anatomy, clean appendages and non-cheap materials. "
-        "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
-        "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
-        + ", subject count is correct, and x/f/u are empty. If uncertain about a critical region, p=false. "
-        "Return ONLY compact JSON: "
-        '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}'
-    )
+def parse_json_object(raw):
+    cleaned = (raw or "").strip().strip(chr(96)).strip()
+    if cleaned.casefold().startswith("json"):
+        cleaned = cleaned[4:].lstrip("\n :")
+    first = cleaned.find("{")
+    last = cleaned.rfind("}")
+    if 0 <= first < last:
+        cleaned = cleaned[first:last + 1]
+    try:
+        payload = json.loads(cleaned)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def run_vlm_review(views, instruction, max_new_tokens):
     content = [{"type": "image", "image": view} for view in views]
     content.append({"type": "text", "text": instruction})
     qa_inputs = qa_processor.apply_chat_template(
@@ -1367,11 +1415,10 @@ for item in compiled_items:
         return_dict=True,
         return_tensors="pt",
     ).to(qa_model.device)
-    review_started = time.perf_counter()
     with torch.inference_mode():
         generated = qa_model.generate(
             **qa_inputs,
-            max_new_tokens=180,
+            max_new_tokens=max_new_tokens,
             do_sample=False,
             use_cache=True,
             repetition_penalty=1.03,
@@ -1380,18 +1427,103 @@ for item in compiled_items:
         output_ids[len(input_ids):]
         for input_ids, output_ids in zip(qa_inputs.input_ids, generated)
     ]
-    review_text = qa_processor.batch_decode(
+    text = qa_processor.batch_decode(
         trimmed,
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )[0].strip()
+    del qa_inputs, generated, trimmed
+    return text
+
+
+for item in compiled_items:
+    image = Image.open(Path("/kaggle/working") / (item["item_id"] + ".png")).convert("RGB")
+    image.thumbnail((1024, 1024))
+    width, height = image.size
+    half_w = max(1, width // 2)
+    half_h = max(1, height // 2)
+    views = [
+        image,
+        image.crop((0, 0, width, half_h)),
+        image.crop((0, half_h, width, height)),
+        image.crop((0, half_h, half_w, height)),
+        image.crop((half_w, half_h, width, height)),
+    ]
+    rubric = "\n".join(
+        "- " + value
+        for value in CONFIG["profile_rubrics"][item["semantic_profile"]]
+    )
+    instruction = (
+        "You are the strict final visual-quality inspector for a production image pipeline. "
+        "Judge only what is visible. PROFILE: " + item["semantic_profile"]
+        + "; EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"]
+        + "; ORIGINAL PROMPT: " + item["prompt"]
+        + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
+        "Inspect exact subject identity/species, anatomy/geometry, appendages, face/eyes, materials, lighting, perspective, "
+        "texture continuity, framing, all image corners, background coherence, visible text/logo/watermark/signature and AI artifacts. "
+        "If the visible main subject is not exactly the expected subject/entity, reject it. "
+        "Any unrequested text, logo, watermark, emblem, UI mark or signature is a hard failure. "
+        "For animal photo profile require real-camera realism and correct species anatomy. "
+        "For mascot profile require the requested premium 3D style, species-correct anatomy, clean appendages and non-cheap materials. "
+        "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
+        "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
+        + ", exact subject identity is correct, subject count is correct, there is no unrequested text/logo/watermark, and x/f/u are empty. "
+        "If uncertain about species/entity or a critical region, p=false. "
+        "Return ONLY compact JSON: "
+        '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}'
+    )
+    review_started = time.perf_counter()
+    review_text = run_vlm_review(views, instruction, 200)
     if not review_text:
         raise RuntimeError("empty VLM review for " + item["item_id"])
+
+    requires_full_body = (
+        "full body" in item["prompt"].casefold()
+        or "full-body" in item["prompt"].casefold()
+        or "toàn thân" in item["command"].casefold()
+    )
+    hard_instruction = (
+        "Perform a separate HARD ACCEPTANCE CHECK. Judge the SAME image using the supplied full frame and crops. "
+        "EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"] + ". "
+        "EXPECTED STYLE: " + item["style_class"] + ". "
+        "There must be exactly one main subject. "
+        + ("The complete full body must be visibly inside the frame. " if requires_full_body else "")
+        + "Reject if the visible subject is a different species/entity, even if anatomically plausible. "
+        "Reject any unrequested visible text, letters, logo, watermark, emblem, signature, app/UI mark or brand mark anywhere, especially corners. "
+        "Reject malformed or missing critical anatomy/appendages. "
+        "Return ONLY JSON with booleans and a short issues array: "
+        '{"subject_ok":true,"style_ok":true,"count_ok":true,"framing_ok":true,"anatomy_ok":true,"no_text_logo":true,"issues":[]}'
+    )
+    hard_started = time.perf_counter()
+    hard_text = run_vlm_review(views, hard_instruction, 120)
+    hard_payload = parse_json_object(hard_text)
+    required_flags = (
+        "subject_ok",
+        "style_ok",
+        "count_ok",
+        "framing_ok",
+        "anatomy_ok",
+        "no_text_logo",
+    )
+    hard_passed = bool(hard_payload) and all(hard_payload.get(flag) is True for flag in required_flags)
+    hard_issues = hard_payload.get("issues")
+    if not isinstance(hard_issues, list):
+        hard_issues = ["hard QA response invalid"] if not hard_passed else []
+
     image_reports[item["item_id"]]["review_text"] = review_text
     image_reports[item["item_id"]]["qa_review_seconds"] = round(
         time.perf_counter() - review_started,
         3,
     )
+    image_reports[item["item_id"]]["hard_gate"] = {
+        "passed": hard_passed,
+        "subject_name": item["subject_name"],
+        "requires_full_body": requires_full_body,
+        "checks": {flag: hard_payload.get(flag) for flag in required_flags},
+        "issues": hard_issues,
+        "review_text": hard_text,
+        "review_seconds": round(time.perf_counter() - hard_started, 3),
+    }
 
 report = {
     "gpu_name": gpu_name,

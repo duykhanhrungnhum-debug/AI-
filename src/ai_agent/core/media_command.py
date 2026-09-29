@@ -72,13 +72,13 @@ MASCOT_PREMIUM = MediaQualityProfile(
         "clean coherent limbs/ears/paws/tail or other species appendages, expressive eyes and friendly readable face, "
         "tactile detailed materials with soft organic surface variation rather than cheap plastic, "
         "clean silhouette, polished studio-quality lighting, balanced composition, premium animation-film character quality, "
-        "production-ready final asset"
+        "clean unmarked background with no text or branding, production-ready final asset"
     ),
     negative_constraints=(
         "multiple characters, duplicate character, repeated subject, crowd, duplicated body, malformed appendages, "
         "extra legs, missing legs, fused paws, detached ears, duplicated tail, broken joints, melted shape, warped body, "
         "cheap shiny plastic toy material, flat muddy texture, distorted face, inconsistent eyes, human anatomy on an animal, "
-        "obvious AI artifacts, text, watermark, logo"
+        "obvious AI artifacts, text, letters, watermark, logo, signature, emblem, corner badge, icon, text overlay, branding"
     ),
     width=1024,
     height=1024,
