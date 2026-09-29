@@ -25,6 +25,7 @@ class FakePlanner:
 
 
 class FakeImages:
+    model = "fake-image-model"
     ip_adapter_weight = "ip-adapter-full-face_sd15.bin"
 
     def __init__(self):
@@ -173,6 +174,8 @@ def test_reference_motion_pipeline_produces_verified_video_and_learns(tmp_path):
     assert (tmp_path / "scene_0000.mp4").exists()
     assert any(x == "visual_mode:reference_conditioned_motion_video" for x in result.evidence)
     assert learning.recorded[-1].success is True
+    assert learning.recorded[-1].config["image_model"] == "fake-image-model"
+    assert learning.recorded[-1].config["ip_adapter_weight"] == "ip-adapter-full-face_sd15.bin"
     assert learning.recorded[-1].metrics["min_keyframe_identity"] == 0.82
     assert learning.recorded[-1].metrics["min_last_motion_identity"] == 0.78
     assert learning.recorded[-1].metrics["mean_motion_delta"] == 7.5
