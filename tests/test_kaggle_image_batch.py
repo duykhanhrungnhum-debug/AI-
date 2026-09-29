@@ -458,6 +458,7 @@ def test_semantic_worker_rejects_schema_placeholder_prompt():
     assert '"english image description"' in source
     assert "not is_placeholder_prompt(parsed[\"prompt\"])" in source
     assert "valid_subject_name" in source
+    assert "subject_name_matches_prompt" in source
     assert "SUBJECT_NAME: <exact English common subject/entity name>" in source
 
 
@@ -470,6 +471,8 @@ def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
 
     assert "the main subject must be exactly the expected species/entity" in source
     assert "logo, watermark, emblem, signature" in source
-    assert '"single_pass": True' in source
+    assert '"single_model_two_checks": True' in source
     assert '"subject_ok"' in source
     assert '"no_text_logo"' in source
+    assert "dedicated watermark/logo/text detector" in source.casefold()
+    assert '"branding_gate"' in source

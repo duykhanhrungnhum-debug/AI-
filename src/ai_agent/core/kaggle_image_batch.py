@@ -1124,6 +1124,27 @@ def valid_subject_name(value):
     return True
 
 
+def subject_name_matches_prompt(subject_name, prompt):
+    subject_tokens = [
+        token for token in "".join(
+            ch.casefold() if ch.isalnum() else " "
+            for ch in (subject_name or "")
+        ).split()
+        if len(token) >= 3
+    ]
+    prompt_tokens = set(
+        "".join(
+            ch.casefold() if ch.isalnum() else " "
+            for ch in (prompt or "")
+        ).split()
+    )
+    if not subject_tokens:
+        return False
+    matched = sum(1 for token in subject_tokens if token in prompt_tokens)
+    required = max(1, (len(subject_tokens) + 1) // 2)
+    return matched >= required
+
+
 def choose_profile(subject, style, fallback):
     if style in ("3d", "mascot"):
         return "mascot_premium"
@@ -1203,7 +1224,10 @@ def compile_items(model_name, pending):
             and "USER_COMMAND" not in parsed["prompt"]
             and not is_placeholder_prompt(parsed["prompt"])
         )
-        subject_name_valid = valid_subject_name(parsed.get("subject_name", ""))
+        subject_name_valid = (
+            valid_subject_name(parsed.get("subject_name", ""))
+            and subject_name_matches_prompt(parsed.get("subject_name", ""), parsed["prompt"])
+        )
         if not prompt_valid or not subject_name_valid:
             retries += 1
             retry_raw = generate_text(
@@ -1226,7 +1250,10 @@ def compile_items(model_name, pending):
             ):
                 parsed["prompt"] = retry_prompt
                 prompt_valid = True
-            if valid_subject_name(retry_subject_name):
+            if (
+                valid_subject_name(retry_subject_name)
+                and subject_name_matches_prompt(retry_subject_name, parsed["prompt"])
+            ):
                 parsed["subject_name"] = retry_subject_name
                 subject_name_valid = True
 
@@ -1494,18 +1521,60 @@ for item in compiled_items:
         "anatomy_ok",
         "no_text_logo",
     )
-    hard_passed = bool(review_payload) and all(
+    main_hard_passed = bool(review_payload) and all(
         review_payload.get(flag) is True for flag in required_flags
     )
+
+    # A dedicated second VLM inference checks branding independently because a
+    # general quality review can miss small corner watermarks/logos.
+    quarter_w = max(1, width // 2)
+    quarter_h = max(1, height // 2)
+    brand_views = [
+        image,
+        image.crop((0, 0, quarter_w, quarter_h)),
+        image.crop((quarter_w, 0, width, quarter_h)),
+        image.crop((0, quarter_h, quarter_w, height)),
+        image.crop((quarter_w, quarter_h, width, height)),
+        image.crop((0, max(0, int(height * 0.70)), width, height)),
+    ]
+    branding_instruction = (
+        "You are a dedicated watermark/logo/text detector. Inspect the SAME image as full frame plus enlarged corner/lower crops. "
+        "The requested image must be completely clean and unbranded. "
+        "A visible icon, badge, stylized letters, signature, watermark, logo, copyright mark, UI/app symbol, corner emblem, "
+        "tiny text or pseudo-text anywhere counts as branding and MUST make clean=false. "
+        "Do not excuse branding because it looks decorative or plausible. If uncertain, clean=false. "
+        "Return ONLY compact JSON: "
+        '{"clean":false,"findings":["bottom-right logo or text"]}'
+    )
+    branding_started = time.perf_counter()
+    branding_text = run_vlm_review(brand_views, branding_instruction, 120)
+    branding_payload = parse_json_object(branding_text)
+    branding_findings = branding_payload.get("findings")
+    if not isinstance(branding_findings, list):
+        branding_findings = []
+    branding_findings = [
+        str(value) for value in branding_findings if str(value).strip()
+    ]
+    branding_clean = (
+        bool(branding_payload)
+        and branding_payload.get("clean") is True
+        and not branding_findings
+    )
+
     hard_issues = []
     for key in ("x", "f", "u"):
         values = review_payload.get(key)
         if isinstance(values, list):
             hard_issues.extend(str(value) for value in values if str(value).strip())
+    if not branding_clean:
+        hard_issues.extend(branding_findings or ["dedicated branding detector rejected image"])
+
+    hard_passed = main_hard_passed and branding_clean
     if not hard_passed and not hard_issues:
         hard_issues = ["exact-subject/style/framing/anatomy/text-logo hard gate failed"]
 
     elapsed_review = round(time.perf_counter() - review_started, 3)
+    branding_elapsed = round(time.perf_counter() - branding_started, 3)
     image_reports[item["item_id"]]["review_text"] = review_text
     image_reports[item["item_id"]]["qa_review_seconds"] = elapsed_review
     image_reports[item["item_id"]]["hard_gate"] = {
@@ -1513,10 +1582,17 @@ for item in compiled_items:
         "subject_name": item["subject_name"],
         "requires_full_body": requires_full_body,
         "checks": {flag: review_payload.get(flag) for flag in required_flags},
-        "issues": hard_issues,
+        "branding_gate": {
+            "passed": branding_clean,
+            "review_text": branding_text,
+            "findings": branding_findings,
+            "review_seconds": branding_elapsed,
+            "dedicated_pass": True,
+        },
+        "issues": list(dict.fromkeys(hard_issues)),
         "review_text": review_text,
         "review_seconds": elapsed_review,
-        "single_pass": True,
+        "single_model_two_checks": True,
     }
 
 report = {

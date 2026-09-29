@@ -128,6 +128,36 @@ def main() -> int:
 
     started = perf_counter()
     batch = provider.generate_batch(batch_items)
+
+    # One bounded self-repair: regenerate only items rejected by the exact-subject /
+    # branding hard gate. Never rerun already-good images.
+    retry_ids = {
+        item.item_id
+        for item in batch_items
+        if not isinstance(batch.reports.get(item.item_id, {}).get("hard_gate"), dict)
+        or batch.reports[item.item_id]["hard_gate"].get("passed") is not True
+    }
+    retry_batch_report = None
+    if retry_ids:
+        retry_items = tuple(
+            SemanticImageBatchItem(
+                item_id=item.item_id,
+                command=(
+                    item.command
+                    + " Retry correction: preserve the exact requested subject/species and requested style. "
+                    + "The final image must contain absolutely no text, letters, logo, watermark, signature, emblem, badge, icon, UI mark or branding anywhere."
+                ),
+                seed=item.seed + 1,
+                fallback_profile=item.fallback_profile,
+            )
+            for item in batch_items
+            if item.item_id in retry_ids
+        )
+        retry_batch = provider.generate_batch(retry_items)
+        batch.artifacts.update(retry_batch.artifacts)
+        batch.reports.update(retry_batch.reports)
+        retry_batch_report = retry_batch.batch_report
+
     elapsed = round(perf_counter() - started, 3)
 
     reviews: dict[str, object] = {}
@@ -161,7 +191,8 @@ def main() -> int:
             "negative_prompt": str(report.get("negative_prompt") or ""),
             "width": int(report["width"]),
             "height": int(report["height"]),
-            "seed": batch_item.seed,
+            "seed": int(report.get("seed", batch_item.seed)),
+            "retry_attempted": item_id in retry_ids,
         }
         plan_data_by_id[item_id] = plan_data
         (item_dir / "plan.json").write_text(
@@ -320,6 +351,8 @@ def main() -> int:
         "one_gpu_worker": True,
         "semantic_router": True,
         "elapsed_seconds": elapsed,
+        "hard_gate_retry_count": len(retry_ids),
+        "hard_gate_retry_ids": sorted(retry_ids),
         "fallback_8b_seconds": fallback_elapsed,
         "worker_report": {
             "planner_fast_timing": batch.batch_report.get("planner_fast_timing"),
@@ -327,6 +360,11 @@ def main() -> int:
             "image_model_load_seconds": batch.batch_report.get("image_model_load_seconds"),
             "qa_model_load_seconds": batch.batch_report.get("qa_model_load_seconds"),
             "worker_total_seconds": batch.batch_report.get("worker_total_seconds"),
+            "retry_worker_total_seconds": (
+                retry_batch_report.get("worker_total_seconds")
+                if isinstance(retry_batch_report, dict)
+                else None
+            ),
         },
         "statuses": statuses,
     }
