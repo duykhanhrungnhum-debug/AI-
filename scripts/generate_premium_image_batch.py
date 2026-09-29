@@ -149,6 +149,7 @@ def main() -> int:
             "profile": profile,
             "subject_class": str(report.get("subject_class") or ""),
             "style_class": str(report.get("style_class") or ""),
+            "subject_name": str(report.get("subject_name") or ""),
             "model": config.model,
             "model_variant": provider.model_variant,
             "inference_steps": config.inference_steps,
@@ -175,6 +176,25 @@ def main() -> int:
                 "verified": False,
                 "stage": "user_benchmark",
                 "error": "exact image was previously rejected by the user",
+            }
+            continue
+
+        hard_gate = report.get("hard_gate")
+        (item_dir / "hard-gate.json").write_text(
+            json.dumps(hard_gate if isinstance(hard_gate, dict) else {
+                "passed": False,
+                "issues": ["hard QA report missing"],
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if not isinstance(hard_gate, dict) or hard_gate.get("passed") is not True:
+            issues = hard_gate.get("issues") if isinstance(hard_gate, dict) else None
+            if not isinstance(issues, list) or not issues:
+                issues = ["exact-subject/text-logo/framing hard gate failed"]
+            statuses[item_id] = {
+                "verified": False,
+                "stage": "hard_vlm_gate",
+                "error": "; ".join(str(value) for value in issues),
             }
             continue
 
@@ -206,6 +226,8 @@ def main() -> int:
                 f"semantic_profile:{profile}",
                 f"subject_class:{report.get('subject_class')}",
                 f"style_class:{report.get('style_class')}",
+                f"subject_name:{report.get('subject_name')}",
+                "hard_vlm_gate:True",
                 f"planner_model:{report.get('planner_model')}",
                 "batch_single_worker:True",
                 "hybrid_fast_model:Qwen/Qwen3-VL-2B-Instruct",
