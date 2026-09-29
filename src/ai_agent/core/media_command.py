@@ -67,16 +67,17 @@ ANIMAL_PHOTO_PREMIUM = MediaQualityProfile(
 MASCOT_PREMIUM = MediaQualityProfile(
     name="mascot_premium",
     positive_constraints=(
-        "premium polished cute 3D character render matching the user's accepted mascot benchmark quality, "
-        "EXACTLY ONE main character unless requested otherwise, species-correct but appealing rounded proportions, "
-        "clean coherent limbs/ears/paws/tail or other species appendages, expressive eyes and friendly readable face, "
-        "tactile detailed materials with soft organic surface variation rather than cheap plastic, "
-        "clean silhouette, polished studio-quality lighting, balanced composition, premium animation-film character quality, "
-        "clean unmarked background with no text or branding, production-ready final asset"
+        "premium polished cute 3D animation-film mascot render, visibly stylized and clearly non-photographic, "
+        "EXACTLY ONE main character unless requested otherwise, species-correct but appealing rounded cute proportions, "
+        "slightly enlarged expressive eyes and friendly readable character face, clean coherent limbs/ears/paws/hooves/tail or other species appendages, "
+        "tactile detailed 3D materials with soft organic surface variation rather than realistic livestock photography or cheap plastic, "
+        "clean silhouette, polished studio-quality lighting, balanced composition, high-end animated-feature character quality, "
+        "clean unmarked background with no text or branding, production-ready final mascot asset"
     ),
     negative_constraints=(
         "multiple characters, duplicate character, repeated subject, crowd, duplicated body, malformed appendages, "
         "extra legs, missing legs, fused paws, detached ears, duplicated tail, broken joints, melted shape, warped body, "
+        "photorealistic animal, real livestock photograph, documentary animal photo, realistic farm-animal render, ordinary realistic buffalo, "
         "cheap shiny plastic toy material, flat muddy texture, distorted face, inconsistent eyes, human anatomy on an animal, "
         "obvious AI artifacts, text, letters, watermark, logo, signature, emblem, corner badge, icon, text overlay, branding"
     ),
