@@ -1,1 +1,1 @@
-natural-dog-photo-v7-native-fp16-fast-poll-9of10
+natural-dog-photo-v8-realvisxl-v5-lightning-5step-9of10
