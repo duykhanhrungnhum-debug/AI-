@@ -36,6 +36,7 @@ jobs:
           mkdir -p media-command-planner-evidence
           python - <<'PY'
           import os
+          import time
           from pathlib import Path
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
 
@@ -45,10 +46,20 @@ jobs:
               timeout=120,
           )
           slug = "ai-agent-media-command-planner"
-          status = worker.status(slug)
-          print("KAGGLE_STATUS", status.status, status.failure_message)
-          if not status.terminal:
-              raise RuntimeError("command planner kernel is not terminal")
+          status = None
+          for _ in range(60):
+              status = worker.status(slug)
+              print("KAGGLE_STATUS", status.status, status.failure_message)
+              if status.terminal:
+                  break
+              time.sleep(10)
+          if status is None or not status.terminal:
+              raise TimeoutError("command planner kernel did not finish within 10 minutes")
+          if not status.successful:
+              raise RuntimeError(
+                  "command planner kernel failed: "
+                  + str(status.failure_message or status.status)
+              )
           Path("media-command-planner-evidence/responses.json").write_bytes(
               worker.download_output_file(slug, "responses.json")
           )
