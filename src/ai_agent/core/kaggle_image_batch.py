@@ -1446,57 +1446,46 @@ for item in compiled_items:
         image,
         image.crop((0, 0, width, half_h)),
         image.crop((0, half_h, width, height)),
-        image.crop((0, half_h, half_w, height)),
         image.crop((half_w, half_h, width, height)),
     ]
     rubric = "\n".join(
         "- " + value
         for value in CONFIG["profile_rubrics"][item["semantic_profile"]]
     )
-    instruction = (
-        "You are the strict final visual-quality inspector for a production image pipeline. "
-        "Judge only what is visible. PROFILE: " + item["semantic_profile"]
-        + "; EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"]
-        + "; ORIGINAL PROMPT: " + item["prompt"]
-        + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
-        "Inspect exact subject identity/species, anatomy/geometry, appendages, face/eyes, materials, lighting, perspective, "
-        "texture continuity, framing, all image corners, background coherence, visible text/logo/watermark/signature and AI artifacts. "
-        "If the visible main subject is not exactly the expected subject/entity, reject it. "
-        "Any unrequested text, logo, watermark, emblem, UI mark or signature is a hard failure. "
-        "For animal photo profile require real-camera realism and correct species anatomy. "
-        "For mascot profile require the requested premium 3D style, species-correct anatomy, clean appendages and non-cheap materials. "
-        "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
-        "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
-        + ", exact subject identity is correct, subject count is correct, there is no unrequested text/logo/watermark, and x/f/u are empty. "
-        "If uncertain about species/entity or a critical region, p=false. "
-        "Return ONLY compact JSON: "
-        '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}'
-    )
-    review_started = time.perf_counter()
-    review_text = run_vlm_review(views, instruction, 200)
-    if not review_text:
-        raise RuntimeError("empty VLM review for " + item["item_id"])
-
     requires_full_body = (
         "full body" in item["prompt"].casefold()
         or "full-body" in item["prompt"].casefold()
         or "toàn thân" in item["command"].casefold()
     )
-    hard_instruction = (
-        "Perform a separate HARD ACCEPTANCE CHECK. Judge the SAME image using the supplied full frame and crops. "
-        "EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"] + ". "
-        "EXPECTED STYLE: " + item["style_class"] + ". "
-        "There must be exactly one main subject. "
+    instruction = (
+        "You are the strict final visual-quality inspector for a production image pipeline. "
+        "Judge only what is actually visible in the SAME image shown as full frame plus crops. "
+        "PROFILE: " + item["semantic_profile"]
+        + "; EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"]
+        + "; EXPECTED STYLE: " + item["style_class"]
+        + "; ORIGINAL PROMPT: " + item["prompt"]
+        + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
         + ("The complete full body must be visibly inside the frame. " if requires_full_body else "")
-        + "Reject if the visible subject is a different species/entity, even if anatomically plausible. "
-        "Reject any unrequested visible text, letters, logo, watermark, emblem, signature, app/UI mark or brand mark anywhere, especially corners. "
-        "Reject malformed or missing critical anatomy/appendages. "
-        "Return ONLY JSON with booleans and a short issues array: "
-        '{"subject_ok":true,"style_ok":true,"count_ok":true,"framing_ok":true,"anatomy_ok":true,"no_text_logo":true,"issues":[]}'
+        + "Hard requirements: the main subject must be exactly the expected species/entity; style must match; subject count must be one; "
+        "critical anatomy/appendages must be coherent; required framing must be satisfied; "
+        "there must be NO unrequested visible text, letters, logo, watermark, emblem, signature, UI/app mark, corner badge or branding anywhere. "
+        "Inspect the full frame, anatomy, and especially the bottom-right crop for branding. "
+        "For animal photos require real-camera realism and correct species anatomy. "
+        "For mascot profile require premium 3D style, species-correct anatomy, clean appendages and non-cheap materials. "
+        "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
+        "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
+        + " AND all hard boolean checks below are true AND x/f/u are empty. "
+        "If uncertain about exact species/entity, text/logo, anatomy, or framing, set the relevant boolean false and p=false. "
+        "Return ONLY compact JSON with ALL keys: "
+        '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,'
+        '"subject_ok":true,"style_ok":true,"count_ok":true,"framing_ok":true,"anatomy_ok":true,"no_text_logo":true,'
+        '"x":[],"f":[],"u":[],"i":[]}'
     )
-    hard_started = time.perf_counter()
-    hard_text = run_vlm_review(views, hard_instruction, 120)
-    hard_payload = parse_json_object(hard_text)
+    review_started = time.perf_counter()
+    review_text = run_vlm_review(views, instruction, 220)
+    if not review_text:
+        raise RuntimeError("empty VLM review for " + item["item_id"])
+    review_payload = parse_json_object(review_text)
     required_flags = (
         "subject_ok",
         "style_ok",
@@ -1505,24 +1494,29 @@ for item in compiled_items:
         "anatomy_ok",
         "no_text_logo",
     )
-    hard_passed = bool(hard_payload) and all(hard_payload.get(flag) is True for flag in required_flags)
-    hard_issues = hard_payload.get("issues")
-    if not isinstance(hard_issues, list):
-        hard_issues = ["hard QA response invalid"] if not hard_passed else []
-
-    image_reports[item["item_id"]]["review_text"] = review_text
-    image_reports[item["item_id"]]["qa_review_seconds"] = round(
-        time.perf_counter() - review_started,
-        3,
+    hard_passed = bool(review_payload) and all(
+        review_payload.get(flag) is True for flag in required_flags
     )
+    hard_issues = []
+    for key in ("x", "f", "u"):
+        values = review_payload.get(key)
+        if isinstance(values, list):
+            hard_issues.extend(str(value) for value in values if str(value).strip())
+    if not hard_passed and not hard_issues:
+        hard_issues = ["exact-subject/style/framing/anatomy/text-logo hard gate failed"]
+
+    elapsed_review = round(time.perf_counter() - review_started, 3)
+    image_reports[item["item_id"]]["review_text"] = review_text
+    image_reports[item["item_id"]]["qa_review_seconds"] = elapsed_review
     image_reports[item["item_id"]]["hard_gate"] = {
         "passed": hard_passed,
         "subject_name": item["subject_name"],
         "requires_full_body": requires_full_body,
-        "checks": {flag: hard_payload.get(flag) for flag in required_flags},
+        "checks": {flag: review_payload.get(flag) for flag in required_flags},
         "issues": hard_issues,
-        "review_text": hard_text,
-        "review_seconds": round(time.perf_counter() - hard_started, 3),
+        "review_text": review_text,
+        "review_seconds": elapsed_review,
+        "single_pass": True,
     }
 
 report = {

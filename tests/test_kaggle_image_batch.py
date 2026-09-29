@@ -468,7 +468,8 @@ def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
     ))
     compile(source, "<semantic-batch-worker>", "exec")
 
-    assert "Reject if the visible subject is a different species/entity" in source
+    assert "the main subject must be exactly the expected species/entity" in source
     assert "logo, watermark, emblem, signature" in source
+    assert '"single_pass": True' in source
     assert '"subject_ok"' in source
     assert '"no_text_logo"' in source
