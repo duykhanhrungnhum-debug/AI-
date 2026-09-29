@@ -594,7 +594,7 @@ class KaggleVisionQualityVerifier:
 
 @dataclass
 class HybridVisionQualityVerifier:
-    """Use a smaller Qwen3-VL fast gate and fall back to 8B only when needed."""
+    """Use 4B for clear decisions and 8B only for genuinely borderline images."""
 
     worker: KaggleGpuWorker
     fast_model: str = "Qwen/Qwen3-VL-4B-Instruct"
@@ -604,7 +604,8 @@ class HybridVisionQualityVerifier:
     max_poll_attempts: int = 120
     min_quality_score: float = 9.0
     min_prompt_match_score: float = 9.0
-    clear_pass_score: float = 9.2
+    clear_pass_score: float = 9.0
+    fast_reject_score: float = 8.0
     attention_backend: str = "sdpa"
     provider: str = "kaggle-gpu-hybrid-vlm-quality"
 
@@ -619,6 +620,8 @@ class HybridVisionQualityVerifier:
             raise ValueError("min_prompt_match_score must be in [0, 10]")
         if not max(self.min_quality_score, self.min_prompt_match_score) <= self.clear_pass_score <= 10:
             raise ValueError("clear_pass_score must be >= configured minimum scores and <= 10")
+        if not 0 <= self.fast_reject_score < self.clear_pass_score:
+            raise ValueError("fast_reject_score must be >= 0 and below clear_pass_score")
         if self.attention_backend not in {"sdpa", "eager"}:
             raise ValueError("attention_backend must be sdpa or eager")
 
@@ -634,8 +637,9 @@ class HybridVisionQualityVerifier:
             attention_backend=self.attention_backend,
         )
 
-    def _clear_fast_pass(self, result: VisionQualityResult) -> bool:
-        scores = (
+    @staticmethod
+    def _scores(result: VisionQualityResult) -> tuple[float, ...]:
+        return (
             result.quality_score,
             result.prompt_match_score,
             result.structure_score,
@@ -644,11 +648,31 @@ class HybridVisionQualityVerifier:
             result.composition_score,
             result.benchmark_match_score,
         )
+
+    def _clear_fast_pass(self, result: VisionQualityResult) -> bool:
         return (
             result.passed
             and not result.major_issues
-            and min(scores) >= self.clear_pass_score
+            and min(self._scores(result)) >= self.clear_pass_score
         )
+
+    def _obvious_fast_reject(
+        self,
+        request: VisionQualityRequest,
+        result: VisionQualityResult,
+    ) -> bool:
+        hard_evidence = {
+            "defect_hunter_reject:True",
+            "user_rejected_feedback:True",
+        }
+        if any(item in hard_evidence for item in result.evidence):
+            return True
+        if (
+            request.expected_subject_count is not None
+            and result.subject_count != request.expected_subject_count
+        ):
+            return True
+        return min(self._scores(result)) <= self.fast_reject_score
 
     def verify(self, request: VisionQualityRequest) -> VisionQualityResult:
         return self.verify_many((request,)).items[0]
@@ -665,7 +689,10 @@ class HybridVisionQualityVerifier:
         fallback_requests = tuple(
             request
             for request, fast_result in zip(requests, fast_batch.items, strict=True)
-            if not self._clear_fast_pass(fast_result)
+            if (
+                not self._clear_fast_pass(fast_result)
+                and not self._obvious_fast_reject(request, fast_result)
+            )
         )
 
         final_by_id: dict[str, VisionQualityResult] = {}
@@ -677,14 +704,28 @@ class HybridVisionQualityVerifier:
 
         results: list[VisionQualityResult] = []
         for request, fast_result in zip(requests, fast_batch.items, strict=True):
+            common_evidence = (
+                f"hybrid_fast_model:{self.fast_model}",
+                f"hybrid_final_model:{self.final_model}",
+                f"hybrid_clear_pass_score:{self.clear_pass_score:.2f}",
+                f"hybrid_fast_reject_score:{self.fast_reject_score:.2f}",
+            )
             if self._clear_fast_pass(fast_result):
                 results.append(replace(
                     fast_result,
                     evidence=fast_result.evidence + (
                         "hybrid_stage:fast_clear_pass",
-                        f"hybrid_fast_model:{self.fast_model}",
-                        f"hybrid_final_model:{self.final_model}",
-                        f"hybrid_clear_pass_score:{self.clear_pass_score:.2f}",
+                        *common_evidence,
+                    ),
+                ))
+                continue
+
+            if self._obvious_fast_reject(request, fast_result):
+                results.append(replace(
+                    fast_result,
+                    evidence=fast_result.evidence + (
+                        "hybrid_stage:fast_reject",
+                        *common_evidence,
                     ),
                 ))
                 continue
@@ -694,11 +735,9 @@ class HybridVisionQualityVerifier:
                 final_result,
                 evidence=final_result.evidence + (
                     "hybrid_stage:final_fallback",
-                    f"hybrid_fast_model:{self.fast_model}",
-                    f"hybrid_final_model:{self.final_model}",
+                    *common_evidence,
                     f"hybrid_fast_quality_score:{fast_result.quality_score:.2f}",
                     f"hybrid_fast_structure_score:{fast_result.structure_score:.2f}",
-                    f"hybrid_clear_pass_score:{self.clear_pass_score:.2f}",
                 ),
             ))
 
