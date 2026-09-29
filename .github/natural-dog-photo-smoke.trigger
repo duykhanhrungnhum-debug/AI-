@@ -1,1 +1,1 @@
-natural-dog-photo-v3-qwen3-vl-2b-fast-9of10
+natural-dog-photo-v4-inline-qa-same-session-9of10
