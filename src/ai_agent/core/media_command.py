@@ -212,29 +212,90 @@ class MediaCommandPlanner:
         if not command:
             raise ValueError("media command must not be empty")
 
+        compiler_output = ""
+        if self.provider is not None:
+            compiler_output = self.provider.generate(self._compiler_prompt(command)).text.strip()
+        return self._finalize_plan(
+            command,
+            compiler_output=compiler_output,
+            has_reference_image=has_reference_image,
+        )
+
+    def plan_many(
+        self,
+        commands: tuple[str, ...] | list[str],
+        *,
+        has_reference_images: tuple[bool, ...] | list[bool] | None = None,
+    ) -> tuple[MediaCommandPlan, ...]:
+        """Compile many commands with one model batch when the provider supports it."""
+        commands = tuple(command.strip() for command in commands)
+        if not commands or any(not command for command in commands):
+            raise ValueError("media commands must contain non-empty text")
+
+        if has_reference_images is None:
+            reference_flags = (False,) * len(commands)
+        else:
+            reference_flags = tuple(bool(value) for value in has_reference_images)
+            if len(reference_flags) != len(commands):
+                raise ValueError("has_reference_images length must match commands")
+
+        outputs = ("",) * len(commands)
+        if self.provider is not None:
+            prompts = tuple(self._compiler_prompt(command) for command in commands)
+            generate_many = getattr(self.provider, "generate_many", None)
+            if callable(generate_many):
+                batch = generate_many(prompts)
+                responses = tuple(batch.responses)
+                if len(responses) != len(commands):
+                    raise ValueError("media command compiler batch size mismatch")
+                outputs = tuple(response.text.strip() for response in responses)
+            else:
+                outputs = tuple(
+                    self.provider.generate(prompt).text.strip()
+                    for prompt in prompts
+                )
+
+        return tuple(
+            self._finalize_plan(
+                command,
+                compiler_output=compiler_output,
+                has_reference_image=reference_flag,
+            )
+            for command, compiler_output, reference_flag
+            in zip(commands, outputs, reference_flags, strict=True)
+        )
+
+    @staticmethod
+    def _compiler_prompt(command: str) -> str:
+        return (
+            "MEDIA_COMMAND_COMPILE\n"
+            "Translate and compile the user's request into concise ENGLISH visual instructions. "
+            "The PROMPT value MUST be English even when USER_COMMAND is Vietnamese or another language. "
+            "Preserve every requested subject count, person/object, action, location, clothing, held object, "
+            "camera/framing, time of day and visual style. Do not invent or remove story facts. "
+            "When camera/framing/lighting are not specified, choose professional production-ready choices that best "
+            "express the user's intent without changing the scene or subject. Resolve pronouns and implied references "
+            "from the command conservatively. Keep identity/reference instructions if present. Do not lower quality requirements. "
+            "Return exactly two plain-text labeled lines and no Markdown or commentary. "
+            "Return ONE image description only; do not propose alternatives, variants, close-ups or second prompts:\n"
+            "PROMPT: <one complete concise English still-image description>\n"
+            "MOTION: <English motion only when video is requested; otherwise leave empty>\n"
+            f"USER_COMMAND: {command}"
+        )
+
+    def _finalize_plan(
+        self,
+        command: str,
+        *,
+        compiler_output: str,
+        has_reference_image: bool,
+    ) -> MediaCommandPlan:
         mode = self._infer_mode(command)
         profile = self._infer_profile(command)
         rewritten_prompt = command
         motion_prompt = ""
-        compiler_output = ""
 
-        if self.provider is not None:
-            compiler_prompt = (
-                "MEDIA_COMMAND_COMPILE\n"
-                "Translate and compile the user's request into concise ENGLISH visual instructions. "
-                "The PROMPT value MUST be English even when USER_COMMAND is Vietnamese or another language. "
-                "Preserve every requested subject count, person/object, action, location, clothing, held object, "
-                "camera/framing, time of day and visual style. Do not invent or remove story facts. "
-                "When camera/framing/lighting are not specified, choose professional production-ready choices that best "
-                "express the user's intent without changing the scene or subject. Resolve pronouns and implied references "
-                "from the command conservatively. Keep identity/reference instructions if present. Do not lower quality requirements. "
-                "Return exactly two plain-text labeled lines and no Markdown or commentary. "
-                "Return ONE image description only; do not propose alternatives, variants, close-ups or second prompts:\n"
-                "PROMPT: <one complete concise English still-image description>\n"
-                "MOTION: <English motion only when video is requested; otherwise leave empty>\n"
-                f"USER_COMMAND: {command}"
-            )
-            compiler_output = self.provider.generate(compiler_prompt).text.strip()
+        if compiler_output:
             parsed = self._parse_compiler_output(compiler_output)
             rewritten_prompt = parsed.get("PROMPT", "").strip()
             motion_prompt = parsed.get("MOTION", "").strip()
