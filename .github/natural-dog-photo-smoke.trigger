@@ -1,1 +1,1 @@
-natural-dog-photo-v6-single-job-pipeline-9of10
+natural-dog-photo-v7-native-fp16-fast-poll-9of10
