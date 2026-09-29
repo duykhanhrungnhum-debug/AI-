@@ -302,8 +302,12 @@ class MediaCommandPlanner:
             "When camera/framing/lighting are not specified, choose professional production-ready choices that best "
             "express the user's intent without changing the scene or subject. Resolve pronouns and implied references "
             "from the command conservatively. Keep identity/reference instructions if present. Do not lower quality requirements. "
-            "Return exactly two plain-text labeled lines and no Markdown or commentary. "
+            "Classify the request semantically instead of matching a fixed list of species names. "
+            "SUBJECT_CLASS must be one of animal, human, general. STYLE_CLASS must be one of photo, 3d, mascot, illustration, general. "
+            "Return exactly four plain-text labeled lines and no Markdown or commentary. "
             "Return ONE image description only; do not propose alternatives, variants, close-ups or second prompts:\n"
+            "SUBJECT_CLASS: <animal|human|general>\n"
+            "STYLE_CLASS: <photo|3d|mascot|illustration|general>\n"
             "PROMPT: <one complete concise English still-image description>\n"
             "MOTION: <English motion only when video is requested; otherwise leave empty>\n"
             f"USER_COMMAND: {command}"
@@ -317,7 +321,7 @@ class MediaCommandPlanner:
         has_reference_image: bool,
     ) -> MediaCommandPlan:
         mode = self._infer_mode(command)
-        profile = self._infer_profile(command)
+        parsed: dict[str, str] = {}
         rewritten_prompt = command
         motion_prompt = ""
 
@@ -334,7 +338,11 @@ class MediaCommandPlanner:
                     "media command compiler did not translate PROMPT to English; refusing image generation"
                 )
 
-        rewritten_prompt = self._preserve_species(command, rewritten_prompt)
+        profile = self._profile_from_semantics(
+            parsed.get("SUBJECT_CLASS", ""),
+            parsed.get("STYLE_CLASS", ""),
+            fallback_command=command,
+        )
 
         positive = profile.positive_constraints
         prompt = rewritten_prompt.rstrip(" .") + ". Quality requirements: " + positive + "."
@@ -362,20 +370,6 @@ class MediaCommandPlanner:
         )
 
     @staticmethod
-    def _preserve_species(command: str, prompt: str) -> str:
-        """Prevent small planners from translating buffalo as generic cow/cattle."""
-        source = command.casefold()
-        if any(term in source for term in ("trâu", "buffalo", "water buffalo")):
-            normalized = prompt
-            for wrong in ("Vietnamese cow", "cow", "cattle"):
-                normalized = normalized.replace(wrong, "water buffalo")
-                normalized = normalized.replace(wrong.title(), "Water buffalo")
-            if "buffalo" not in normalized.casefold():
-                normalized = "one water buffalo, " + normalized
-            return normalized
-        return prompt
-
-    @staticmethod
     def _infer_mode(command: str) -> MediaMode:
         text = command.casefold()
         video_terms = (
@@ -383,19 +377,39 @@ class MediaCommandPlanner:
         )
         return "video" if any(term in text for term in video_terms) else "image"
 
+    @classmethod
+    def _profile_from_semantics(
+        cls,
+        subject_class: str,
+        style_class: str,
+        *,
+        fallback_command: str,
+    ) -> MediaQualityProfile:
+        subject = subject_class.strip().casefold()
+        style = style_class.strip().casefold()
+        if style in {"3d", "mascot"}:
+            return MASCOT_PREMIUM
+        if subject == "animal" and style == "photo":
+            return ANIMAL_PHOTO_PREMIUM
+        if subject == "human" and style == "photo":
+            return HUMAN_PHOTO_PREMIUM
+        if subject == "animal":
+            return ANIMAL_PHOTO_PREMIUM
+        if subject == "human":
+            return HUMAN_PHOTO_PREMIUM
+        return cls._infer_profile_fallback(fallback_command)
+
     @staticmethod
     def _infer_profile(command: str) -> MediaQualityProfile:
+        return MediaCommandPlanner._infer_profile_fallback(command)
+
+    @staticmethod
+    def _infer_profile_fallback(command: str) -> MediaQualityProfile:
+        """Conservative fallback used only when semantic compiler labels are absent."""
         text = command.casefold()
         mascot_terms = (
             "mascot", "sticker", "cute 3d", "3d cute", "chibi", "hoạt hình 3d",
-            "nhân vật dễ thương", "3d dễ thương", "3d cute"
-        )
-        animal_terms = (
-            "chó", "cún", "mèo", "thú cưng", "động vật", "dog", "puppy", "cat", "kitten", "animal", "pet",
-            "golden retriever", "corgi", "shiba", "trâu", "trâu nước", "buffalo", "water buffalo"
-        )
-        realistic_terms = (
-            "thật", "chân thực", "ảnh chụp", "photorealistic", "realistic", "photo", "photograph"
+            "nhân vật dễ thương", "3d dễ thương"
         )
         human_terms = (
             "người", "cô gái", "phụ nữ", "đàn ông", "chàng trai", "cô ấy", "anh ấy",
@@ -403,8 +417,6 @@ class MediaCommandPlanner:
         )
         if any(term in text for term in mascot_terms):
             return MASCOT_PREMIUM
-        if any(term in text for term in animal_terms) and any(term in text for term in realistic_terms):
-            return ANIMAL_PHOTO_PREMIUM
         if any(term in text for term in human_terms):
             return HUMAN_PHOTO_PREMIUM
         return GENERAL_PREMIUM
