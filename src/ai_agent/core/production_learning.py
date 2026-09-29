@@ -122,12 +122,24 @@ def tuned_reference_scale(
     lessons: tuple[ProductionLesson, ...] | list[ProductionLesson],
     *,
     base: float = 0.75,
+    model: str | None = None,
+    adapter_weight: str | None = None,
 ) -> float:
-    """Increase image adherence after identity failures, bounded to avoid prompt collapse."""
+    """Tune reference adherence only from lessons produced by the same image stack.
+
+    Legacy lessons without explicit model/adapter provenance are ignored whenever
+    a current model or adapter is supplied. This prevents SD1.5 failures from
+    silently increasing SDXL/RealVisXL reference strength and degrading quality.
+    """
     scale = base
     for item in lessons:
+        config = item.config or {}
+        if model is not None and str(config.get("image_model") or "") != model:
+            continue
+        if adapter_weight is not None and str(config.get("ip_adapter_weight") or "") != adapter_weight:
+            continue
         if item.success:
-            prior = (item.config or {}).get("reference_scale")
+            prior = config.get("reference_scale")
             if isinstance(prior, (int, float)):
                 scale = max(scale, float(prior))
             break
