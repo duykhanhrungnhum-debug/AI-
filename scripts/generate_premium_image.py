@@ -118,9 +118,21 @@ def main() -> int:
     candidate_path = output / "candidate.png"
     candidate_path.write_bytes(artifact.data)
 
-    rubric = tuple(
-        benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]
-    )
+    benchmark = benchmark_manifest()["profiles"][plan.profile.name]
+    candidate_digest = sha256(artifact.data).hexdigest()
+    if candidate_digest in set(benchmark.get("known_rejected_sha256", ())):
+        (output / "user-benchmark-rejection.json").write_text(
+            json.dumps({
+                "verified": False,
+                "stage": "user_benchmark",
+                "image_sha256": candidate_digest,
+                "reason": "exact image was previously rejected by the user",
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("generated image matches a user-rejected benchmark example")
+
+    rubric = tuple(benchmark["must_pass"])
     vlm = KaggleVisionQualityVerifier(
         worker=worker,
         kernel_slug="ai-agent-premium-image-vlm",

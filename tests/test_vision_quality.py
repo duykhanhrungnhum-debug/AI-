@@ -65,6 +65,7 @@ def test_vlm_quality_gate_passes_only_clean_high_scoring_image():
         "detail_score": 9.0,
         "aesthetic_score": 9.0,
         "composition_score": 9.0,
+        "benchmark_match_score": 9.0,
         "subject_count": 1,
         "major_issues": [],
         "minor_issues": ["tiny background text"],
@@ -91,6 +92,7 @@ def test_vlm_quality_gate_rejects_major_visual_issue_even_with_high_scores():
         "detail_score": 9.0,
         "aesthetic_score": 9.0,
         "composition_score": 9.0,
+        "benchmark_match_score": 9.0,
         "subject_count": 1,
         "major_issues": ["right hand has fused fingers"],
         "minor_issues": [],
@@ -114,6 +116,7 @@ def test_vlm_quality_gate_rejects_wrong_subject_count():
         "detail_score": 9.0,
         "aesthetic_score": 9.0,
         "composition_score": 9.0,
+        "benchmark_match_score": 9.0,
         "subject_count": 3,
         "major_issues": [],
         "minor_issues": [],
@@ -151,7 +154,7 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     assert "five views of the SAME generated image" in source
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
-    assert "every score is >= 8" in source
+    assert "every score including benchmark_match_score is >= 8" in source
 
 
 def test_vlm_review_image_compaction_stays_far_below_kaggle_source_limit():
@@ -184,6 +187,7 @@ def test_vlm_quality_gate_rejects_low_structure_even_when_overall_score_is_high(
         "detail_score": 9.0,
         "aesthetic_score": 9.0,
         "composition_score": 9.0,
+        "benchmark_match_score": 9.0,
         "subject_count": 1,
         "major_issues": [],
         "minor_issues": [],
@@ -207,4 +211,31 @@ def test_qwen3_worker_uses_multiview_and_hard_component_gates():
     assert 'detail_score' in source
     assert 'aesthetic_score' in source
     assert 'composition_score' in source
+    assert 'benchmark_match_score' in source
+    assert 'user-approved benchmark target' in source
     compile(source, "<qwen3-vision-quality-worker>", "exec")
+
+
+def test_vlm_quality_gate_rejects_low_benchmark_match_even_if_generic_quality_is_high():
+    review = {
+        "pass": True,
+        "quality_score": 9.5,
+        "prompt_match_score": 9.5,
+        "structure_score": 9.5,
+        "detail_score": 9.5,
+        "aesthetic_score": 9.5,
+        "composition_score": 9.5,
+        "benchmark_match_score": 5.0,
+        "subject_count": 1,
+        "major_issues": [],
+        "minor_issues": [],
+        "summary": "technically polished but wrong benchmark style",
+    }
+    verifier = KaggleVisionQualityVerifier(
+        worker=FakeWorker([("human-1", png_bytes(), review)]),
+        poll_interval=0,
+    )
+    result = verifier.verify(request())
+    assert result.passed is False
+    assert result.benchmark_match_score == 5.0
+    assert any("benchmark_match score below threshold" in issue for issue in result.major_issues)
