@@ -470,7 +470,7 @@ class HybridFakeWorker:
         assert filename == "vision_quality.json"
         fast = slug.endswith("-fast")
         review = self.fast_review if fast else self.final_review
-        model = "Qwen/Qwen3-VL-4B-Instruct" if fast else "Qwen/Qwen3-VL-8B-Instruct"
+        model = "Qwen/Qwen3-VL-2B-Instruct" if fast else "Qwen/Qwen3-VL-8B-Instruct"
         review_image = KaggleVisionQualityVerifier._compact_review_image(self.image)
         return json.dumps({
             "model": model,
@@ -517,7 +517,7 @@ def test_hybrid_quality_gate_accepts_clear_9_image_without_loading_8b():
     assert result.passed is True
     assert worker.submissions == ["ai-agent-hybrid-vision-quality-fast"]
     assert "hybrid_stage:fast_clear_pass" in result.evidence
-    assert "hybrid_fast_model:Qwen/Qwen3-VL-4B-Instruct" in result.evidence
+    assert "hybrid_fast_model:Qwen/Qwen3-VL-2B-Instruct" in result.evidence
 
 
 def test_hybrid_quality_gate_uses_8b_only_for_borderline_fast_review():

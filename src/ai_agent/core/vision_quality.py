@@ -594,10 +594,10 @@ class KaggleVisionQualityVerifier:
 
 @dataclass
 class HybridVisionQualityVerifier:
-    """Use 4B for clear decisions and 8B only for genuinely borderline images."""
+    """Use 2B for clear decisions and 8B only for genuinely borderline images."""
 
     worker: KaggleGpuWorker
-    fast_model: str = "Qwen/Qwen3-VL-4B-Instruct"
+    fast_model: str = "Qwen/Qwen3-VL-2B-Instruct"
     final_model: str = "Qwen/Qwen3-VL-8B-Instruct"
     kernel_slug: str = "ai-agent-hybrid-vision-quality"
     poll_interval: float = 15.0
