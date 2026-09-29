@@ -375,20 +375,65 @@ def test_image_worker_can_request_native_fp16_variant():
 
 
 
-def test_inline_planner_preserves_buffalo_species():
+
+
+
+def test_inline_planner_semantically_routes_unlisted_animal_styles():
     provider = KaggleImageProvider(
         worker=FakeWorker(),
+        model="SG161222/RealVisXL_V5.0",
+        model_variant="fp16",
         poll_interval=0,
         enable_clip_precheck=False,
         enable_cpu_offload=False,
         enable_inline_planner=True,
-        inline_planner_raw_command="Tạo ảnh một con trâu nước Việt Nam thật ngoài đồng",
-        inline_planner_positive_constraints="natural realistic animal photo",
+        inline_planner_raw_command="Tạo ảnh một con tê giác 3D cute",
+        inline_planner_positive_constraints="fallback quality",
+        inline_profile_positive_constraints={
+            "animal_photo_premium": "natural animal photo",
+            "mascot_premium": "premium 3D animal mascot",
+            "human_photo_premium": "natural human photo",
+            "general_premium": "general premium image",
+        },
+        inline_profile_negative_constraints={
+            "animal_photo_premium": "no CGI",
+            "mascot_premium": "no broken anatomy",
+            "human_photo_premium": "no bad hands",
+            "general_premium": "no artifacts",
+        },
+        inline_profile_rubrics={
+            "animal_photo_premium": ("animal anatomy",),
+            "mascot_premium": ("3D anatomy",),
+            "human_photo_premium": ("human anatomy",),
+            "general_premium": ("coherent geometry",),
+        },
+        enable_inline_vlm=True,
+        inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
+        inline_vlm_profile="general_premium",
+        inline_vlm_rubric=("coherent geometry",),
+        inline_vlm_expected_subject_count=1,
+        inline_vlm_min_score=9.0,
     )
     source = provider._build_worker_source(
         ImageGenerationRequest("placeholder", width=512, height=512, seed=42)
     )
 
     compile(source, "<generated-image-worker>", "exec")
-    assert '("trâu", "buffalo", "water buffalo")' in source
-    assert 'compiled_prompt = compiled_prompt.replace(wrong, "water buffalo")' in source
+    assert "SUBJECT_CLASS: <animal|human|general>" in source
+    assert "STYLE_CLASS: <photo|3d|mascot|illustration|general>" in source
+    assert 'semantic_profile = "mascot_premium"' in source
+    assert '"tê giác"' in source
+    assert '("trâu", "buffalo", "water buffalo")' not in source
+
+
+def test_inline_semantic_profile_maps_require_matching_keys():
+    with pytest.raises(ValueError, match="matching keys"):
+        KaggleImageProvider(
+            worker=FakeWorker(),
+            enable_inline_planner=True,
+            inline_planner_raw_command="Tạo ảnh con voi thật",
+            inline_planner_positive_constraints="fallback",
+            inline_profile_positive_constraints={"animal_photo_premium": "photo"},
+            inline_profile_negative_constraints={"general_premium": "bad"},
+            inline_profile_rubrics={"animal_photo_premium": ("quality",)},
+        )
