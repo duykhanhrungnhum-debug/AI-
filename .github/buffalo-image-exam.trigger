@@ -1,1 +1,1 @@
-buffalo-image-exam-v1-project-ai
+buffalo-image-exam-v2-species-guard-longer-wait
