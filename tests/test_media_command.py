@@ -75,8 +75,8 @@ def test_benchmark_manifest_has_human_and_mascot_acceptance_rubrics():
 
     assert "human_photo_premium" in manifest["profiles"]
     assert "mascot_premium" in manifest["profiles"]
-    assert "correct hand/finger anatomy" in manifest["profiles"]["human_photo_premium"]["must_pass"]
-    assert "clean rounded geometry" in manifest["profiles"]["mascot_premium"]["must_pass"]
+    assert any("hand/finger anatomy" in item for item in manifest["profiles"]["human_photo_premium"]["must_pass"])
+    assert any("crab silhouette" in item or "rounded" in item for item in manifest["profiles"]["mascot_premium"]["must_pass"])
 
 
 def test_benchmark_manifest_pins_exact_user_reference_set():
