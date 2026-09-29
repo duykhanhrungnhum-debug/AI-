@@ -634,6 +634,17 @@ def benchmark_manifest() -> dict:
                     "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589",
                 ],
             },
+            GENERAL_PREMIUM.name: {
+                "must_pass": [
+                    "prompt intent, subject count and requested visual style must be clearly satisfied",
+                    "coherent geometry, anatomy or object structure appropriate to the visible subject",
+                    "clean materials and textures without melted surfaces, duplicated parts or obvious AI artifacts",
+                    "physically plausible lighting, perspective, depth and object connections",
+                    "balanced production-ready composition with readable subject separation",
+                    "no unwanted text, watermark, logo, broken perspective or unfinished regions",
+                ],
+                "known_rejected_sha256": [],
+            },
             MASCOT_PREMIUM.name: {
                 "must_pass": [
                     "match the user's accepted premium cute 3D mascot quality bar, not merely generic 3D technical correctness",
