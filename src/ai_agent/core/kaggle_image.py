@@ -27,6 +27,7 @@ class KaggleImageProvider:
     prompt_alignment_threshold: float = 0.22
     visual_quality_margin_threshold: float = 0.015
     enforce_visual_quality_margin: bool = True
+    enable_clip_precheck: bool = True
     quality_good_text: str = (
         "premium production-ready image, coherent geometry, crisp detail, professional composition and lighting, "
         "clean materials and textures, no obvious AI artifacts"
@@ -103,27 +104,35 @@ class KaggleImageProvider:
             raise ValueError("Kaggle report model does not match configured model")
         if not str(report.get("gpu_name", "")).strip():
             raise ValueError("Kaggle image report does not contain GPU evidence")
-        try:
-            prompt_alignment_score = float(report.get("prompt_alignment_score"))
-        except (TypeError, ValueError):
-            prompt_alignment_score = -1.0
-        if prompt_alignment_score < self.prompt_alignment_threshold:
-            raise ValueError(
-                "prompt alignment below threshold: "
-                f"{prompt_alignment_score:.4f} < {self.prompt_alignment_threshold:.4f}"
-            )
-        try:
-            visual_quality_margin = float(report.get("visual_quality_margin"))
-        except (TypeError, ValueError):
-            visual_quality_margin = -2.0
-        if (
-            self.enforce_visual_quality_margin
-            and visual_quality_margin < self.visual_quality_margin_threshold
-        ):
-            raise ValueError(
-                "visual quality margin below threshold: "
-                f"{visual_quality_margin:.4f} < {self.visual_quality_margin_threshold:.4f}"
-            )
+        prompt_alignment_score: float | None = None
+        visual_quality_margin: float | None = None
+        visual_defect_score: float | None = None
+        if self.enable_clip_precheck:
+            try:
+                prompt_alignment_score = float(report.get("prompt_alignment_score"))
+            except (TypeError, ValueError):
+                prompt_alignment_score = -1.0
+            if prompt_alignment_score < self.prompt_alignment_threshold:
+                raise ValueError(
+                    "prompt alignment below threshold: "
+                    f"{prompt_alignment_score:.4f} < {self.prompt_alignment_threshold:.4f}"
+                )
+            try:
+                visual_quality_margin = float(report.get("visual_quality_margin"))
+            except (TypeError, ValueError):
+                visual_quality_margin = -2.0
+            try:
+                visual_defect_score = float(report.get("visual_defect_score"))
+            except (TypeError, ValueError):
+                visual_defect_score = 0.0
+            if (
+                self.enforce_visual_quality_margin
+                and visual_quality_margin < self.visual_quality_margin_threshold
+            ):
+                raise ValueError(
+                    "visual quality margin below threshold: "
+                    f"{visual_quality_margin:.4f} < {self.visual_quality_margin_threshold:.4f}"
+                )
 
         return ImageArtifact(
             data=image,
@@ -135,10 +144,11 @@ class KaggleImageProvider:
                 f"image_sha256:{digest}",
                 f"dimensions:{request.width}x{request.height}",
                 f"seed:{report.get('seed')}",
-                f"prompt_alignment_score:{prompt_alignment_score:.6f}",
-                f"visual_quality_margin:{visual_quality_margin:.6f}",
-                f"visual_defect_score:{float(report.get('visual_defect_score', 0.0)):.6f}",
-                f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin}",
+                *((f"prompt_alignment_score:{prompt_alignment_score:.6f}",) if prompt_alignment_score is not None else ()),
+                *((f"visual_quality_margin:{visual_quality_margin:.6f}",) if visual_quality_margin is not None else ()),
+                *((f"visual_defect_score:{visual_defect_score:.6f}",) if visual_defect_score is not None else ()),
+                f"clip_precheck:{self.enable_clip_precheck}",
+                f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin and self.enable_clip_precheck}",
                 f"gpu:{report.get('gpu_name')}",
                 f"model:{self.model}",
             ),
@@ -160,6 +170,7 @@ class KaggleImageProvider:
             "quality_bad_texts": list(self.quality_bad_texts),
             "prompt_alignment_threshold": self.prompt_alignment_threshold,
             "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
+            "enable_clip_precheck": self.enable_clip_precheck,
         }
         config_json = json.dumps(config, ensure_ascii=False)
         return textwrap.dedent(
@@ -209,31 +220,38 @@ class KaggleImageProvider:
             pipe.enable_model_cpu_offload()
             pipe.enable_vae_slicing()
 
-            clip_image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
-            clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-            clip_vision = CLIPVisionModelWithProjection.from_pretrained(
-                "openai/clip-vit-base-patch32"
-            ).eval()
-            clip_text = CLIPTextModelWithProjection.from_pretrained(
-                "openai/clip-vit-base-patch32"
-            ).eval()
+            clip_image_processor = None
+            clip_tokenizer = None
+            clip_vision = None
+            clip_text = None
+            quality_good = None
+            quality_bad = ()
+            if CONFIG["enable_clip_precheck"]:
+                clip_image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32")
+                clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+                clip_vision = CLIPVisionModelWithProjection.from_pretrained(
+                    "openai/clip-vit-base-patch32"
+                ).eval()
+                clip_text = CLIPTextModelWithProjection.from_pretrained(
+                    "openai/clip-vit-base-patch32"
+                ).eval()
 
-            def image_embedding(image):
-                values = clip_image_processor(images=image, return_tensors="pt").pixel_values
-                with torch.no_grad():
-                    vector = clip_vision(pixel_values=values).image_embeds[0].float()
-                return F.normalize(vector, dim=0)
+                def image_embedding(image):
+                    values = clip_image_processor(images=image, return_tensors="pt").pixel_values
+                    with torch.no_grad():
+                        vector = clip_vision(pixel_values=values).image_embeds[0].float()
+                    return F.normalize(vector, dim=0)
 
-            def text_embedding(text):
-                values = clip_tokenizer([text], return_tensors="pt", padding=True, truncation=True)
-                with torch.no_grad():
-                    vector = clip_text(**values).text_embeds[0].float()
-                return F.normalize(vector, dim=0)
+                def text_embedding(text):
+                    values = clip_tokenizer([text], return_tensors="pt", padding=True, truncation=True)
+                    with torch.no_grad():
+                        vector = clip_text(**values).text_embeds[0].float()
+                    return F.normalize(vector, dim=0)
 
-            quality_good = text_embedding(CONFIG["quality_good_text"])
-            quality_bad = tuple(
-                text_embedding(text) for text in CONFIG["quality_bad_texts"]
-            )
+                quality_good = text_embedding(CONFIG["quality_good_text"])
+                quality_bad = tuple(
+                    text_embedding(text) for text in CONFIG["quality_bad_texts"]
+                )
 
             result = pipe(
                 prompt=CONFIG["prompt"],
@@ -245,15 +263,20 @@ class KaggleImageProvider:
                 generator=generator,
             )
             image = result.images[0]
-            generated_embedding = image_embedding(image)
-            prompt_alignment_score = float(
-                torch.dot(text_embedding(CONFIG["prompt"]), generated_embedding).item()
-            )
-            visual_quality_score = float(torch.dot(quality_good, generated_embedding).item())
-            visual_defect_score = max(
-                float(torch.dot(bad, generated_embedding).item()) for bad in quality_bad
-            )
-            visual_quality_margin = visual_quality_score - visual_defect_score
+            prompt_alignment_score = None
+            visual_quality_score = None
+            visual_defect_score = None
+            visual_quality_margin = None
+            if CONFIG["enable_clip_precheck"]:
+                generated_embedding = image_embedding(image)
+                prompt_alignment_score = float(
+                    torch.dot(text_embedding(CONFIG["prompt"]), generated_embedding).item()
+                )
+                visual_quality_score = float(torch.dot(quality_good, generated_embedding).item())
+                visual_defect_score = max(
+                    float(torch.dot(bad, generated_embedding).item()) for bad in quality_bad
+                )
+                visual_quality_margin = visual_quality_score - visual_defect_score
 
             output = Path("/kaggle/working/generated.png")
             image.save(output, format="PNG")
@@ -272,6 +295,7 @@ class KaggleImageProvider:
                 "visual_quality_score": visual_quality_score,
                 "visual_defect_score": visual_defect_score,
                 "visual_quality_margin": visual_quality_margin,
+                "clip_precheck": bool(CONFIG["enable_clip_precheck"]),
             }}
             Path("/kaggle/working/image_report.json").write_text(
                 json.dumps(report, indent=2) + "\\n",
