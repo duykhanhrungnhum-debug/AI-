@@ -111,9 +111,9 @@ MASCOT_IMAGE_MODEL = ImageModelConfig(
         "production-ready sticker or character asset"
     ),
     quality_bad_texts=(
-        "bad mascot image with multiple repeated characters, duplicated subject, crowd of copies",
-        "bad 3D mascot with malformed or duplicated limbs claws appendages, melted geometry or warped body",
-        "bad mascot asset with distorted eyes or mouth, messy silhouette, muddy textures and obvious AI artifacts",
+        "bad mascot image with multiple separate repeated characters, duplicated whole subject or crowd of copies",
+        "bad 3D mascot with fused disconnected broken claws or legs, melted joints, impossible attachment points, warped body",
+        "bad mascot asset with distorted inconsistent eyes or mouth, messy silhouette, muddy textures and obvious AI artifacts",
     ),
 )
 
