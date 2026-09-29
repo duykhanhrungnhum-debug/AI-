@@ -28,6 +28,7 @@ class KaggleImageProvider:
     visual_quality_margin_threshold: float = 0.015
     enforce_visual_quality_margin: bool = True
     enable_clip_precheck: bool = True
+    enable_cpu_offload: bool = True
     quality_good_text: str = (
         "premium production-ready image, coherent geometry, crisp detail, professional composition and lighting, "
         "clean materials and textures, no obvious AI artifacts"
@@ -148,6 +149,7 @@ class KaggleImageProvider:
                 *((f"visual_quality_margin:{visual_quality_margin:.6f}",) if visual_quality_margin is not None else ()),
                 *((f"visual_defect_score:{visual_defect_score:.6f}",) if visual_defect_score is not None else ()),
                 f"clip_precheck:{self.enable_clip_precheck}",
+                f"cpu_offload:{self.enable_cpu_offload}",
                 f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin and self.enable_clip_precheck}",
                 f"gpu:{report.get('gpu_name')}",
                 f"model:{self.model}",
@@ -171,6 +173,7 @@ class KaggleImageProvider:
             "prompt_alignment_threshold": self.prompt_alignment_threshold,
             "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
             "enable_clip_precheck": self.enable_clip_precheck,
+            "enable_cpu_offload": self.enable_cpu_offload,
         }
         config_json = json.dumps(config, ensure_ascii=False)
         return textwrap.dedent(
@@ -217,7 +220,10 @@ class KaggleImageProvider:
                     pipe.scheduler.config,
                     use_karras_sigmas=True,
                 )
-            pipe.enable_model_cpu_offload()
+            if CONFIG["enable_cpu_offload"]:
+                pipe.enable_model_cpu_offload()
+            else:
+                pipe = pipe.to("cuda")
             pipe.enable_vae_slicing()
 
             clip_image_processor = None
