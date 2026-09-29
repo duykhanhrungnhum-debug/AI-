@@ -9,7 +9,7 @@ from .model import ModelProvider
 
 
 MediaMode = Literal["image", "video"]
-QualityProfileName = Literal["human_photo_premium", "mascot_premium", "general_premium"]
+QualityProfileName = Literal["human_photo_premium", "animal_photo_premium", "mascot_premium", "general_premium"]
 
 MEDIA_COMMAND_BRAIN_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 
@@ -41,28 +41,43 @@ HUMAN_PHOTO_PREMIUM = MediaQualityProfile(
 )
 
 
-MASCOT_PREMIUM = MediaQualityProfile(
-    name="mascot_premium",
+ANIMAL_PHOTO_PREMIUM = MediaQualityProfile(
+    name="animal_photo_premium",
     positive_constraints=(
-        "premium polished cute 3D sticker mascot matching the user benchmark quality, EXACTLY ONE main mascot subject, "
-        "squat low wide body resting naturally on a broad green lily pad, two large rounded frontal claws close to the body, "
-        "coherent crab legs and two short antennae, organic bumpy red-orange shell surface, soft cream underside and claw tips, "
-        "cute expressive face integrated into the crab anatomy, crisp white sticker/cutout outline around crab and lily pad, "
-        "clean black or transparent-style backdrop, visible natural water droplets, soft premium studio lighting, "
-        "tactile materials, clean rounded geometry, production-ready final character asset"
+        "premium photorealistic animal photograph, exactly one main animal subject unless requested otherwise, "
+        "species-correct anatomy and proportions, natural eyes nose mouth ears paws legs and tail, realistic fur/skin/feather texture, "
+        "physically plausible pose and contact with the ground, natural daylight or professional photographic lighting, "
+        "clean coherent background geometry, shallow depth of field when appropriate, crisp production-ready detail"
     ),
     negative_constraints=(
-        "multiple mascots, multiple crabs, duplicate character, repeated subject, crowd, duplicated body, "
-        "tall spherical balloon body, shiny plastic toy body, thin raised scissor claws, long spidery legs, "
-        "human eyebrows, human nose, human teeth, missing antennae, tiny disconnected claws, malformed appendages, "
-        "duplicated limbs, extra claws, extra legs, asymmetrical broken geometry, melted shape, warped shell, "
-        "dark glossy toy-render background, missing sticker outline, messy outline, muddy texture, distorted face, "
-        "inconsistent eyes, obvious AI artifacts, text, watermark, logo"
+        "cartoon, CGI, 3D render, plastic fur, malformed paws, fused toes, extra legs, missing legs, duplicated limbs, "
+        "warped face, asymmetrical eyes, deformed muzzle, broken tail, melted fur, duplicate animal, broken perspective, "
+        "obvious AI artifacts, text, watermark, logo"
     ),
     width=1024,
     height=1024,
 )
 
+
+MASCOT_PREMIUM = MediaQualityProfile(
+    name="mascot_premium",
+    positive_constraints=(
+        "premium polished cute 3D character render matching the user's accepted mascot benchmark quality, "
+        "EXACTLY ONE main character unless requested otherwise, species-correct but appealing rounded proportions, "
+        "clean coherent limbs/ears/paws/tail or other species appendages, expressive eyes and friendly readable face, "
+        "tactile detailed materials with soft organic surface variation rather than cheap plastic, "
+        "clean silhouette, polished studio-quality lighting, balanced composition, premium animation-film character quality, "
+        "production-ready final asset"
+    ),
+    negative_constraints=(
+        "multiple characters, duplicate character, repeated subject, crowd, duplicated body, malformed appendages, "
+        "extra legs, missing legs, fused paws, detached ears, duplicated tail, broken joints, melted shape, warped body, "
+        "cheap shiny plastic toy material, flat muddy texture, distorted face, inconsistent eyes, human anatomy on an animal, "
+        "obvious AI artifacts, text, watermark, logo"
+    ),
+    width=1024,
+    height=1024,
+)
 
 GENERAL_PREMIUM = MediaQualityProfile(
     name="general_premium",
@@ -107,25 +122,40 @@ HUMAN_IMAGE_MODEL = ImageModelConfig(
 )
 
 
+ANIMAL_IMAGE_MODEL = ImageModelConfig(
+    model="SG161222/RealVisXL_V4.0",
+    inference_steps=32,
+    guidance_scale=5.0,
+    scheduler="dpm_karras",
+    quality_good_text=(
+        "premium photorealistic professional animal photograph, species-correct anatomy, realistic eyes muzzle ears paws legs and tail, "
+        "natural fur texture, physically plausible pose, clean background geometry, natural photographic lighting and depth, crisp detail"
+    ),
+    quality_bad_texts=(
+        "bad AI animal with malformed paws, extra or missing legs, duplicated limbs, fused toes or broken joints",
+        "bad AI animal with distorted eyes, muzzle, ears or tail, melted fur, plastic CGI texture or impossible anatomy",
+        "bad AI photograph with duplicate subject, warped background, broken perspective, text watermark or obvious artifacts",
+    ),
+)
+
+
 MASCOT_IMAGE_MODEL = ImageModelConfig(
     model="playgroundai/playground-v2.5-1024px-aesthetic",
     inference_steps=40,
     guidance_scale=3.0,
     scheduler="edm_dpm",
     quality_good_text=(
-        "premium polished cute 3D crab sticker asset matching a high-end character benchmark, one squat low wide crab, "
-        "two large rounded frontal claws, short antennae, organic bumpy red-orange shell, cream underside and claw tips, "
-        "crisp white cutout outline, broad green lily pad with water droplets, expressive integrated face, "
-        "soft studio lighting, tactile detailed materials, production-ready character asset"
+        "premium polished cute 3D character render, exactly one subject, species-correct rounded anatomy, coherent limbs paws ears and tail, "
+        "expressive clean eyes and face, tactile detailed fur or surface materials, soft studio lighting, clean silhouette, "
+        "high-end animation-film mascot quality, production-ready character asset"
     ),
     quality_bad_texts=(
-        "bad mascot image with multiple repeated characters, duplicated whole subject, crowd of copies or extra body parts",
-        "bad 3D crab with tall spherical balloon body, thin raised scissor claws, spidery legs, missing antennae or disconnected appendages",
-        "bad glossy plastic toy crab with human eyebrows nose or teeth, dark toy-render background, missing white sticker outline",
-        "bad mascot asset with melted shell, distorted eyes or mouth, messy silhouette, muddy materials and obvious AI artifacts",
+        "bad mascot image with repeated characters, duplicated whole subject, crowd of copies or extra body parts",
+        "bad 3D animal with malformed paws, extra or missing legs, broken joints, detached ears, duplicated tail or impossible anatomy",
+        "bad glossy plastic toy character with distorted face, inconsistent eyes, flat muddy texture or cheap render look",
+        "bad mascot asset with melted geometry, messy silhouette, warped body and obvious AI artifacts",
     ),
 )
-
 
 GENERAL_IMAGE_MODEL = ImageModelConfig(
     model="playgroundai/playground-v2.5-1024px-aesthetic",
@@ -147,6 +177,8 @@ def image_model_config(profile: MediaQualityProfile | QualityProfileName) -> Ima
     name = profile.name if isinstance(profile, MediaQualityProfile) else profile
     if name == HUMAN_PHOTO_PREMIUM.name:
         return HUMAN_IMAGE_MODEL
+    if name == ANIMAL_PHOTO_PREMIUM.name:
+        return ANIMAL_IMAGE_MODEL
     if name == MASCOT_PREMIUM.name:
         return MASCOT_IMAGE_MODEL
     return GENERAL_IMAGE_MODEL
@@ -253,7 +285,14 @@ class MediaCommandPlanner:
         text = command.casefold()
         mascot_terms = (
             "mascot", "sticker", "cute 3d", "3d cute", "chibi", "hoạt hình 3d",
-            "nhân vật dễ thương", "con cua", "crab mascot"
+            "nhân vật dễ thương", "3d dễ thương", "3d cute"
+        )
+        animal_terms = (
+            "chó", "cún", "mèo", "thú cưng", "động vật", "dog", "puppy", "cat", "kitten", "animal", "pet",
+            "golden retriever", "corgi", "shiba"
+        )
+        realistic_terms = (
+            "thật", "chân thực", "ảnh chụp", "photorealistic", "realistic", "photo", "photograph"
         )
         human_terms = (
             "người", "cô gái", "phụ nữ", "đàn ông", "chàng trai", "cô ấy", "anh ấy",
@@ -261,6 +300,8 @@ class MediaCommandPlanner:
         )
         if any(term in text for term in mascot_terms):
             return MASCOT_PREMIUM
+        if any(term in text for term in animal_terms) and any(term in text for term in realistic_terms):
+            return ANIMAL_PHOTO_PREMIUM
         if any(term in text for term in human_terms):
             return HUMAN_PHOTO_PREMIUM
         return GENERAL_PREMIUM
@@ -362,18 +403,29 @@ def benchmark_manifest() -> dict:
                     "8e38371165a9c1017a1b56a414061f827ff11133cbe23231b7ab5aa800ffe1e9",
                 ],
             },
+            ANIMAL_PHOTO_PREMIUM.name: {
+                "must_pass": [
+                    "premium photorealistic animal-photo finish comparable to professional pet photography",
+                    "species-correct head, muzzle, ears, eyes, torso, legs, paws and tail",
+                    "natural realistic fur texture and color with no CGI/plastic appearance",
+                    "physically plausible pose, weight-bearing and ground contact",
+                    "clean coherent background and perspective with natural photographic depth",
+                    "no extra/missing/fused limbs or paws, warped face, duplicate subject or obvious AI artifacts",
+                    "production-ready overall appearance",
+                ],
+                "known_rejected_sha256": [],
+            },
             MASCOT_PREMIUM.name: {
                 "must_pass": [
-                    "match the user's accepted cute 3D crab benchmark visual language, not merely generic 3D quality",
-                    "squat low wide crab silhouette resting naturally on a broad green lily pad; NOT a tall spherical balloon body",
-                    "two large rounded frontal claws integrated close to the body; NOT thin raised scissor-like claws",
-                    "coherent crab legs and two short antennae; no duplicated, missing, detached or implausibly attached appendages",
-                    "organic bumpy red-orange shell surface with soft cream underside/claw tips; NOT shiny plastic-toy material",
-                    "cute face integrated into crab anatomy with expressive eyes/mouth; no human-like eyebrows, nose or teeth unless requested",
-                    "clean sticker/cutout presentation with a crisp white outline around the crab and lily pad, black or transparent-style background",
-                    "broad green lily pad with clean shape and visible water droplets when appropriate",
-                    "soft polished studio-quality 3D lighting and materials without dark glossy toy-render look",
-                    "production-ready overall appearance at the same quality bar as the supplied sleepy/joyful crab references",
+                    "match the user's accepted premium cute 3D mascot quality bar, not merely generic 3D technical correctness",
+                    "species-correct appealing silhouette and proportions with coherent appendages",
+                    "clean expressive eyes and face integrated naturally into the animal/character anatomy",
+                    "detailed tactile fur/shell/skin/material surface; NOT cheap shiny plastic-toy material",
+                    "clean paws/feet/legs/ears/tail or equivalent appendages with no duplication, fusion or detachment",
+                    "soft polished studio-quality 3D lighting with strong depth and readable form",
+                    "clean silhouette and background separation suitable for a finished character asset",
+                    "no melted geometry, duplicate parts, malformed anatomy, muddy textures or obvious AI artifacts",
+                    "production-ready overall appearance at the same quality bar as the supplied 3D mascot references",
                 ],
                 "known_rejected_sha256": [
                     "2525bafcc74e14444cb64e9c355a882d280417c712a23d1eaadd126aa3c28034",
