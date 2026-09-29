@@ -295,7 +295,7 @@ class KaggleImageProvider:
                         return ""
                     cleaned = raw
                     if cleaned.casefold().startswith("json"):
-                        cleaned = cleaned[4:].lstrip("\n :")
+                        cleaned = cleaned[4:].lstrip("\\n :")
                     first_brace = cleaned.find("{{")
                     last_brace = cleaned.rfind("}}")
                     candidates = [cleaned]
@@ -344,11 +344,11 @@ class KaggleImageProvider:
                     planner_model.eval()
                     model_ready = time.perf_counter()
                     instruction = (
-                        "MEDIA_COMMAND_COMPILE\n"
+                        "MEDIA_COMMAND_COMPILE\\n"
                         "Translate the USER_COMMAND into ONE concise ENGLISH still-image description. "
                         "Preserve subject count, species/person/object, action, location, camera/framing, lighting, "
                         "and visual style. Do not invent alternatives. Return exactly one line: "
-                        "PROMPT: <English image description>\nUSER_COMMAND: "
+                        "PROMPT: <English image description>\\nUSER_COMMAND: "
                         + CONFIG["inline_planner_raw_command"]
                     )
                     messages = [{{"role": "user", "content": instruction}}]
