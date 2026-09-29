@@ -134,6 +134,7 @@ def main() -> int:
             visual_quality_margin_threshold=float(os.environ.get("MEDIA_VISUAL_QUALITY_MARGIN_THRESHOLD", "0.015")),
             enforce_visual_quality_margin=False,
             enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
+            enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
             quality_good_text=config.quality_good_text,
             quality_bad_texts=config.quality_bad_texts,
         )
@@ -235,6 +236,7 @@ def main() -> int:
         "failed_count": sum(1 for item in statuses.values() if not item.get("verified")),
         "brain_model": os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
         "clip_precheck": os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
+        "cpu_offload": os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
         "statuses": statuses,
     }
     (output / "batch-status.json").write_text(
