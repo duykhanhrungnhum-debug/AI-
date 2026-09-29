@@ -1,1 +1,1 @@
-buffalo-image-exam-v4-one-worker-semantic-unified
+buffalo-standard-final-v2-semantic-resilient
