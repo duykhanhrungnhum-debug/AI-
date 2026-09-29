@@ -1,1 +1,1 @@
-natural-dog-photo-v5-fast-planner-xet-9of10
+natural-dog-photo-v6-single-job-pipeline-9of10
