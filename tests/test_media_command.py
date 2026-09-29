@@ -218,3 +218,18 @@ def test_benchmark_manifest_encodes_user_rejected_current_candidates_and_3d_styl
     assert any("NOT a tall spherical balloon body" in item for item in mascot["must_pass"])
     assert any("crisp white outline" in item for item in mascot["must_pass"])
     assert any("NOT shiny plastic-toy material" in item for item in mascot["must_pass"])
+
+
+def test_mascot_generation_profile_matches_user_3d_benchmark_semantics():
+    plan = MediaCommandPlanner().plan("Tạo mascot con cua 3D dễ thương")
+    cfg = image_model_config(MASCOT_PREMIUM)
+
+    assert "squat low wide body" in plan.prompt
+    assert "large rounded frontal claws" in plan.prompt
+    assert "short antennae" in plan.prompt
+    assert "white sticker/cutout outline" in plan.prompt
+    assert "tall spherical balloon body" in plan.negative_prompt
+    assert "shiny plastic toy body" in plan.negative_prompt
+    assert "human eyebrows" in plan.negative_prompt
+    assert cfg.inference_steps == 40
+    assert "crisp white cutout outline" in cfg.quality_good_text
