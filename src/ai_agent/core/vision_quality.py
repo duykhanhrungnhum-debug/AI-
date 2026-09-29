@@ -466,7 +466,7 @@ class KaggleVisionQualityVerifier:
             '        "For human_photo_premium, reject any fused/missing/extra fingers, unnatural wrists/elbows/shoulders, distorted face, "',
             '        "plastic or melted clothing/skin, warped architecture or props, or obvious AI artifacts. "',
             '        "For animal_photo_premium, camera naturalism is a hard requirement: reject HDR-like tone mapping, excessive sharpening or microcontrast, "',
-            '        "oversaturated color, airbrushed or uniformly perfect fur, artificial glow, fake bokeh, advertising-style retouch, synthetic polish, or any image that looks Photoshopped rather than naturally camera-captured. "',
+            '        "oversaturated color, airbrushed or uniformly perfect fur, artificial glow, fake bokeh, advertising-style retouch, synthetic polish, or any image that looks Photoshopped rather than naturally camera-captured. Natural camera softness and small imperfections are desirable. "',
             '        "For mascot_premium, reject crude or generic 3D, malformed/duplicated claws or legs, melted shell/body, inconsistent eyes, "',
             '        "weak expression, muddy materials, flat lighting, dirty silhouette/cutout edges, or anything below polished studio asset quality. "',
             '        "Treat QUALITY RUBRIC as the user-approved benchmark target, not optional advice. Generic technical beauty is insufficient if benchmark shape/material/style differs. "',
