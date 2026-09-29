@@ -476,3 +476,6 @@ def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
     assert '"no_text_logo"' in source
     assert "dedicated watermark/logo/text detector" in source.casefold()
     assert '"branding_gate"' in source
+    assert "photorealistic livestock render" in source
+    assert '{"clean":false,"findings":["bottom-right logo or text"]}' not in source
+    assert "no example finding is provided" in source
