@@ -44,15 +44,18 @@ HUMAN_PHOTO_PREMIUM = MediaQualityProfile(
 ANIMAL_PHOTO_PREMIUM = MediaQualityProfile(
     name="animal_photo_premium",
     positive_constraints=(
-        "premium photorealistic animal photograph, exactly one main animal subject unless requested otherwise, "
-        "species-correct anatomy and proportions, natural eyes nose mouth ears paws legs and tail, realistic fur/skin/feather texture, "
-        "physically plausible pose and contact with the ground, natural daylight or professional photographic lighting, "
-        "clean coherent background geometry, shallow depth of field when appropriate, crisp production-ready detail"
+        "natural unretouched photorealistic animal photograph, exactly one main animal subject unless requested otherwise, "
+        "species-correct anatomy and proportions, natural eyes nose mouth ears paws legs and tail, realistic irregular fur texture, "
+        "physically plausible pose and contact with the ground, ordinary natural daylight, believable camera exposure and lens rendering, "
+        "moderate contrast and saturation, realistic depth of field, subtle microcontrast, small natural imperfections, "
+        "clean coherent background geometry, authentic camera-captured look rather than polished advertising retouch"
     ),
     negative_constraints=(
-        "cartoon, CGI, 3D render, plastic fur, malformed paws, fused toes, extra legs, missing legs, duplicated limbs, "
-        "warped face, asymmetrical eyes, deformed muzzle, broken tail, melted fur, duplicate animal, broken perspective, "
-        "obvious AI artifacts, text, watermark, logo"
+        "cartoon, CGI, 3D render, plastic fur, airbrushed fur, beauty retouch, commercial advertising retouch, HDR look, "
+        "oversharpening, excessive microcontrast, excessive contrast, oversaturated colors, artificial glow, fake bokeh, "
+        "perfectly smoothed surfaces, malformed paws, fused toes, extra legs, missing legs, duplicated limbs, warped face, "
+        "asymmetrical eyes, deformed muzzle, broken tail, melted fur, duplicate animal, broken perspective, obvious AI artifacts, "
+        "text, watermark, logo"
     ),
     width=1024,
     height=1024,
@@ -124,16 +127,19 @@ HUMAN_IMAGE_MODEL = ImageModelConfig(
 
 ANIMAL_IMAGE_MODEL = ImageModelConfig(
     model="SG161222/RealVisXL_V4.0",
-    inference_steps=32,
-    guidance_scale=5.0,
+    inference_steps=28,
+    guidance_scale=4.0,
     scheduler="dpm_karras",
     quality_good_text=(
-        "premium photorealistic professional animal photograph, species-correct anatomy, realistic eyes muzzle ears paws legs and tail, "
-        "natural fur texture, physically plausible pose, clean background geometry, natural photographic lighting and depth, crisp detail"
+        "natural unretouched camera photograph of an animal, species-correct anatomy, realistic eyes muzzle ears paws legs and tail, "
+        "irregular natural fur texture, physically plausible pose, ordinary daylight, believable lens rendering and exposure, "
+        "moderate contrast and saturation, subtle realistic detail, authentic non-commercial pet-photo appearance"
     ),
     quality_bad_texts=(
         "bad AI animal with malformed paws, extra or missing legs, duplicated limbs, fused toes or broken joints",
         "bad AI animal with distorted eyes, muzzle, ears or tail, melted fur, plastic CGI texture or impossible anatomy",
+        "overprocessed pet photo with HDR contrast, oversharpening, excessive saturation, airbrushed fur, artificial glow or fake bokeh",
+        "commercial advertising retouch with unnaturally perfect fur, exaggerated microcontrast, polished Photoshop look or synthetic depth",
         "bad AI photograph with duplicate subject, warped background, broken perspective, text watermark or obvious artifacts",
     ),
 )
@@ -498,7 +504,7 @@ def benchmark_manifest() -> dict:
     substituting a different benchmark set.
     """
     return {
-        "version": 3,
+        "version": 4,
         "reference_set": [
             {
                 "profile": HUMAN_PHOTO_PREMIUM.name,
@@ -528,6 +534,13 @@ def benchmark_manifest() -> dict:
                 "height": 1536,
                 "role": "joyful 3D crab mascot quality reference",
             },
+            {
+                "profile": ANIMAL_PHOTO_PREMIUM.name,
+                "sha256": "792db3d7f02687715c4893fe0b87a1e189b1185c7ea996ba9d4defe0dc844c74",
+                "width": 1536,
+                "height": 1536,
+                "role": "natural unretouched outdoor dog photograph realism reference",
+            },
         ],
         "profiles": {
             HUMAN_PHOTO_PREMIUM.name: {
@@ -548,15 +561,20 @@ def benchmark_manifest() -> dict:
             },
             ANIMAL_PHOTO_PREMIUM.name: {
                 "must_pass": [
-                    "premium photorealistic animal-photo finish comparable to professional pet photography",
+                    "natural unretouched camera-photo realism comparable to the user's accepted outdoor dog reference",
+                    "must look captured by a real camera rather than digitally painted, HDR-processed, beauty-retouched or advertising-polished",
                     "species-correct head, muzzle, ears, eyes, torso, legs, paws and tail",
-                    "natural realistic fur texture and color with no CGI/plastic appearance",
+                    "natural irregular fur texture with subtle variation; no airbrushed, plastic, waxy or uniformly perfect fur",
+                    "ordinary believable daylight and exposure with moderate contrast, saturation and microcontrast",
+                    "realistic lens rendering and depth of field; no artificial glow, fake bokeh or excessive edge sharpening",
                     "physically plausible pose, weight-bearing and ground contact",
                     "clean coherent background and perspective with natural photographic depth",
                     "no extra/missing/fused limbs or paws, warped face, duplicate subject or obvious AI artifacts",
-                    "production-ready overall appearance",
+                    "small natural imperfections are acceptable and preferred over overprocessed perfection",
                 ],
-                "known_rejected_sha256": [],
+                "known_rejected_sha256": [
+                    "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589",
+                ],
             },
             MASCOT_PREMIUM.name: {
                 "must_pass": [

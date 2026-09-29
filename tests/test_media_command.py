@@ -87,14 +87,15 @@ def test_benchmark_manifest_pins_exact_user_reference_set():
     manifest = benchmark_manifest()
     refs = manifest["reference_set"]
 
-    assert manifest["version"] == 3
-    assert len(refs) == 4
-    assert {item["profile"] for item in refs} == {"human_photo_premium", "mascot_premium"}
+    assert manifest["version"] == 4
+    assert len(refs) == 5
+    assert {item["profile"] for item in refs} == {"human_photo_premium", "animal_photo_premium", "mascot_premium"}
     assert {item["sha256"] for item in refs} == {
         "4306fb1186c907ca568afc4953936b4bb1363373b0edeb78d21f6b9de3a98119",
         "2bae56e56de0cf49d0423884e3d12f6d562cef66520560bd6093970f14d80fdb",
         "eaa4e7f5f1bae39378d87a0e180dd223647ed2ac988b56c76521e3fac807ae1b",
         "00c12e5cb4bd07b164a66cd58b06591f3455d53c6175f23c29aabc31e9fc2ad8",
+        "792db3d7f02687715c4893fe0b87a1e189b1185c7ea996ba9d4defe0dc844c74",
     }
 
 
@@ -299,3 +300,22 @@ def test_plan_many_uses_one_batch_model_call_for_multiple_commands():
     assert plans[1].profile == MASCOT_PREMIUM
     assert plans[0].prompt.startswith("one photorealistic golden retriever")
     assert plans[1].prompt.startswith("one cute 3D golden retriever")
+
+
+def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
+    plan = MediaCommandPlanner().plan(
+        "Tạo ảnh một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời"
+    )
+    cfg = image_model_config(ANIMAL_PHOTO_PREMIUM)
+    manifest = benchmark_manifest()["profiles"]["animal_photo_premium"]
+
+    assert "natural unretouched photorealistic animal photograph" in plan.prompt
+    assert "HDR look" in plan.negative_prompt
+    assert "oversharpening" in plan.negative_prompt
+    assert "advertising retouch" in plan.negative_prompt
+    assert cfg.inference_steps == 28
+    assert cfg.guidance_scale == 4.0
+    assert any("HDR contrast" in item for item in cfg.quality_bad_texts)
+    assert any("Photoshop look" in item for item in cfg.quality_bad_texts)
+    assert "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589" in manifest["known_rejected_sha256"]
+    assert any("real camera" in item for item in manifest["must_pass"])
