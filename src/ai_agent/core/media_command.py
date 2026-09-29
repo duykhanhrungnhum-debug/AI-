@@ -9,7 +9,9 @@ from .model import ModelProvider
 
 
 MediaMode = Literal["image", "video"]
-QualityProfileName = Literal["human_photo_premium", "mascot_premium", "general_premium"]\n\nMEDIA_COMMAND_BRAIN_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+QualityProfileName = Literal["human_photo_premium", "mascot_premium", "general_premium"]
+
+MEDIA_COMMAND_BRAIN_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 
 
 @dataclass(frozen=True)
