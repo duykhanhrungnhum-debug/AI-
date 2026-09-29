@@ -14,7 +14,7 @@ from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MediaCommandPlanner, benchmark_manifest
-from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest
+from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
 
 
 def _slug(value: str) -> str:
@@ -73,7 +73,11 @@ def main() -> int:
         enable_thinking=False,
     )
     planner = MediaCommandPlanner(language_model)
-    timings: dict[str, float | dict[str, float]] = {"image_generation": {}}
+    timings: dict[str, float | dict[str, float]] = {
+        "image_generation": {},
+        "image_worker": {},
+        "inline_vlm_worker": {},
+    }
     planning_started = perf_counter()
     try:
         plans = planner.plan_many(tuple(command for _, command in items))
@@ -94,6 +98,7 @@ def main() -> int:
     timings["planning"] = round(perf_counter() - planning_started, 3)
 
     generated: dict[str, tuple[object, object, dict]] = {}
+    inline_reviews: dict[str, tuple[VisionQualityRequest, object]] = {}
     statuses: dict[str, dict] = {}
 
     for (item_id, command), plan in zip(items, plans, strict=True):
@@ -141,6 +146,12 @@ def main() -> int:
             enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
             quality_good_text=config.quality_good_text,
             quality_bad_texts=config.quality_bad_texts,
+            enable_inline_vlm=True,
+            inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
+            inline_vlm_profile=plan.profile.name,
+            inline_vlm_rubric=tuple(benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]),
+            inline_vlm_expected_subject_count=1,
+            inline_vlm_min_score=9.0,
         )
         request = ImageGenerationRequest(
             prompt=plan.prompt,
@@ -162,6 +173,12 @@ def main() -> int:
                 pass
             continue
         timings["image_generation"][item_id] = round(perf_counter() - generation_started, 3)
+        report_timings = provider.last_report.get("timings")
+        if isinstance(report_timings, dict):
+            timings["image_worker"][item_id] = report_timings
+        inline_report = provider.last_report.get("inline_vlm")
+        if isinstance(inline_report, dict) and isinstance(inline_report.get("timings"), dict):
+            timings["inline_vlm_worker"][item_id] = inline_report["timings"]
 
         (item_dir / "candidate.png").write_bytes(artifact.data)
         benchmark = benchmark_manifest()["profiles"][plan.profile.name]
@@ -175,39 +192,94 @@ def main() -> int:
             continue
 
         generated[item_id] = (plan, artifact, plan_data)
-
-    review_requests = tuple(
-        VisionQualityRequest(
+        inline_payload = provider.last_report.get("inline_vlm")
+        if not isinstance(inline_payload, dict):
+            statuses[item_id] = {
+                "verified": False,
+                "stage": "inline_vlm_quality",
+                "error": "inline VLM report missing",
+            }
+            continue
+        inline_text = str(inline_payload.get("review_text") or "").strip()
+        inline_model = str(inline_payload.get("model") or "").strip()
+        if not inline_text or inline_model != "Qwen/Qwen3-VL-2B-Instruct":
+            statuses[item_id] = {
+                "verified": False,
+                "stage": "inline_vlm_quality",
+                "error": "inline VLM report invalid",
+            }
+            continue
+        review_request = VisionQualityRequest(
             item_id=item_id,
             image=artifact.data,
             prompt=plan.prompt,
             profile=plan.profile.name,
-            rubric=tuple(benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]),
+            rubric=tuple(benchmark["must_pass"]),
             expected_subject_count=1,
         )
-        for item_id, (plan, artifact, _) in generated.items()
-    )
+        inline_evidence = (
+            f"kaggle_kernel:{provider.kernel_slug}",
+            f"gpu:{provider.last_report.get('gpu_name')}",
+            "hybrid_fast_model:Qwen/Qwen3-VL-2B-Instruct",
+            "hybrid_final_model:Qwen/Qwen3-VL-8B-Instruct",
+            "hybrid_clear_pass_score:9.00",
+            "hybrid_fast_reject_score:8.00",
+        )
+        inline_reviews[item_id] = (
+            review_request,
+            result_from_inline_review(
+                review_request,
+                inline_text,
+                model=inline_model,
+                evidence=inline_evidence,
+                min_quality_score=9.0,
+                min_prompt_match_score=9.0,
+            ),
+        )
 
     reviews = {}
-    if review_requests:
-        verifier = HybridVisionQualityVerifier(
-            worker=worker,
-            kernel_slug="ai-agent-premium-image-vlm-batch",
-            poll_interval=15,
-            max_poll_attempts=120,
-            min_quality_score=9.0,
-            min_prompt_match_score=9.0,
-            clear_pass_score=9.0,
-            fast_reject_score=8.0,
-        )
+    fallback_requests = []
+    verifier = HybridVisionQualityVerifier(
+        worker=worker,
+        kernel_slug="ai-agent-premium-image-vlm-batch",
+        poll_interval=15,
+        max_poll_attempts=120,
+        min_quality_score=9.0,
+        min_prompt_match_score=9.0,
+        clear_pass_score=9.0,
+        fast_reject_score=8.0,
+    )
+    for item_id, (request, inline_result) in inline_reviews.items():
+        if verifier._clear_fast_pass(inline_result):
+            reviews[item_id] = inline_result
+            continue
+        if verifier._obvious_fast_reject(request, inline_result):
+            reviews[item_id] = inline_result
+            continue
+        fallback_requests.append(request)
+
+    if fallback_requests:
         vlm_started = perf_counter()
-        batch_review = verifier.verify_many(review_requests)
-        timings["vlm_quality"] = round(perf_counter() - vlm_started, 3)
-        reviews = {item.item_id: item for item in batch_review.items}
+        final_verifier = verifier._make_verifier(
+            model=verifier.final_model,
+            suffix="final",
+        )
+        final_batch = final_verifier.verify_many(tuple(fallback_requests))
+        timings["vlm_quality_fallback"] = round(perf_counter() - vlm_started, 3)
+        for item in final_batch.items:
+            reviews[item.item_id] = item
 
     for item_id, (plan, artifact, plan_data) in generated.items():
         item_dir = output / item_id
-        review = reviews[item_id]
+        review = reviews.get(item_id)
+        if review is None:
+            if item_id not in statuses:
+                statuses[item_id] = {
+                    "verified": False,
+                    "stage": "vlm_quality",
+                    "error": "visual quality result missing",
+                }
+            continue
         review_payload = {
             "passed": review.passed,
             "quality_score": review.quality_score,

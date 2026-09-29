@@ -1,7 +1,7 @@
 """On-demand text-to-image generation on a self-controlled Kaggle GPU worker."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 import textwrap
@@ -29,6 +29,13 @@ class KaggleImageProvider:
     enforce_visual_quality_margin: bool = True
     enable_clip_precheck: bool = True
     enable_cpu_offload: bool = True
+    enable_inline_vlm: bool = False
+    inline_vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
+    inline_vlm_profile: str = ""
+    inline_vlm_rubric: tuple[str, ...] = ()
+    inline_vlm_expected_subject_count: int | None = 1
+    inline_vlm_min_score: float = 9.0
+    inline_vlm_attention_backend: str = "sdpa"
     quality_good_text: str = (
         "premium production-ready image, coherent geometry, crisp detail, professional composition and lighting, "
         "clean materials and textures, no obvious AI artifacts"
@@ -38,6 +45,7 @@ class KaggleImageProvider:
         "low quality blurry noisy unfinished image with melted details and obvious AI artifacts",
     )
     provider: str = "kaggle-gpu-local-model"
+    last_report: dict = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.model.strip():
@@ -58,6 +66,19 @@ class KaggleImageProvider:
             raise ValueError("prompt_alignment_threshold must be in [-1, 1]")
         if not -2.0 <= self.visual_quality_margin_threshold <= 2.0:
             raise ValueError("visual_quality_margin_threshold must be in [-2, 2]")
+        if self.enable_inline_vlm:
+            if not self.inline_vlm_model.strip():
+                raise ValueError("inline_vlm_model is required")
+            if not self.inline_vlm_profile.strip():
+                raise ValueError("inline_vlm_profile is required")
+            if not self.inline_vlm_rubric or any(not item.strip() for item in self.inline_vlm_rubric):
+                raise ValueError("inline_vlm_rubric must contain non-empty criteria")
+            if self.inline_vlm_expected_subject_count is not None and self.inline_vlm_expected_subject_count <= 0:
+                raise ValueError("inline_vlm_expected_subject_count must be positive")
+            if not 0 <= self.inline_vlm_min_score <= 10:
+                raise ValueError("inline_vlm_min_score must be in [0, 10]")
+            if self.inline_vlm_attention_backend not in {"sdpa", "eager"}:
+                raise ValueError("inline_vlm_attention_backend must be sdpa or eager")
 
     def generate(self, request: ImageGenerationRequest) -> ImageArtifact:
         assert_core_invariants()
@@ -95,6 +116,7 @@ class KaggleImageProvider:
             raise ValueError("Kaggle image report is invalid JSON") from exc
         if not isinstance(report, dict):
             raise ValueError("Kaggle image report must be a JSON object")
+        self.last_report = report
 
         digest = sha256(image).hexdigest()
         if report.get("image_sha256") != digest:
@@ -150,6 +172,8 @@ class KaggleImageProvider:
                 *((f"visual_defect_score:{visual_defect_score:.6f}",) if visual_defect_score is not None else ()),
                 f"clip_precheck:{self.enable_clip_precheck}",
                 f"cpu_offload:{self.enable_cpu_offload}",
+                f"inline_vlm:{self.enable_inline_vlm}",
+                *((f"inline_vlm_model:{self.inline_vlm_model}",) if self.enable_inline_vlm else ()),
                 f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin and self.enable_clip_precheck}",
                 f"gpu:{report.get('gpu_name')}",
                 f"model:{self.model}",
@@ -174,6 +198,13 @@ class KaggleImageProvider:
             "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
             "enable_clip_precheck": self.enable_clip_precheck,
             "enable_cpu_offload": self.enable_cpu_offload,
+            "enable_inline_vlm": self.enable_inline_vlm,
+            "inline_vlm_model": self.inline_vlm_model,
+            "inline_vlm_profile": self.inline_vlm_profile,
+            "inline_vlm_rubric": list(self.inline_vlm_rubric),
+            "inline_vlm_expected_subject_count": self.inline_vlm_expected_subject_count,
+            "inline_vlm_min_score": self.inline_vlm_min_score,
+            "inline_vlm_attention_backend": self.inline_vlm_attention_backend,
         }
         config_json = json.dumps(config, ensure_ascii=False)
         return textwrap.dedent(
@@ -181,9 +212,11 @@ class KaggleImageProvider:
             from __future__ import annotations
 
             from hashlib import sha256
+            import gc
             import json
             import subprocess
             import sys
+            import time
             from pathlib import Path
 
             CONFIG = json.loads({config_json!r})
@@ -192,22 +225,38 @@ class KaggleImageProvider:
                 import torch
                 import torch.nn.functional as F
                 from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
-                from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
+                from transformers import (
+                    AutoProcessor,
+                    CLIPImageProcessor,
+                    CLIPTokenizer,
+                    CLIPVisionModelWithProjection,
+                    CLIPTextModelWithProjection,
+                    Qwen3VLForConditionalGeneration,
+                )
             except ImportError:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", "--quiet",
-                    "diffusers<1", "transformers<5", "accelerate<2", "safetensors",
+                    "diffusers<1", "transformers>=4.57,<5", "accelerate<2", "safetensors",
                 ])
                 import torch
                 import torch.nn.functional as F
                 from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
-                from transformers import CLIPImageProcessor, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPTextModelWithProjection
+                from transformers import (
+                    AutoProcessor,
+                    CLIPImageProcessor,
+                    CLIPTokenizer,
+                    CLIPVisionModelWithProjection,
+                    CLIPTextModelWithProjection,
+                    Qwen3VLForConditionalGeneration,
+                )
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
 
+            worker_started = time.perf_counter()
             gpu_name = torch.cuda.get_device_name(0)
             generator = torch.Generator(device="cpu").manual_seed(int(CONFIG["seed"]))
+            image_model_load_started = time.perf_counter()
 
             pipe = AutoPipelineForText2Image.from_pretrained(
                 CONFIG["model"],
@@ -225,6 +274,7 @@ class KaggleImageProvider:
             else:
                 pipe = pipe.to("cuda")
             pipe.enable_vae_slicing()
+            image_model_ready = time.perf_counter()
 
             clip_image_processor = None
             clip_tokenizer = None
@@ -288,6 +338,104 @@ class KaggleImageProvider:
             image.save(output, format="PNG")
             data = output.read_bytes()
             digest = sha256(data).hexdigest()
+            image_ready = time.perf_counter()
+
+            inline_vlm = None
+            if CONFIG["enable_inline_vlm"]:
+                # Release the diffusion stack before loading the small VLM in the same GPU session.
+                try:
+                    del result
+                except Exception:
+                    pass
+                try:
+                    del pipe
+                except Exception:
+                    pass
+                clip_vision = None
+                clip_text = None
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                qa_model_load_started = time.perf_counter()
+                qa_model = Qwen3VLForConditionalGeneration.from_pretrained(
+                    CONFIG["inline_vlm_model"],
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    low_cpu_mem_usage=True,
+                    attn_implementation=CONFIG["inline_vlm_attention_backend"],
+                )
+                qa_processor = AutoProcessor.from_pretrained(CONFIG["inline_vlm_model"])
+                qa_model.eval()
+                qa_model_ready = time.perf_counter()
+
+                review_image = image.copy().convert("RGB")
+                review_image.thumbnail((1024, 1024))
+                review_width, review_height = review_image.size
+                views = [
+                    review_image,
+                    review_image.crop((0, 0, review_width, max(1, review_height // 2))),
+                    review_image.crop((0, review_height // 2, review_width, review_height)),
+                ]
+                rubric = "\\n".join("- " + item for item in CONFIG["inline_vlm_rubric"])
+                instruction = (
+                    "You are the strict final visual-quality inspector for a production image pipeline. "
+                    "Judge only what is actually visible. PROFILE: " + CONFIG["inline_vlm_profile"]
+                    + "; ORIGINAL PROMPT: " + CONFIG["prompt"]
+                    + "; EXPECTED MAIN SUBJECT COUNT: " + str(CONFIG["inline_vlm_expected_subject_count"])
+                    + "; QUALITY RUBRIC: " + rubric + ". "
+                    "You receive full frame, upper crop and lower crop of the SAME image. "
+                    "Inspect subject count, anatomy/geometry, limbs/paws/hands, face/eyes, object connections, "
+                    "materials, lighting, perspective, texture continuity, background coherence and AI artifacts. "
+                    "For animal photos, natural camera realism and correct separated legs/paws/joints/ground contact are hard requirements; "
+                    "reject fused, missing, extra or ambiguous limbs, impossible gait, fake HDR, oversharpening, plastic fur or synthetic polish. "
+                    "Score 0-10 for q=overall quality, m=prompt match, s=structure/anatomy, d=detail, a=aesthetic, "
+                    "c=composition and b=benchmark match. Set p=true ONLY if every score is at least "
+                    + str(CONFIG["inline_vlm_min_score"])
+                    + ", subject count is correct, and x/f/u are empty. If uncertain about a critical region, p=false. "
+                    "Return ONLY compact JSON: "
+                    + '{{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}}'
+                )
+                content = [{{"type": "image", "image": view}} for view in views]
+                content.append({{"type": "text", "text": instruction}})
+                messages = [{{"role": "user", "content": content}}]
+                qa_inputs = qa_processor.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                ).to(qa_model.device)
+                qa_review_started = time.perf_counter()
+                with torch.inference_mode():
+                    qa_generated = qa_model.generate(
+                        **qa_inputs,
+                        max_new_tokens=180,
+                        do_sample=False,
+                        use_cache=True,
+                        repetition_penalty=1.03,
+                    )
+                qa_generated_trimmed = [
+                    output_ids[len(input_ids):]
+                    for input_ids, output_ids in zip(qa_inputs.input_ids, qa_generated)
+                ]
+                qa_review_text = qa_processor.batch_decode(
+                    qa_generated_trimmed,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )[0].strip()
+                if not qa_review_text:
+                    raise RuntimeError("inline vision-quality model returned empty review")
+                qa_finished = time.perf_counter()
+                inline_vlm = {{
+                    "model": CONFIG["inline_vlm_model"],
+                    "attention_backend": CONFIG["inline_vlm_attention_backend"],
+                    "review_text": qa_review_text,
+                    "timings": {{
+                        "model_load_seconds": round(qa_model_ready - qa_model_load_started, 3),
+                        "review_seconds": round(qa_finished - qa_review_started, 3),
+                        "total_seconds": round(qa_finished - qa_model_load_started, 3),
+                    }},
+                }}
 
             report = {{
                 "image_sha256": digest,
@@ -302,6 +450,12 @@ class KaggleImageProvider:
                 "visual_defect_score": visual_defect_score,
                 "visual_quality_margin": visual_quality_margin,
                 "clip_precheck": bool(CONFIG["enable_clip_precheck"]),
+                "inline_vlm": inline_vlm,
+                "timings": {{
+                    "image_model_load_seconds": round(image_model_ready - image_model_load_started, 3),
+                    "image_generation_seconds": round(image_ready - image_model_ready, 3),
+                    "worker_total_seconds": round(time.perf_counter() - worker_started, 3),
+                }},
             }}
             Path("/kaggle/working/image_report.json").write_text(
                 json.dumps(report, indent=2) + "\\n",

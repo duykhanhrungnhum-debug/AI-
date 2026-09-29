@@ -592,6 +592,122 @@ class KaggleVisionQualityVerifier:
         return "\n".join(lines) + "\n"
 
 
+def result_from_inline_review(
+    request: VisionQualityRequest,
+    review_text: str,
+    *,
+    model: str,
+    evidence: tuple[str, ...] = (),
+    min_quality_score: float = 9.0,
+    min_prompt_match_score: float = 9.0,
+) -> VisionQualityResult:
+    """Convert an inline compact VLM review into the same strict result contract."""
+    parsed = KaggleVisionQualityVerifier._parse_review(review_text)
+    defect_issues = tuple(dict.fromkeys((
+        *KaggleVisionQualityVerifier._string_tuple(parsed.get("critical_defects")),
+        *KaggleVisionQualityVerifier._string_tuple(parsed.get("benchmark_failures")),
+        *KaggleVisionQualityVerifier._string_tuple(parsed.get("uncertain_regions")),
+    )))
+    profile_config = benchmark_manifest().get("profiles", {}).get(request.profile, {})
+    user_rejected = (
+        sha256(request.image).hexdigest()
+        in set(profile_config.get("known_rejected_sha256", ()))
+    )
+
+    score = KaggleVisionQualityVerifier._score
+    quality_score = score(parsed.get("quality_score"))
+    prompt_match_score = score(parsed.get("prompt_match_score"))
+    structure_score = score(parsed.get("structure_score"))
+    detail_score = score(parsed.get("detail_score"))
+    aesthetic_score = score(parsed.get("aesthetic_score"))
+    composition_score = score(parsed.get("composition_score"))
+    benchmark_match_score = score(parsed.get("benchmark_match_score"))
+    major_issues = tuple(dict.fromkeys((
+        *KaggleVisionQualityVerifier._string_tuple(parsed.get("major_issues")),
+        *(f"inline defect hunter: {issue}" for issue in defect_issues),
+    )))
+    minor_issues = KaggleVisionQualityVerifier._string_tuple(parsed.get("minor_issues"))
+    try:
+        subject_count = int(parsed.get("subject_count"))
+    except (TypeError, ValueError):
+        subject_count = None
+
+    component_scores = (
+        structure_score,
+        detail_score,
+        aesthetic_score,
+        composition_score,
+        benchmark_match_score,
+    )
+    count_pass = (
+        request.expected_subject_count is None
+        or subject_count == request.expected_subject_count
+    )
+    vlm_pass = parsed.get("pass") is True
+    passed = (
+        vlm_pass
+        and quality_score >= min_quality_score
+        and prompt_match_score >= min_prompt_match_score
+        and all(value >= min_quality_score for value in component_scores)
+        and not defect_issues
+        and not user_rejected
+        and not major_issues
+        and count_pass
+    )
+
+    issues = list(major_issues)
+    if user_rejected:
+        issues.append("image exactly matches a user-rejected quality example")
+    for label, value, threshold in (
+        ("quality", quality_score, min_quality_score),
+        ("prompt_match", prompt_match_score, min_prompt_match_score),
+        ("structure", structure_score, min_quality_score),
+        ("detail", detail_score, min_quality_score),
+        ("aesthetic", aesthetic_score, min_quality_score),
+        ("composition", composition_score, min_quality_score),
+        ("benchmark_match", benchmark_match_score, min_quality_score),
+    ):
+        if value < threshold:
+            issues.append(f"VLM {label} score below threshold: {value:.2f} < {threshold:.2f}")
+    if not count_pass:
+        issues.append(
+            f"VLM subject count mismatch: expected {request.expected_subject_count}, got {subject_count}"
+        )
+    if not vlm_pass and not issues:
+        issues.append("VLM rejected image")
+
+    return VisionQualityResult(
+        item_id=request.item_id,
+        passed=passed,
+        quality_score=quality_score,
+        prompt_match_score=prompt_match_score,
+        structure_score=structure_score,
+        detail_score=detail_score,
+        aesthetic_score=aesthetic_score,
+        composition_score=composition_score,
+        benchmark_match_score=benchmark_match_score,
+        subject_count=subject_count,
+        major_issues=tuple(dict.fromkeys(issues)),
+        minor_issues=minor_issues,
+        review_text="INLINE_SCORER:\n" + review_text,
+        evidence=(
+            *evidence,
+            f"vlm_model:{model}",
+            f"image_sha256:{sha256(request.image).hexdigest()}",
+            f"quality_score:{quality_score:.2f}",
+            f"prompt_match_score:{prompt_match_score:.2f}",
+            f"structure_score:{structure_score:.2f}",
+            f"detail_score:{detail_score:.2f}",
+            f"aesthetic_score:{aesthetic_score:.2f}",
+            f"composition_score:{composition_score:.2f}",
+            f"benchmark_match_score:{benchmark_match_score:.2f}",
+            f"subject_count:{subject_count}",
+            f"profile:{request.profile}",
+            f"user_rejected_feedback:{user_rejected}",
+        ),
+    )
+
+
 @dataclass
 class HybridVisionQualityVerifier:
     """Use 2B for clear decisions and 8B only for genuinely borderline images."""

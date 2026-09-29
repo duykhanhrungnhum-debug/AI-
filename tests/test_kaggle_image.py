@@ -240,3 +240,46 @@ def test_image_worker_can_keep_pipeline_resident_on_gpu():
     assert '"enable_cpu_offload": false' in source.lower()
     assert 'if CONFIG["enable_cpu_offload"]:' in source
     assert 'pipe = pipe.to("cuda")' in source
+
+
+
+def test_inline_vlm_can_share_image_worker_gpu_session():
+    provider = KaggleImageProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        enable_clip_precheck=False,
+        enable_cpu_offload=False,
+        enable_inline_vlm=True,
+        inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
+        inline_vlm_profile="animal_photo_premium",
+        inline_vlm_rubric=("correct canine anatomy", "natural camera realism"),
+        inline_vlm_expected_subject_count=1,
+        inline_vlm_min_score=9.0,
+    )
+
+    source = provider._build_worker_source(
+        ImageGenerationRequest("one real dog", width=512, height=512, seed=42)
+    )
+
+    assert '"enable_inline_vlm": true' in source.lower()
+    assert "Qwen/Qwen3-VL-2B-Instruct" in source
+    assert "Qwen3VLForConditionalGeneration.from_pretrained" in source
+    assert "del pipe" in source
+    assert "torch.cuda.empty_cache()" in source
+    assert "inline vision-quality model returned empty review" in source
+
+
+def test_inline_vlm_requires_profile_and_rubric():
+    with pytest.raises(ValueError, match="inline_vlm_profile"):
+        KaggleImageProvider(
+            worker=FakeWorker(),
+            enable_inline_vlm=True,
+            inline_vlm_rubric=("quality",),
+        )
+
+    with pytest.raises(ValueError, match="inline_vlm_rubric"):
+        KaggleImageProvider(
+            worker=FakeWorker(),
+            enable_inline_vlm=True,
+            inline_vlm_profile="animal_photo_premium",
+        )

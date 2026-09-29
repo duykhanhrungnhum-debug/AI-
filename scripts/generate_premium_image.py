@@ -12,7 +12,7 @@ from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MediaCommandPlanner, benchmark_manifest
-from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest
+from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
 
 
 def main() -> int:
@@ -66,6 +66,12 @@ def main() -> int:
         quality_bad_texts=config.quality_bad_texts,
         enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
         enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
+        enable_inline_vlm=True,
+        inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
+        inline_vlm_profile=plan.profile.name,
+        inline_vlm_rubric=tuple(benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]),
+        inline_vlm_expected_subject_count=1,
+        inline_vlm_min_score=9.0,
     )
     seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
     request = ImageGenerationRequest(
@@ -136,6 +142,14 @@ def main() -> int:
         raise RuntimeError("generated image matches a user-rejected benchmark example")
 
     rubric = tuple(benchmark["must_pass"])
+    request_for_review = VisionQualityRequest(
+        item_id="premium-image",
+        image=artifact.data,
+        prompt=plan.prompt,
+        profile=plan.profile.name,
+        rubric=rubric,
+        expected_subject_count=1,
+    )
     vlm = HybridVisionQualityVerifier(
         worker=worker,
         kernel_slug="ai-agent-premium-image-vlm",
@@ -147,14 +161,36 @@ def main() -> int:
         fast_reject_score=8.0,
     )
     try:
-        visual_review = vlm.verify(VisionQualityRequest(
-            item_id="premium-image",
-            image=artifact.data,
-            prompt=plan.prompt,
-            profile=plan.profile.name,
-            rubric=rubric,
-            expected_subject_count=1,
-        ))
+        inline_payload = provider.last_report.get("inline_vlm")
+        if not isinstance(inline_payload, dict):
+            raise RuntimeError("inline VLM report missing")
+        inline_text = str(inline_payload.get("review_text") or "").strip()
+        inline_model = str(inline_payload.get("model") or "").strip()
+        if not inline_text or inline_model != "Qwen/Qwen3-VL-2B-Instruct":
+            raise RuntimeError("inline VLM report invalid")
+        visual_review = result_from_inline_review(
+            request_for_review,
+            inline_text,
+            model=inline_model,
+            evidence=(
+                f"kaggle_kernel:{provider.kernel_slug}",
+                f"gpu:{provider.last_report.get('gpu_name')}",
+                "hybrid_fast_model:Qwen/Qwen3-VL-2B-Instruct",
+                "hybrid_final_model:Qwen/Qwen3-VL-8B-Instruct",
+                "hybrid_clear_pass_score:9.00",
+                "hybrid_fast_reject_score:8.00",
+            ),
+            min_quality_score=9.0,
+            min_prompt_match_score=9.0,
+        )
+        if (
+            not vlm._clear_fast_pass(visual_review)
+            and not vlm._obvious_fast_reject(request_for_review, visual_review)
+        ):
+            visual_review = vlm._make_verifier(
+                model=vlm.final_model,
+                suffix="final",
+            ).verify(request_for_review)
     except Exception as exc:
         (output / "vlm-failure.json").write_text(
             json.dumps({
