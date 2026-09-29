@@ -89,7 +89,7 @@ def test_benchmark_manifest_pins_exact_user_reference_set():
 
     assert manifest["version"] == 4
     assert len(refs) == 5
-    assert {item["profile"] for item in refs} == {"human_photo_premium", "mascot_premium"}
+    assert {item["profile"] for item in refs} == {"human_photo_premium", "animal_photo_premium", "mascot_premium"}
     assert {item["sha256"] for item in refs} == {
         "4306fb1186c907ca568afc4953936b4bb1363373b0edeb78d21f6b9de3a98119",
         "2bae56e56de0cf49d0423884e3d12f6d562cef66520560bd6093970f14d80fdb",
@@ -318,4 +318,4 @@ def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
     assert any("HDR contrast" in item for item in cfg.quality_bad_texts)
     assert any("Photoshop look" in item for item in cfg.quality_bad_texts)
     assert "2e476d56320d8ea3b16488d9c276e76e80fe737984e7f90fd4e98f19271f2589" in manifest["known_rejected_sha256"]
-    assert any("naturally camera-captured" in item for item in manifest["must_pass"])
+    assert any("real camera" in item for item in manifest["must_pass"])
