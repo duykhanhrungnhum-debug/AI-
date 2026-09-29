@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Generate multiple premium images while loading command/VLM models only once per batch."""
+"""Generate multiple premium images in one semantically routed Kaggle GPU worker."""
 from __future__ import annotations
 
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
-import re
 from time import perf_counter
 
-from ai_agent.core.image_model import ImageGenerationRequest
-from ai_agent.core.kaggle_image import KaggleImageProvider
-from ai_agent.core.kaggle_model import KaggleModelProvider
+from ai_agent.core.kaggle_image_batch import (
+    KaggleSemanticImageBatchProvider,
+    SemanticImageBatchItem,
+)
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_command import (
     ANIMAL_PHOTO_PREMIUM,
@@ -22,13 +22,13 @@ from ai_agent.core.media_command import (
     MEDIA_COMMAND_FAST_MODEL,
     MediaCommandPlanner,
     benchmark_manifest,
+    image_model_config,
 )
-from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
-
-
-def _slug(value: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
-    return (cleaned or "item")[:32]
+from ai_agent.core.vision_quality import (
+    HybridVisionQualityVerifier,
+    VisionQualityRequest,
+    result_from_inline_review,
+)
 
 
 def main() -> int:
@@ -64,6 +64,31 @@ def main() -> int:
     output = Path(os.environ.get("MEDIA_OUTPUT_DIR", "premium-image-batch-output"))
     output.mkdir(parents=True, exist_ok=True)
 
+    # This planner call is deterministic/local and only supplies a conservative fallback
+    # profile. The real subject/style routing happens semantically inside the GPU worker.
+    plans = MediaCommandPlanner().plan_many(tuple(command for _, command in items))
+    for (item_id, _), plan in zip(items, plans, strict=True):
+        if plan.mode != "image":
+            raise ValueError(f"{item_id} resolved to video; use the video pipeline")
+
+    profiles = (
+        HUMAN_PHOTO_PREMIUM,
+        ANIMAL_PHOTO_PREMIUM,
+        MASCOT_PREMIUM,
+        GENERAL_PREMIUM,
+    )
+    manifest_profiles = benchmark_manifest()["profiles"]
+    profile_positive = {profile.name: profile.positive_constraints for profile in profiles}
+    profile_negative = {profile.name: profile.negative_constraints for profile in profiles}
+    profile_rubrics = {
+        profile.name: tuple(manifest_profiles[profile.name]["must_pass"])
+        for profile in profiles
+    }
+    profile_dimensions = {
+        profile.name: (profile.width, profile.height)
+        for profile in profiles
+    }
+
     worker = KaggleGpuWorker(
         api_token=token,
         username=username,
@@ -71,201 +96,79 @@ def main() -> int:
         submission_retry_attempts=5,
         submission_retry_delay_seconds=30,
     )
-    fast_model_name = os.environ.get("MEDIA_COMMAND_FAST_MODEL", MEDIA_COMMAND_FAST_MODEL)
-    final_model_name = os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL)
-    use_inline_planner = os.environ.get("MEDIA_INLINE_PLANNER", "1") != "0"
-    timings: dict[str, float | dict[str, float]] = {
-        "image_generation": {},
-        "image_worker": {},
-        "inline_planner_worker": {},
-        "inline_vlm_worker": {},
-    }
-    planning_started = perf_counter()
-    planner_model_used = "inline-per-item" if use_inline_planner else fast_model_name
-    planner_fallback_used = False
-    if use_inline_planner:
-        plans = MediaCommandPlanner().plan_many(
-            tuple(command for _, command in items)
-        )
-    else:
-        fast_language_model = KaggleModelProvider(
-            worker=worker,
-            model=fast_model_name,
-            kernel_slug="ai-agent-media-command-fast",
-            poll_interval=3,
-            max_poll_attempts=120,
-            max_new_tokens=140,
-            temperature=0.0,
-            enable_thinking=False,
-        )
-        try:
-            plans = MediaCommandPlanner(fast_language_model).plan_many(
-                tuple(command for _, command in items)
-            )
-        except Exception as fast_exc:
-            planner_fallback_used = True
-            final_language_model = KaggleModelProvider(
-                worker=worker,
-                model=final_model_name,
-                kernel_slug="ai-agent-media-command-final",
-                poll_interval=3,
-                max_poll_attempts=120,
-                max_new_tokens=180,
-                temperature=0.0,
-                enable_thinking=False,
-            )
-            try:
-                plans = MediaCommandPlanner(final_language_model).plan_many(
-                    tuple(command for _, command in items)
-                )
-                planner_model_used = final_model_name
-            except Exception as final_exc:
-                (output / "planning-failure.json").write_text(
-                    json.dumps({
-                        "fast_error": str(fast_exc),
-                        "final_error": str(final_exc),
-                    }, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
-                )
-                raise
-    timings["planning"] = round(perf_counter() - planning_started, 3)
-    planner_models_used: dict[str, str] = {}
-
-    semantic_profiles = (
-        HUMAN_PHOTO_PREMIUM,
-        ANIMAL_PHOTO_PREMIUM,
-        MASCOT_PREMIUM,
-        GENERAL_PREMIUM,
+    config = image_model_config(GENERAL_PREMIUM)
+    provider = KaggleSemanticImageBatchProvider(
+        worker=worker,
+        model=config.model,
+        model_variant="fp16" if "RealVisXL" in config.model else None,
+        kernel_slug="ai-agent-premium-image-semantic-batch",
+        poll_interval=3,
+        max_poll_attempts=int(os.environ.get("MEDIA_IMAGE_MAX_POLL_ATTEMPTS", "600")),
+        inference_steps=config.inference_steps,
+        guidance_scale=config.guidance_scale,
+        planner_fast_model=os.environ.get("MEDIA_COMMAND_FAST_MODEL", MEDIA_COMMAND_FAST_MODEL),
+        planner_final_model=os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
+        vlm_model="Qwen/Qwen3-VL-2B-Instruct",
+        vlm_min_score=9.0,
+        profile_positive_constraints=profile_positive,
+        profile_negative_constraints=profile_negative,
+        profile_rubrics=profile_rubrics,
+        profile_dimensions=profile_dimensions,
     )
-    profile_positive = {profile.name: profile.positive_constraints for profile in semantic_profiles}
-    profile_negative = {profile.name: profile.negative_constraints for profile in semantic_profiles}
-    manifest_profiles = benchmark_manifest()["profiles"]
-    profile_rubrics = {
-        profile.name: tuple(manifest_profiles[profile.name]["must_pass"])
-        for profile in semantic_profiles
-    }
 
-    generated: dict[str, tuple[object, object, dict]] = {}
-    inline_reviews: dict[str, tuple[VisionQualityRequest, object]] = {}
+    batch_items = tuple(
+        SemanticImageBatchItem(
+            item_id=item_id,
+            command=command,
+            seed=int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big"),
+            fallback_profile=plan.profile.name,
+        )
+        for (item_id, command), plan in zip(items, plans, strict=True)
+    )
+
+    started = perf_counter()
+    batch = provider.generate_batch(batch_items)
+    elapsed = round(perf_counter() - started, 3)
+
+    reviews: dict[str, object] = {}
+    requests: dict[str, VisionQualityRequest] = {}
     statuses: dict[str, dict] = {}
+    plan_data_by_id: dict[str, dict] = {}
 
-    for (item_id, command), plan in zip(items, plans, strict=True):
+    for (item_id, command), plan, batch_item in zip(items, plans, batch_items, strict=True):
         item_dir = output / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
-        if plan.mode != "image":
-            statuses[item_id] = {"verified": False, "stage": "planning", "error": "resolved to video"}
-            continue
-
-        config = plan.model_config
-        seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
+        artifact = batch.artifacts[item_id]
+        report = batch.reports[item_id]
+        profile = str(report["semantic_profile"])
+        benchmark = manifest_profiles[profile]
+        prompt = str(report["prompt"])
         plan_data = {
             "command": command,
-            "mode": plan.mode,
-            "profile": plan.profile.name,
+            "mode": "image",
+            "profile": profile,
+            "subject_class": str(report.get("subject_class") or ""),
+            "style_class": str(report.get("style_class") or ""),
             "model": config.model,
+            "model_variant": provider.model_variant,
             "inference_steps": config.inference_steps,
             "guidance_scale": config.guidance_scale,
             "scheduler": config.scheduler,
-            "compiler_output": plan.compiler_output,
-            "prompt": plan.prompt,
-            "negative_prompt": plan.negative_prompt,
-            "width": plan.profile.width,
-            "height": plan.profile.height,
-            "seed": seed,
+            "compiler_output": str(report.get("planner_raw") or ""),
+            "planner_model": str(report.get("planner_model") or ""),
+            "prompt": prompt,
+            "negative_prompt": str(report.get("negative_prompt") or ""),
+            "width": int(report["width"]),
+            "height": int(report["height"]),
+            "seed": batch_item.seed,
         }
+        plan_data_by_id[item_id] = plan_data
         (item_dir / "plan.json").write_text(
             json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-
-        provider = KaggleImageProvider(
-            worker=worker,
-            model=config.model,
-            model_variant="fp16" if "RealVisXL" in config.model else None,
-            kernel_slug=f"ai-agent-image-{_slug(item_id)}",
-            poll_interval=3,
-            max_poll_attempts=int(os.environ.get("MEDIA_IMAGE_MAX_POLL_ATTEMPTS", "360")),
-            inference_steps=config.inference_steps,
-            guidance_scale=config.guidance_scale,
-            scheduler=config.scheduler,
-            prompt_alignment_threshold=float(os.environ.get("MEDIA_PROMPT_ALIGNMENT_THRESHOLD", "0.22")),
-            visual_quality_margin_threshold=float(os.environ.get("MEDIA_VISUAL_QUALITY_MARGIN_THRESHOLD", "0.015")),
-            enforce_visual_quality_margin=False,
-            enable_clip_precheck=os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
-            enable_cpu_offload=os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
-            enable_inline_planner=use_inline_planner,
-            inline_planner_fast_model=fast_model_name,
-            inline_planner_final_model=final_model_name,
-            inline_planner_raw_command=command if use_inline_planner else "",
-            inline_planner_positive_constraints=plan.profile.positive_constraints if use_inline_planner else "",
-            inline_profile_positive_constraints=profile_positive if use_inline_planner else {},
-            inline_profile_negative_constraints=profile_negative if use_inline_planner else {},
-            inline_profile_rubrics=profile_rubrics if use_inline_planner else {},
-            quality_good_text=config.quality_good_text,
-            quality_bad_texts=config.quality_bad_texts,
-            enable_inline_vlm=True,
-            inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
-            inline_vlm_profile=plan.profile.name,
-            inline_vlm_rubric=tuple(benchmark_manifest()["profiles"][plan.profile.name]["must_pass"]),
-            inline_vlm_expected_subject_count=1,
-            inline_vlm_min_score=9.0,
-        )
-        request = ImageGenerationRequest(
-            prompt=str(plan_data.get("prompt") or plan.prompt),
-            negative_prompt=plan.negative_prompt,
-            width=plan.profile.width,
-            height=plan.profile.height,
-            seed=seed,
-        )
-        generation_started = perf_counter()
-        try:
-            artifact = provider.generate(request)
-        except Exception as exc:
-            timings["image_generation"][item_id] = round(perf_counter() - generation_started, 3)
-            statuses[item_id] = {"verified": False, "stage": "image_generation", "error": str(exc)}
-            try:
-                candidate = worker.download_output_file(provider.kernel_slug, "generated.png")
-                (item_dir / "candidate.png").write_bytes(candidate)
-            except Exception:
-                pass
-            continue
-        timings["image_generation"][item_id] = round(perf_counter() - generation_started, 3)
-        report_timings = provider.last_report.get("timings")
-        if isinstance(report_timings, dict):
-            timings["image_worker"][item_id] = report_timings
-        inline_planner_report = provider.last_report.get("inline_planner")
-        if isinstance(inline_planner_report, dict):
-            planner_models_used[item_id] = str(inline_planner_report.get("model") or "")
-            if isinstance(inline_planner_report.get("timings"), dict):
-                timings["inline_planner_worker"][item_id] = {
-                    **inline_planner_report["timings"],
-                    "total_stage_seconds": inline_planner_report.get("total_stage_seconds"),
-                    "fallback_used": bool(inline_planner_report.get("fallback_used")),
-                }
-            actual_prompt = str(provider.last_report.get("compiled_prompt") or "").strip()
-            actual_profile = str(
-                provider.last_report.get("semantic_profile")
-                or inline_planner_report.get("semantic_profile")
-                or plan.profile.name
-            ).strip()
-            if actual_profile not in manifest_profiles:
-                actual_profile = plan.profile.name
-            plan_data["profile"] = actual_profile
-            plan_data["subject_class"] = str(inline_planner_report.get("subject_class") or "")
-            plan_data["style_class"] = str(inline_planner_report.get("style_class") or "")
-            if actual_prompt:
-                plan_data["compiler_output"] = str(inline_planner_report.get("raw_output") or "")
-                plan_data["prompt"] = actual_prompt
-            (item_dir / "plan.json").write_text(
-                json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-        inline_report = provider.last_report.get("inline_vlm")
-        if isinstance(inline_report, dict) and isinstance(inline_report.get("timings"), dict):
-            timings["inline_vlm_worker"][item_id] = inline_report["timings"]
-
         (item_dir / "candidate.png").write_bytes(artifact.data)
-        benchmark = manifest_profiles[str(plan_data.get("profile") or plan.profile.name)]
+
         digest = sha256(artifact.data).hexdigest()
         if digest in set(benchmark.get("known_rejected_sha256", ())):
             statuses[item_id] = {
@@ -275,54 +178,46 @@ def main() -> int:
             }
             continue
 
-        generated[item_id] = (plan, artifact, plan_data)
-        inline_payload = provider.last_report.get("inline_vlm")
-        if not isinstance(inline_payload, dict):
+        review_text = str(report.get("review_text") or "").strip()
+        if not review_text:
             statuses[item_id] = {
                 "verified": False,
                 "stage": "inline_vlm_quality",
-                "error": "inline VLM report missing",
+                "error": "inline VLM review missing",
             }
             continue
-        inline_text = str(inline_payload.get("review_text") or "").strip()
-        inline_model = str(inline_payload.get("model") or "").strip()
-        if not inline_text or inline_model != "Qwen/Qwen3-VL-2B-Instruct":
-            statuses[item_id] = {
-                "verified": False,
-                "stage": "inline_vlm_quality",
-                "error": "inline VLM report invalid",
-            }
-            continue
-        review_request = VisionQualityRequest(
+
+        request = VisionQualityRequest(
             item_id=item_id,
             image=artifact.data,
-            prompt=str(plan_data.get("prompt") or plan.prompt),
-            profile=str(plan_data.get("profile") or plan.profile.name),
+            prompt=prompt,
+            profile=profile,
             rubric=tuple(benchmark["must_pass"]),
             expected_subject_count=1,
         )
-        inline_evidence = (
-            f"kaggle_kernel:{provider.kernel_slug}",
-            f"gpu:{provider.last_report.get('gpu_name')}",
-            "hybrid_fast_model:Qwen/Qwen3-VL-2B-Instruct",
-            "hybrid_final_model:Qwen/Qwen3-VL-8B-Instruct",
-            "hybrid_clear_pass_score:9.00",
-            "hybrid_fast_reject_score:8.00",
-        )
-        inline_reviews[item_id] = (
-            review_request,
-            result_from_inline_review(
-                review_request,
-                inline_text,
-                model=inline_model,
-                evidence=inline_evidence,
-                min_quality_score=9.0,
-                min_prompt_match_score=9.0,
+        requests[item_id] = request
+        inline_result = result_from_inline_review(
+            request,
+            review_text,
+            model=provider.vlm_model,
+            evidence=(
+                f"kaggle_kernel:{provider.kernel_slug}",
+                f"gpu:{batch.batch_report.get('gpu_name')}",
+                f"semantic_profile:{profile}",
+                f"subject_class:{report.get('subject_class')}",
+                f"style_class:{report.get('style_class')}",
+                f"planner_model:{report.get('planner_model')}",
+                "batch_single_worker:True",
+                "hybrid_fast_model:Qwen/Qwen3-VL-2B-Instruct",
+                "hybrid_final_model:Qwen/Qwen3-VL-8B-Instruct",
+                "hybrid_clear_pass_score:9.00",
+                "hybrid_fast_reject_score:8.00",
             ),
+            min_quality_score=9.0,
+            min_prompt_match_score=9.0,
         )
+        reviews[item_id] = inline_result
 
-    reviews = {}
-    fallback_requests = []
     verifier = HybridVisionQualityVerifier(
         worker=worker,
         kernel_slug="ai-agent-premium-image-vlm-batch",
@@ -333,37 +228,26 @@ def main() -> int:
         clear_pass_score=9.0,
         fast_reject_score=8.0,
     )
-    for item_id, (request, inline_result) in inline_reviews.items():
-        if verifier._clear_fast_pass(inline_result):
-            reviews[item_id] = inline_result
-            continue
-        if verifier._obvious_fast_reject(request, inline_result):
-            reviews[item_id] = inline_result
+    fallback_requests = []
+    for item_id, review in tuple(reviews.items()):
+        request = requests[item_id]
+        if verifier._clear_fast_pass(review) or verifier._obvious_fast_reject(request, review):
             continue
         fallback_requests.append(request)
 
+    fallback_elapsed = 0.0
     if fallback_requests:
-        vlm_started = perf_counter()
-        final_verifier = verifier._make_verifier(
+        fallback_started = perf_counter()
+        final_batch = verifier._make_verifier(
             model=verifier.final_model,
             suffix="final",
-        )
-        final_batch = final_verifier.verify_many(tuple(fallback_requests))
-        timings["vlm_quality_fallback"] = round(perf_counter() - vlm_started, 3)
+        ).verify_many(tuple(fallback_requests))
+        fallback_elapsed = round(perf_counter() - fallback_started, 3)
         for item in final_batch.items:
             reviews[item.item_id] = item
 
-    for item_id, (plan, artifact, plan_data) in generated.items():
+    for item_id, review in reviews.items():
         item_dir = output / item_id
-        review = reviews.get(item_id)
-        if review is None:
-            if item_id not in statuses:
-                statuses[item_id] = {
-                    "verified": False,
-                    "stage": "vlm_quality",
-                    "error": "visual quality result missing",
-                }
-            continue
         review_payload = {
             "passed": review.passed,
             "quality_score": review.quality_score,
@@ -384,6 +268,7 @@ def main() -> int:
             encoding="utf-8",
         )
         if review.passed:
+            artifact = batch.artifacts[item_id]
             (item_dir / "image.png").write_bytes(artifact.data)
             statuses[item_id] = {
                 "verified": True,
@@ -397,19 +282,30 @@ def main() -> int:
                 "error": "; ".join(review.major_issues or ("quality gate failed",)),
             }
 
+    for item_id, _ in items:
+        if item_id not in statuses:
+            statuses[item_id] = {
+                "verified": False,
+                "stage": "vlm_quality",
+                "error": "visual quality result missing",
+            }
+
     summary = {
         "batch_size": len(items),
         "verified_count": sum(1 for item in statuses.values() if item.get("verified")),
         "failed_count": sum(1 for item in statuses.values() if not item.get("verified")),
-        "brain_model": planner_model_used,
-        "planner_fast_model": fast_model_name,
-        "planner_final_model": final_model_name,
-        "planner_fallback_used": planner_fallback_used,
-        "inline_planner": use_inline_planner,
-        "planner_models_used": planner_models_used,
-        "clip_precheck": os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
-        "cpu_offload": os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
-        "timing_seconds": timings,
+        "one_image_model": config.model,
+        "one_gpu_worker": True,
+        "semantic_router": True,
+        "elapsed_seconds": elapsed,
+        "fallback_8b_seconds": fallback_elapsed,
+        "worker_report": {
+            "planner_fast_timing": batch.batch_report.get("planner_fast_timing"),
+            "planner_final_timing": batch.batch_report.get("planner_final_timing"),
+            "image_model_load_seconds": batch.batch_report.get("image_model_load_seconds"),
+            "qa_model_load_seconds": batch.batch_report.get("qa_model_load_seconds"),
+            "worker_total_seconds": batch.batch_report.get("worker_total_seconds"),
+        },
         "statuses": statuses,
     }
     (output / "batch-status.json").write_text(
