@@ -379,3 +379,11 @@ def test_one_production_model_is_shared_across_profiles():
     )
     models = {image_model_config(profile).model for profile in profiles}
     assert models == {"SG161222/RealVisXL_V5.0"}
+
+
+
+def test_general_semantic_profile_has_quality_rubric():
+    manifest = benchmark_manifest()
+    general = manifest["profiles"][GENERAL_PREMIUM.name]
+    assert len(general["must_pass"]) >= 5
+    assert general["known_rejected_sha256"] == []
