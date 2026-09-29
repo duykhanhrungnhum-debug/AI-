@@ -1,1 +1,1 @@
-vision-qa-speed-v3-profiled
+vision-qa-speed-v4-sdpa
