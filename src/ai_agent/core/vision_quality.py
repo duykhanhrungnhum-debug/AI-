@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from io import BytesIO
 import base64
 import json
 import textwrap
 import time
+
+from PIL import Image
 
 from .invariants import assert_core_invariants
 from .kaggle_worker import KaggleGpuWorker
@@ -104,7 +107,13 @@ class KaggleVisionQualityVerifier:
         if len(ids) != len(set(ids)):
             raise ValueError("item_id values must be unique")
 
-        source = self._build_worker_source(requests)
+        review_images = {
+            request.item_id: self._compact_review_image(request.image)
+            for request in requests
+        }
+        source = self._build_worker_source(requests, review_images=review_images)
+        if len(source.encode("utf-8")) >= 900_000:
+            raise ValueError("VLM worker source remains too large after image compaction")
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
             title=self.kernel_slug.replace("-", " ").title(),
@@ -143,6 +152,9 @@ class KaggleVisionQualityVerifier:
                 raise ValueError(f"vision quality report missing item: {request.item_id}")
             if entry.get("image_sha256") != sha256(request.image).hexdigest():
                 raise ValueError(f"vision quality image hash mismatch: {request.item_id}")
+            review_image = review_images[request.item_id]
+            if entry.get("review_image_sha256") != sha256(review_image).hexdigest():
+                raise ValueError(f"vision quality review image hash mismatch: {request.item_id}")
 
             parsed = self._parse_review(str(entry.get("review_text") or ""))
             quality_score = self._score(parsed.get("quality_score"))
@@ -199,6 +211,8 @@ class KaggleVisionQualityVerifier:
                     f"gpu:{gpu_name}",
                     f"vlm_model:{self.model}",
                     f"image_sha256:{sha256(request.image).hexdigest()}",
+                    f"review_image_sha256:{sha256(review_image).hexdigest()}",
+                    f"review_image_bytes:{len(review_image)}",
                     f"quality_score:{quality_score:.2f}",
                     f"prompt_match_score:{prompt_match_score:.2f}",
                     f"subject_count:{subject_count}",
@@ -261,14 +275,46 @@ class KaggleVisionQualityVerifier:
             raise ValueError("VLM review JSON must be an object")
         return parsed
 
-    def _build_worker_source(self, requests: tuple[VisionQualityRequest, ...]) -> str:
+    @staticmethod
+    def _compact_review_image(image: bytes) -> bytes:
+        """Encode a visually faithful JPEG review copy small enough for Kaggle source limits."""
+        try:
+            with Image.open(BytesIO(image)) as opened:
+                frame = opened.convert("RGB")
+                frame.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                output = BytesIO()
+                frame.save(
+                    output,
+                    format="JPEG",
+                    quality=85,
+                    optimize=True,
+                    progressive=True,
+                )
+                compact = output.getvalue()
+        except Exception as exc:
+            raise ValueError("image cannot be compacted for VLM review") from exc
+        if not compact:
+            raise ValueError("VLM review image is empty after compaction")
+        return compact
+
+    def _build_worker_source(
+        self,
+        requests: tuple[VisionQualityRequest, ...],
+        *,
+        review_images: dict[str, bytes] | None = None,
+    ) -> str:
+        review_images = review_images or {
+            item.item_id: self._compact_review_image(item.image)
+            for item in requests
+        }
         config = {
             "model": self.model,
             "items": [
                 {
                     "item_id": item.item_id,
-                    "image_b64": base64.b64encode(item.image).decode("ascii"),
+                    "image_b64": base64.b64encode(review_images[item.item_id]).decode("ascii"),
                     "image_sha256": sha256(item.image).hexdigest(),
+                    "review_image_sha256": sha256(review_images[item.item_id]).hexdigest(),
                     "prompt": item.prompt,
                     "profile": item.profile,
                     "rubric": list(item.rubric),
@@ -323,8 +369,8 @@ class KaggleVisionQualityVerifier:
             reports = []
             for item in CONFIG["items"]:
                 image_bytes = base64.b64decode(item["image_b64"])
-                if sha256(image_bytes).hexdigest() != item["image_sha256"]:
-                    raise RuntimeError("vision-quality input hash mismatch")
+                if sha256(image_bytes).hexdigest() != item["review_image_sha256"]:
+                    raise RuntimeError("vision-quality review image hash mismatch")
                 image = Image.open(BytesIO(image_bytes)).convert("RGB")
 
                 rubric = "\n".join(f"- {{criterion}}" for criterion in item["rubric"])
@@ -388,6 +434,7 @@ Return JSON only with exactly these keys:
                 reports.append({{
                     "item_id": item["item_id"],
                     "image_sha256": item["image_sha256"],
+                    "review_image_sha256": item["review_image_sha256"],
                     "review_text": review_text,
                 }})
 

@@ -1,5 +1,8 @@
 import hashlib
+from io import BytesIO
 import json
+
+from PIL import Image
 
 from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
 from ai_agent.core.vision_quality import KaggleVisionQualityVerifier, VisionQualityRequest
@@ -21,9 +24,11 @@ class FakeWorker:
         assert filename == "vision_quality.json"
         items = []
         for item_id, image, review in self.reviews:
+            review_image = KaggleVisionQualityVerifier._compact_review_image(image)
             items.append({
                 "item_id": item_id,
                 "image_sha256": hashlib.sha256(image).hexdigest(),
+                "review_image_sha256": hashlib.sha256(review_image).hexdigest(),
                 "review_text": json.dumps(review),
             })
         return json.dumps({
@@ -33,7 +38,14 @@ class FakeWorker:
         }).encode()
 
 
-def request(item_id="human-1", image=b"IMAGE", expected=1):
+def png_bytes(size=(64, 64), color=(120, 80, 40)):
+    buffer = BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def request(item_id="human-1", image=None, expected=1):
+    image = image or png_bytes()
     return VisionQualityRequest(
         item_id=item_id,
         image=image,
@@ -55,7 +67,7 @@ def test_vlm_quality_gate_passes_only_clean_high_scoring_image():
         "summary": "production ready",
     }
     verifier = KaggleVisionQualityVerifier(
-        worker=FakeWorker([("human-1", b"IMAGE", review)]),
+        worker=FakeWorker([("human-1", png_bytes(), review)]),
         poll_interval=0,
     )
     result = verifier.verify(request())
@@ -77,7 +89,7 @@ def test_vlm_quality_gate_rejects_major_visual_issue_even_with_high_scores():
         "summary": "hand defect",
     }
     verifier = KaggleVisionQualityVerifier(
-        worker=FakeWorker([("human-1", b"IMAGE", review)]),
+        worker=FakeWorker([("human-1", png_bytes(), review)]),
         poll_interval=0,
     )
     result = verifier.verify(request())
@@ -96,12 +108,12 @@ def test_vlm_quality_gate_rejects_wrong_subject_count():
         "summary": "three subjects",
     }
     verifier = KaggleVisionQualityVerifier(
-        worker=FakeWorker([("mascot-1", b"CRAB", review)]),
+        worker=FakeWorker([("mascot-1", png_bytes(color=(220, 80, 40)), review)]),
         poll_interval=0,
     )
     result = verifier.verify(VisionQualityRequest(
         item_id="mascot-1",
-        image=b"CRAB",
+        image=png_bytes(color=(220, 80, 40)),
         prompt="exactly one crab mascot",
         profile="mascot_premium",
         rubric=("exactly one subject", "clean geometry"),
@@ -127,3 +139,18 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
     assert "quality_score >= 8" in source
+
+
+def test_vlm_review_image_compaction_stays_far_below_kaggle_source_limit():
+    large = png_bytes(size=(1024, 1024), color=(123, 87, 45))
+    compact = KaggleVisionQualityVerifier._compact_review_image(large)
+
+    assert compact.startswith(b"\xff\xd8")
+    assert len(compact) < 300_000
+
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((
+        request(item_id="one", image=large),
+        request(item_id="two", image=large),
+    ))
+    assert len(source.encode("utf-8")) < 900_000
