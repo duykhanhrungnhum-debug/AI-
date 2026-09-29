@@ -235,12 +235,12 @@ class MediaCommandPlanner:
                 f"USER_COMMAND: {command}"
             )
             compiler_output = self.provider.generate(compiler_prompt).text.strip()
-            parsed = self._parse_labeled(compiler_output)
+            parsed = self._parse_compiler_output(compiler_output)
             rewritten_prompt = parsed.get("PROMPT", "").strip()
             motion_prompt = parsed.get("MOTION", "").strip()
             if not rewritten_prompt:
                 raise ValueError(
-                    "media command compiler did not return a PROMPT line; refusing to send an uncompiled command to the image model"
+                    "media command compiler did not return a usable English image prompt"
                 )
             if self._looks_vietnamese(rewritten_prompt):
                 raise ValueError(
@@ -305,6 +305,77 @@ class MediaCommandPlanner:
         if any(term in text for term in human_terms):
             return HUMAN_PHOTO_PREMIUM
         return GENERAL_PREMIUM
+
+    @classmethod
+    def _parse_compiler_output(cls, raw: str) -> dict[str, str]:
+        """Accept Qwen compiler output in labeled, JSON, or clean single-prompt form."""
+        raw = raw.strip()
+        if not raw:
+            return {}
+
+        labeled = cls._parse_labeled(raw)
+        if labeled.get("PROMPT"):
+            return labeled
+
+        cleaned = raw.strip().strip("`").strip()
+        if cleaned.casefold().startswith("json"):
+            cleaned = cleaned[4:].lstrip("\n :")
+
+        candidates = [cleaned]
+        first_brace = cleaned.find("{")
+        last_brace = cleaned.rfind("}")
+        if 0 <= first_brace < last_brace:
+            candidates.insert(0, cleaned[first_brace:last_brace + 1])
+
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            prompt = ""
+            for key in ("PROMPT", "prompt", "image_prompt", "imagePrompt", "description"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    prompt = value.strip()
+                    break
+            motion = ""
+            for key in ("MOTION", "motion", "motion_prompt", "motionPrompt"):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    motion = value.strip()
+                    break
+            if prompt:
+                return {"PROMPT": prompt, "MOTION": motion}
+
+        lines = [
+            line.strip().lstrip("-*#> ").strip()
+            for line in cleaned.splitlines()
+            if line.strip()
+        ]
+        boilerplate_prefixes = (
+            "here is", "here's", "sure", "certainly", "of course",
+            "image prompt", "visual prompt", "description:",
+        )
+        usable = [
+            line for line in lines
+            if len(line) >= 20
+            and not line.casefold().startswith(boilerplate_prefixes)
+            and not line.casefold().startswith(("motion:", "motion："))
+        ]
+        if len(usable) == 1 and not cls._looks_vietnamese(usable[0]):
+            return {"PROMPT": usable[0], "MOTION": ""}
+
+        if (
+            20 <= len(cleaned) <= 1800
+            and "\n" not in cleaned
+            and not cls._looks_vietnamese(cleaned)
+        ):
+            return {"PROMPT": cleaned, "MOTION": ""}
+
+        return {}
+
 
     @staticmethod
     def _parse_labeled(raw: str) -> dict[str, str]:
