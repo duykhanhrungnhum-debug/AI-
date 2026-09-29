@@ -1497,16 +1497,17 @@ for item in compiled_items:
         "critical anatomy/appendages must be coherent; required framing must be satisfied; "
         "there must be NO unrequested visible text, letters, logo, watermark, emblem, signature, UI/app mark, corner badge or branding anywhere. "
         "Inspect the full frame, anatomy, and especially the bottom-right crop for branding. "
-        "For animal photos require real-camera realism and correct species anatomy. "
-        "For mascot profile require premium 3D style, species-correct anatomy, clean appendages and non-cheap materials. "
+        "For animal_photo_premium require unmistakable real-camera photographic realism and correct species anatomy; CGI or illustration means style_ok=false. "
+        "For mascot_premium require an unmistakably stylized cute premium 3D animation-film mascot with rounded appealing proportions and expressive character face/eyes; "
+        "a photorealistic livestock render, ordinary realistic animal render, or documentary-looking animal MUST make style_ok=false. "
         "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
         "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
         + " AND all hard boolean checks below are true AND x/f/u are empty. "
-        "If uncertain about exact species/entity, text/logo, anatomy, or framing, set the relevant boolean false and p=false. "
-        "Return ONLY compact JSON with ALL keys: "
-        '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,'
-        '"subject_ok":true,"style_ok":true,"count_ok":true,"framing_ok":true,"anatomy_ok":true,"no_text_logo":true,'
-        '"x":[],"f":[],"u":[],"i":[]}'
+        "If uncertain about exact species/entity, text/logo, anatomy, style, or framing, set the relevant boolean false and p=false. "
+        "Return ONLY one JSON object and no Markdown. Required keys: "
+        "p boolean; q,m,s,d,a,c,b numbers 0-10; n integer; "
+        "subject_ok,style_ok,count_ok,framing_ok,anatomy_ok,no_text_logo booleans; "
+        "x,f,u,i arrays of short strings. Do not copy example values because no example values are provided."
     )
     review_started = time.perf_counter()
     review_text = run_vlm_review(views, instruction, 220)
@@ -1542,9 +1543,11 @@ for item in compiled_items:
         "The requested image must be completely clean and unbranded. "
         "A visible icon, badge, stylized letters, signature, watermark, logo, copyright mark, UI/app symbol, corner emblem, "
         "tiny text or pseudo-text anywhere counts as branding and MUST make clean=false. "
-        "Do not excuse branding because it looks decorative or plausible. If uncertain, clean=false. "
-        "Return ONLY compact JSON: "
-        '{"clean":false,"findings":["bottom-right logo or text"]}'
+        "Natural grass, fur, shadows, hooves, soil, foliage, reflections and ordinary background texture are NOT branding. "
+        "Only report a finding when you can point to a discrete visible mark, glyph, icon, badge or text-like object. "
+        "If the full frame and all corner crops contain only natural/image content with no discrete mark, clean=true. "
+        "Return ONLY one JSON object and no Markdown with exactly two keys: clean (boolean) and findings (array of short strings). "
+        "Do not copy any example finding because no example finding is provided."
     )
     branding_started = time.perf_counter()
     branding_text = run_vlm_review(brand_views, branding_instruction, 120)

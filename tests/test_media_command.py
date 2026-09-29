@@ -40,7 +40,7 @@ def test_routes_mascot_command_to_premium_mascot_profile():
 
     assert plan.mode == "image"
     assert plan.profile == MASCOT_PREMIUM
-    assert "premium polished cute 3D character render" in plan.prompt
+    assert "premium polished cute 3D animation-film mascot render" in plan.prompt
     assert "malformed appendages" in plan.negative_prompt
     assert "multiple characters" in plan.negative_prompt
     assert plan.model_config.model == "SG161222/RealVisXL_V5.0"
