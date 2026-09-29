@@ -1,1 +1,1 @@
-buffalo-image-exam-v3-semantic-unified-model-fixed-rubric
+buffalo-image-exam-v4-one-worker-semantic-unified
