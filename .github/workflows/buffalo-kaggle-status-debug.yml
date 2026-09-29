@@ -1,0 +1,48 @@
+name: Buffalo Kaggle Status Debug
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/buffalo-kaggle-status-debug.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Inspect buffalo kernels
+        run: |
+          python - <<'PY'
+          import json, os
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          w=KaggleGpuWorker(api_token=os.environ["KAGGLE_API_TOKEN"], username=os.environ["KAGGLE_USERNAME"])
+          for slug in ("ai-agent-image-real","ai-agent-image-cute3d"):
+              print("===",slug,"===")
+              try:
+                  s=w.status(slug)
+                  print(json.dumps({"status":s.status,"failure_message":s.failure_message}, ensure_ascii=False))
+              except Exception as e:
+                  print("STATUS_ERROR",repr(e))
+              try:
+                  print("OUTPUT", json.dumps(w.output_metadata(slug), ensure_ascii=False)[:5000])
+              except Exception as e:
+                  print("OUTPUT_ERROR",repr(e))
+              try:
+                  logs=w.logs(slug)
+                  print("LOG_TAIL", logs[-12000:])
+              except Exception as e:
+                  print("LOG_ERROR",repr(e))
+          PY
