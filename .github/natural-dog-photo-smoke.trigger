@@ -1,1 +1,1 @@
-natural-dog-photo-v1-confidence-band-9of10
+natural-dog-photo-v2-realvisxl-v5-anatomy-9of10
