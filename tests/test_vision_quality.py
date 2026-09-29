@@ -507,9 +507,9 @@ def _hybrid_review(score):
     }
 
 
-def test_hybrid_quality_gate_accepts_clear_9_plus_image_without_loading_8b():
+def test_hybrid_quality_gate_accepts_clear_9_image_without_loading_8b():
     image = png_bytes()
-    worker = HybridFakeWorker(image, _hybrid_review(9.5))
+    worker = HybridFakeWorker(image, _hybrid_review(9.0))
     verifier = HybridVisionQualityVerifier(worker=worker, poll_interval=0)
 
     result = verifier.verify(request(image=image))
@@ -520,11 +520,13 @@ def test_hybrid_quality_gate_accepts_clear_9_plus_image_without_loading_8b():
     assert "hybrid_fast_model:Qwen/Qwen3-VL-4B-Instruct" in result.evidence
 
 
-def test_hybrid_quality_gate_uses_8b_for_borderline_fast_review():
+def test_hybrid_quality_gate_uses_8b_only_for_borderline_fast_review():
     image = png_bytes()
+    fast_review = _hybrid_review(8.6)
+    fast_review["pass"] = False
     worker = HybridFakeWorker(
         image,
-        _hybrid_review(9.0),
+        fast_review,
         _hybrid_review(9.6),
     )
     verifier = HybridVisionQualityVerifier(worker=worker, poll_interval=0)
@@ -540,15 +542,25 @@ def test_hybrid_quality_gate_uses_8b_for_borderline_fast_review():
     assert "hybrid_final_model:Qwen/Qwen3-VL-8B-Instruct" in result.evidence
 
 
-def test_hybrid_quality_gate_enforces_nine_out_of_ten_minimum():
+def test_hybrid_quality_gate_fast_rejects_clearly_low_image_without_8b():
     image = png_bytes()
-    review = _hybrid_review(8.9)
+    review = _hybrid_review(8.0)
     review["pass"] = False
-    worker = HybridFakeWorker(image, review, review)
+    worker = HybridFakeWorker(image, review, _hybrid_review(9.8))
     verifier = HybridVisionQualityVerifier(worker=worker, poll_interval=0)
 
     result = verifier.verify(request(image=image))
 
     assert result.passed is False
-    assert worker.submissions[-1].endswith("-final")
+    assert worker.submissions == ["ai-agent-hybrid-vision-quality-fast"]
+    assert "hybrid_stage:fast_reject" in result.evidence
     assert any("below threshold" in issue for issue in result.major_issues)
+
+
+def test_hybrid_quality_gate_validates_confidence_band():
+    import pytest
+    with pytest.raises(ValueError, match="fast_reject_score"):
+        HybridVisionQualityVerifier(
+            worker=HybridFakeWorker(png_bytes(), _hybrid_review(9.0)),
+            fast_reject_score=9.0,
+        )

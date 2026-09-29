@@ -1,1 +1,1 @@
-vision-qa-speed-v4-sdpa
+vision-qa-speed-v6-confidence-band

@@ -197,7 +197,8 @@ def main() -> int:
             max_poll_attempts=120,
             min_quality_score=9.0,
             min_prompt_match_score=9.0,
-            clear_pass_score=9.2,
+            clear_pass_score=9.0,
+            fast_reject_score=8.0,
         )
         vlm_started = perf_counter()
         batch_review = verifier.verify_many(review_requests)
