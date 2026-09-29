@@ -178,9 +178,44 @@ class MediaCommandPlanner:
 
 
 def benchmark_manifest() -> dict:
-    """Acceptance rubric derived from the user's supplied premium reference examples."""
+    """Acceptance rubric tied to the exact user-supplied premium reference set.
+
+    Only immutable hashes/metadata are stored here; the raw personal examples are
+    not committed to the repository. This prevents later tests from silently
+    substituting a different benchmark set.
+    """
     return {
-        "version": 1,
+        "version": 2,
+        "reference_set": [
+            {
+                "profile": HUMAN_PHOTO_PREMIUM.name,
+                "sha256": "4306fb1186c907ca568afc4953936b4bb1363373b0edeb78d21f6b9de3a98119",
+                "width": 679,
+                "height": 1536,
+                "role": "full-body outdoor fitness photo quality reference",
+            },
+            {
+                "profile": HUMAN_PHOTO_PREMIUM.name,
+                "sha256": "2bae56e56de0cf49d0423884e3d12f6d562cef66520560bd6093970f14d80fdb",
+                "width": 679,
+                "height": 1536,
+                "role": "close-up selfie portrait quality reference",
+            },
+            {
+                "profile": MASCOT_PREMIUM.name,
+                "sha256": "eaa4e7f5f1bae39378d87a0e180dd223647ed2ac988b56c76521e3fac807ae1b",
+                "width": 679,
+                "height": 1536,
+                "role": "sleepy 3D crab mascot quality reference",
+            },
+            {
+                "profile": MASCOT_PREMIUM.name,
+                "sha256": "00c12e5cb4bd07b164a66cd58b06591f3455d53c6175f23c29aabc31e9fc2ad8",
+                "width": 679,
+                "height": 1536,
+                "role": "joyful 3D crab mascot quality reference",
+            },
+        ],
         "profiles": {
             HUMAN_PHOTO_PREMIUM.name: {
                 "must_pass": [
