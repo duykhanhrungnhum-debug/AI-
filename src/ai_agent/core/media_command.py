@@ -154,14 +154,16 @@ UNIFIED_ANIMAL_STYLE_IMAGE_MODEL = ImageModelConfig(
     guidance_scale=4.0,
     scheduler="dpm_karras",
     quality_good_text=(
-        "premium production-ready animal image matching the requested visual style, species-correct anatomy and proportions, "
-        "coherent limbs joints face eyes ears horns paws hooves wings fins or tail as applicable, clean silhouette, "
-        "high-quality natural or 3D materials appropriate to the request, coherent lighting and geometry"
+        "premium production-ready image matching the requested visual style, species-correct anatomy and proportions for animals, "
+        "correct human anatomy when applicable, coherent limbs joints face eyes ears horns paws hooves wings fins tail or hands as applicable, "
+        "natural camera texture for photo requests or tactile premium 3D materials for mascot requests, coherent lighting geometry and composition"
     ),
     quality_bad_texts=(
-        "bad AI animal with malformed anatomy, extra or missing limbs, fused appendages, misplaced joints or impossible pose",
-        "bad AI animal with distorted face eyes muzzle beak horns ears tail wings fins paws or hooves",
-        "image that ignores the requested photo versus 3D style, broken geometry, duplicated subject, text watermark or obvious artifacts",
+        "bad AI anatomy with malformed paws hands appendages, extra or missing limbs, fused parts, misplaced joints or impossible pose",
+        "bad AI subject with distorted face eyes muzzle beak horns ears tail wings fins paws hooves hands or fingers",
+        "photo request rendered with HDR oversharpening plastic texture advertising retouch fake bokeh or synthetic polish",
+        "3D mascot request rendered as a cheap plastic toy, repeated characters, duplicated subject, broken geometry or melted materials",
+        "image that ignores the requested photo versus 3D style, text watermark logo or obvious AI artifacts",
     ),
 )
 
