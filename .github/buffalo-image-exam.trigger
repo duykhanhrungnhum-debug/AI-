@@ -1,1 +1,1 @@
-buffalo-hard-gate-branding-subject-v3
+buffalo-final-branding-style-v4
