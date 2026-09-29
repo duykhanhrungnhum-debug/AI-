@@ -224,3 +224,19 @@ def test_clip_precheck_can_be_disabled_when_external_vlm_is_authoritative():
     source = worker.submitted["source"]
     assert 'if CONFIG["enable_clip_precheck"]:' in source
     assert '"enable_clip_precheck": false' in source.lower()
+
+
+def test_image_worker_can_keep_pipeline_resident_on_gpu():
+    provider = KaggleImageProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        enable_clip_precheck=False,
+        enable_cpu_offload=False,
+    )
+    source = provider._build_worker_source(
+        ImageGenerationRequest("one dog", width=512, height=512, seed=42)
+    )
+
+    assert '"enable_cpu_offload": false' in source.lower()
+    assert 'if CONFIG["enable_cpu_offload"]:' in source
+    assert 'pipe = pipe.to("cuda")' in source
