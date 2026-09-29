@@ -158,7 +158,7 @@ def test_worker_source_loads_open_multimodal_model_and_strict_rubric():
     assert "Qwen3VLForConditionalGeneration" in source
     assert "Qwen/Qwen3-VL-8B-Instruct" in source
     assert "views = [" in source
-    assert "five views of the SAME generated image" in source
+    assert "three views of the SAME generated image" in source
     assert "wrong subject count" in source
     assert "malformed or fused hands/fingers/limbs" in source
     assert "every score including benchmark_match_score is >= 8" in source
@@ -299,14 +299,17 @@ def test_adversarial_defect_hunter_can_veto_high_scoring_scorer():
     assert any("defect_hunter_reject:True" == item for item in result.evidence)
 
 
-def test_qwen3_8b_worker_source_compiles_with_two_pass_critic():
+def test_qwen3_8b_worker_source_compiles_with_single_pass_critic():
     verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
     source = verifier._build_worker_source((request(),))
     assert "Qwen/Qwen3-VL-8B-Instruct" in source
     assert "load_in_4bit=True" in source
-    assert "adversarial visual defect hunter" in source
+    assert "Act as scorer and defect hunter in this single pass" in source
     assert "uncertain_regions" in source
-    compile(source, "<qwen3-8b-adversarial-worker>", "exec")
+    assert "max_new_tokens=220" in source
+    assert "defect_review_text = review_text" in source
+    assert "run_review(defect_instruction)" not in source
+    compile(source, "<qwen3-8b-single-pass-worker>", "exec")
 
 
 def test_user_rejected_image_hash_vetoes_vlm_pass(monkeypatch):
@@ -374,3 +377,14 @@ def test_qwen3_animal_photo_critic_rejects_overprocessed_photoshop_look():
     assert "advertising-style retouch" in source
     assert "Photoshopped rather than naturally camera-captured" in source
     assert "Natural camera softness and small imperfections are desirable" in source
+
+
+def test_single_pass_qa_keeps_strict_uncertainty_and_benchmark_fields():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "critical_defects" in source
+    assert "benchmark_failures" in source
+    assert "uncertain_regions" in source
+    assert "pass MUST be false" in source
+    assert "benchmark_match_score" in source
+    assert source.count("run_review(instruction)") == 1
