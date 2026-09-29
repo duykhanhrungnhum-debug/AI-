@@ -538,7 +538,7 @@ class KaggleBatchImageProvider:
                     subfolder="models/image_encoder",
                     torch_dtype=torch.float16,
                 )
-            pipe_kwargs = {"torch_dtype": torch.float16}
+            pipe_kwargs = {{"torch_dtype": torch.float16}}
             if image_encoder is not None:
                 pipe_kwargs["image_encoder"] = image_encoder
             pipe = AutoPipelineForText2Image.from_pretrained(
