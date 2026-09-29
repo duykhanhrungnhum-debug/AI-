@@ -1,1 +1,1 @@
-premium-human-command-v2-strict-compiler
+premium-human-command-v3-vlm-gate
