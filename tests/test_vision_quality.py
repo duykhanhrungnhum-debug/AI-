@@ -154,3 +154,11 @@ def test_vlm_review_image_compaction_stays_far_below_kaggle_source_limit():
         request(item_id="two", image=large),
     ))
     assert len(source.encode("utf-8")) < 900_000
+
+
+def test_worker_source_is_valid_python_and_not_indented_at_top_level():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+
+    assert source.startswith("from __future__ import annotations")
+    compile(source, "<vision-quality-worker>", "exec")
