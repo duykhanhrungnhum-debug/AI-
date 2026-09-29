@@ -101,7 +101,7 @@ def test_profile_model_routing_uses_separate_human_and_mascot_stacks():
     assert human.model != mascot.model
     assert "hands" in human.quality_good_text
     assert "exactly one subject" in mascot.quality_good_text
-    assert any("duplicated subject" in item for item in mascot.quality_bad_texts)
+    assert any("duplicated whole subject" in item for item in mascot.quality_bad_texts)
 
 
 def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
