@@ -372,3 +372,23 @@ def test_image_worker_can_request_native_fp16_variant():
     compile(source, "<generated-image-worker>", "exec")
     assert '"model_variant": "fp16"' in source
     assert 'pipe_kwargs["variant"] = CONFIG["model_variant"]' in source
+
+
+
+def test_inline_planner_preserves_buffalo_species():
+    provider = KaggleImageProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        enable_clip_precheck=False,
+        enable_cpu_offload=False,
+        enable_inline_planner=True,
+        inline_planner_raw_command="Tạo ảnh một con trâu nước Việt Nam thật ngoài đồng",
+        inline_planner_positive_constraints="natural realistic animal photo",
+    )
+    source = provider._build_worker_source(
+        ImageGenerationRequest("placeholder", width=512, height=512, seed=42)
+    )
+
+    compile(source, "<generated-image-worker>", "exec")
+    assert '("trâu", "buffalo", "water buffalo")' in source
+    assert 'compiled_prompt = compiled_prompt.replace(wrong, "water buffalo")' in source
