@@ -1,0 +1,70 @@
+name: Buffalo Image Exam
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/buffalo-image-exam.yml"
+      - ".github/buffalo-image-exam.trigger"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  buffalo-image-exam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      MEDIA_OUTPUT_DIR: buffalo-exam
+      MEDIA_CLIP_PRECHECK: "0"
+      MEDIA_COMMANDS_JSON: >-
+        [{"id":"real","command":"Tạo ảnh đúng một con trâu nước Việt Nam thật, ảnh chụp chân thực ngoài đồng cỏ hoặc ruộng, toàn thân, ánh sáng tự nhiên, giải phẫu trâu chính xác, bốn chân và móng rõ ràng, sừng đúng cấu trúc, da và lông tự nhiên, màu sắc vừa phải, không HDR, không retouch quảng cáo."},{"id":"cute3d","command":"Tạo ảnh đúng một con trâu nước 3D cute, mascot cao cấp toàn thân, nhận diện rõ là trâu nước, tỷ lệ dễ thương nhưng giải phẫu mạch lạc, bốn chân và móng đúng cấu trúc, sừng cân đối, mắt biểu cảm, vật liệu 3D chi tiết, ánh sáng studio đẹp, nền sạch, chất lượng nhân vật hoạt hình 3D cao cấp."}]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Generate both buffalo images with project AI
+        shell: bash
+        run: |
+          set +e
+          START=$(date +%s)
+          python scripts/generate_premium_image_batch.py
+          EXIT=$?
+          END=$(date +%s)
+          python - <<PY
+          import json
+          from pathlib import Path
+          Path("buffalo-exam/elapsed.json").write_text(
+              json.dumps({"elapsed_seconds": int("$END") - int("$START")}, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit "$EXIT"
+
+      - name: Upload buffalo exam
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buffalo-image-exam-output
+          path: buffalo-exam/
+          if-no-files-found: error
+          retention-days: 7
