@@ -31,6 +31,7 @@ jobs:
           src/ai_agent/core/kaggle_image.py
           src/ai_agent/core/vision_quality.py
           scripts/generate_premium_image.py
+          scripts/generate_premium_image_batch.py
           scripts/kaggle_video_smoke.py
           scripts/generate_ai_video.py
           scripts/generate_reference_video.py
