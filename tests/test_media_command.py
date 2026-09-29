@@ -103,15 +103,15 @@ def test_profile_model_routing_uses_separate_human_and_mascot_stacks():
     assert mascot.model == "playgroundai/playground-v2.5-1024px-aesthetic"
     assert human.model != mascot.model
     assert "hands" in human.quality_good_text
-    assert "exactly one subject" in mascot.quality_good_text
+    assert "one squat low wide crab" in mascot.quality_good_text
     assert any("duplicated whole subject" in item for item in mascot.quality_bad_texts)
 
 
 def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
     mascot = image_model_config(MASCOT_PREMIUM)
 
-    assert any("multiple separate repeated characters" in item for item in mascot.quality_bad_texts)
-    assert any("fused disconnected broken claws or legs" in item for item in mascot.quality_bad_texts)
+    assert any("multiple repeated characters" in item for item in mascot.quality_bad_texts)
+    assert any("thin raised scissor claws" in item or "disconnected appendages" in item for item in mascot.quality_bad_texts)
     assert all("duplicated limbs claws appendages" not in item for item in mascot.quality_bad_texts)
 
 
@@ -218,3 +218,18 @@ def test_benchmark_manifest_encodes_user_rejected_current_candidates_and_3d_styl
     assert any("NOT a tall spherical balloon body" in item for item in mascot["must_pass"])
     assert any("crisp white outline" in item for item in mascot["must_pass"])
     assert any("NOT shiny plastic-toy material" in item for item in mascot["must_pass"])
+
+
+def test_mascot_generation_profile_matches_user_3d_benchmark_semantics():
+    plan = MediaCommandPlanner().plan("Tạo mascot con cua 3D dễ thương")
+    cfg = image_model_config(MASCOT_PREMIUM)
+
+    assert "squat low wide body" in plan.prompt
+    assert "large rounded frontal claws" in plan.prompt
+    assert "short antennae" in plan.prompt
+    assert "white sticker/cutout outline" in plan.prompt
+    assert "tall spherical balloon body" in plan.negative_prompt
+    assert "shiny plastic toy body" in plan.negative_prompt
+    assert "human eyebrows" in plan.negative_prompt
+    assert cfg.inference_steps == 40
+    assert "crisp white cutout outline" in cfg.quality_good_text
