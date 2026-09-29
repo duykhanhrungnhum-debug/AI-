@@ -111,7 +111,7 @@ def test_mascot_critic_distinguishes_valid_appendages_from_broken_geometry():
     mascot = image_model_config(MASCOT_PREMIUM)
 
     assert any("multiple repeated characters" in item for item in mascot.quality_bad_texts)
-    assert any("fused disconnected broken claws or legs" in item for item in mascot.quality_bad_texts)
+    assert any("thin raised scissor claws" in item or "disconnected appendages" in item for item in mascot.quality_bad_texts)
     assert all("duplicated limbs claws appendages" not in item for item in mascot.quality_bad_texts)
 
 
