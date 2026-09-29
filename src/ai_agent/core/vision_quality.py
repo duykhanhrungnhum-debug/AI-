@@ -401,8 +401,8 @@ class KaggleVisionQualityVerifier:
                     ),
                     "Return JSON only with exactly these keys:",
                     (
-                        '{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, '
-                        '"subject_count": 1, "major_issues": [], "minor_issues": [], "summary": ""}'
+                        '{{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, '
+                        '"subject_count": 1, "major_issues": [], "minor_issues": [], "summary": ""}}'
                     ),
                 ])
                 messages = [{{
