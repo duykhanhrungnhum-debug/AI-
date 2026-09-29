@@ -417,3 +417,14 @@ def test_compact_worker_prompt_requires_json_only_and_short_issue_phrases():
     assert "p=pass" in source
     assert "torch.inference_mode()" in source
     assert "use_cache=True" in source
+
+
+def test_qwen3_worker_records_latency_breakdown_without_changing_scoring():
+    verifier = KaggleVisionQualityVerifier(worker=FakeWorker([]), poll_interval=0)
+    source = verifier._build_worker_source((request(),))
+    assert "worker_started = time.perf_counter()" in source
+    assert "model_load_started = time.perf_counter()" in source
+    assert '"model_load_seconds"' in source
+    assert '"review_seconds"' in source
+    assert '"worker_total_seconds"' in source
+    compile(source, "<qwen3-qa-timing-worker>", "exec")
