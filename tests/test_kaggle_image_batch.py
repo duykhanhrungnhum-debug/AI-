@@ -336,6 +336,7 @@ class SemanticFakeWorker:
                 "subject_class": subject,
                 "style_class": style,
                 "subject_name": "water buffalo",
+                "structure_contract": "exactly four legs, exactly two horns, exactly two ears, one tail, cloven hooves, no tusks or extra horn branches",
                 "semantic_profile": profile,
                 "planner_raw": "semantic output",
                 "planner_model": "Qwen/Qwen3-0.6B",
@@ -355,6 +356,7 @@ class SemanticFakeWorker:
                         "count_ok": True,
                         "framing_ok": True,
                         "anatomy_ok": True,
+                        "structure_contract_ok": True,
                         "no_text_logo": True,
                     },
                     "issues": [],
@@ -415,6 +417,8 @@ def test_semantic_batch_loads_planner_image_model_and_vlm_once_for_all_items():
     assert "SUBJECT_CLASS" in source
     assert "STYLE_CLASS" in source
     assert "SUBJECT_NAME" in source
+    assert "STRUCTURE_CONTRACT" in source
+    assert "valid_structure_contract" in source
     assert "is_placeholder_prompt" in source
     assert "EXPECTED EXACT SUBJECT/SPECIES/ENTITY" in source
     assert "no_text_logo" in source
@@ -473,10 +477,13 @@ def test_semantic_worker_hard_gate_checks_exact_subject_and_watermark():
     assert "logo, watermark, emblem, signature" in source
     assert '"single_model_two_checks": True' in source
     assert '"subject_ok"' in source
+    assert '"structure_contract_ok"' in source
     assert '"no_text_logo"' in source
     assert "dedicated watermark/logo/text detector" in source.casefold()
     assert '"branding_gate"' in source
     assert "photorealistic livestock render" in source
+    assert "STRUCTURAL CONTRACT is a hard count constraint" in source
+    assert "no extra horns, antlers, tusks" in source
     assert '{"clean":false,"findings":["bottom-right logo or text"]}' not in source
     assert "normalize_branding_findings" in source
     assert 'candidate_count = 3 if item["semantic_profile"] == "mascot_premium" else 1' in source
