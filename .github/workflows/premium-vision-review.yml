@@ -125,6 +125,7 @@ jobs:
                       "detail_score": item.detail_score,
                       "aesthetic_score": item.aesthetic_score,
                       "composition_score": item.composition_score,
+                      "benchmark_match_score": item.benchmark_match_score,
                       "subject_count": item.subject_count,
                       "major_issues": list(item.major_issues),
                       "minor_issues": list(item.minor_issues),
