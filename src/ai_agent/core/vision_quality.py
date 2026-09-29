@@ -442,7 +442,7 @@ class KaggleVisionQualityVerifier:
                 "items": reports,
             }}
             Path("/kaggle/working/vision_quality.json").write_text(
-                json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                json.dumps(result, ensure_ascii=False, indent=2) + "\\n",
                 encoding="utf-8",
             )
             print("AI_AGENT_VISION_QUALITY_OK")
