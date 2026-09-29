@@ -29,6 +29,11 @@ class KaggleImageProvider:
     enforce_visual_quality_margin: bool = True
     enable_clip_precheck: bool = True
     enable_cpu_offload: bool = True
+    enable_inline_planner: bool = False
+    inline_planner_fast_model: str = "Qwen/Qwen3-0.6B"
+    inline_planner_final_model: str = "Qwen/Qwen3-1.7B"
+    inline_planner_raw_command: str = ""
+    inline_planner_positive_constraints: str = ""
     enable_inline_vlm: bool = False
     inline_vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
     inline_vlm_profile: str = ""
@@ -66,6 +71,13 @@ class KaggleImageProvider:
             raise ValueError("prompt_alignment_threshold must be in [-1, 1]")
         if not -2.0 <= self.visual_quality_margin_threshold <= 2.0:
             raise ValueError("visual_quality_margin_threshold must be in [-2, 2]")
+        if self.enable_inline_planner:
+            if not self.inline_planner_fast_model.strip() or not self.inline_planner_final_model.strip():
+                raise ValueError("inline planner models are required")
+            if not self.inline_planner_raw_command.strip():
+                raise ValueError("inline_planner_raw_command is required")
+            if not self.inline_planner_positive_constraints.strip():
+                raise ValueError("inline_planner_positive_constraints is required")
         if self.enable_inline_vlm:
             if not self.inline_vlm_model.strip():
                 raise ValueError("inline_vlm_model is required")
@@ -172,6 +184,9 @@ class KaggleImageProvider:
                 *((f"visual_defect_score:{visual_defect_score:.6f}",) if visual_defect_score is not None else ()),
                 f"clip_precheck:{self.enable_clip_precheck}",
                 f"cpu_offload:{self.enable_cpu_offload}",
+                f"inline_planner:{self.enable_inline_planner}",
+                *((f"inline_planner_model:{report.get('inline_planner', {}).get('model')}",) if self.enable_inline_planner else ()),
+                *((f"inline_planner_fallback:{bool(report.get('inline_planner', {}).get('fallback_used'))}",) if self.enable_inline_planner else ()),
                 f"inline_vlm:{self.enable_inline_vlm}",
                 f"hf_xet_high_performance:{bool(report.get('hf_xet_high_performance'))}",
                 *((f"inline_vlm_model:{self.inline_vlm_model}",) if self.enable_inline_vlm else ()),
@@ -199,6 +214,11 @@ class KaggleImageProvider:
             "visual_quality_margin_threshold": self.visual_quality_margin_threshold,
             "enable_clip_precheck": self.enable_clip_precheck,
             "enable_cpu_offload": self.enable_cpu_offload,
+            "enable_inline_planner": self.enable_inline_planner,
+            "inline_planner_fast_model": self.inline_planner_fast_model,
+            "inline_planner_final_model": self.inline_planner_final_model,
+            "inline_planner_raw_command": self.inline_planner_raw_command,
+            "inline_planner_positive_constraints": self.inline_planner_positive_constraints,
             "enable_inline_vlm": self.enable_inline_vlm,
             "inline_vlm_model": self.inline_vlm_model,
             "inline_vlm_profile": self.inline_vlm_profile,
@@ -230,7 +250,9 @@ class KaggleImageProvider:
                 import torch.nn.functional as F
                 from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
                 from transformers import (
+                    AutoModelForCausalLM,
                     AutoProcessor,
+                    AutoTokenizer,
                     CLIPImageProcessor,
                     CLIPTokenizer,
                     CLIPVisionModelWithProjection,
@@ -246,7 +268,9 @@ class KaggleImageProvider:
                 import torch.nn.functional as F
                 from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
                 from transformers import (
+                    AutoModelForCausalLM,
                     AutoProcessor,
+                    AutoTokenizer,
                     CLIPImageProcessor,
                     CLIPTokenizer,
                     CLIPVisionModelWithProjection,
@@ -260,6 +284,139 @@ class KaggleImageProvider:
             worker_started = time.perf_counter()
             gpu_name = torch.cuda.get_device_name(0)
             generator = torch.Generator(device="cpu").manual_seed(int(CONFIG["seed"]))
+
+            inline_planner = None
+            if CONFIG["enable_inline_planner"]:
+                planner_started = time.perf_counter()
+
+                def parse_compiled_prompt(raw):
+                    raw = (raw or "").strip().strip(chr(96)).strip()
+                    if not raw:
+                        return ""
+                    cleaned = raw
+                    if cleaned.casefold().startswith("json"):
+                        cleaned = cleaned[4:].lstrip("\\n :")
+                    first_brace = cleaned.find("{{")
+                    last_brace = cleaned.rfind("}}")
+                    candidates = [cleaned]
+                    if 0 <= first_brace < last_brace:
+                        candidates.insert(0, cleaned[first_brace:last_brace + 1])
+                    for candidate in candidates:
+                        try:
+                            payload = json.loads(candidate)
+                        except Exception:
+                            continue
+                        if isinstance(payload, dict):
+                            for key in ("PROMPT", "prompt", "image_prompt", "description"):
+                                value = payload.get(key)
+                                if isinstance(value, str) and value.strip():
+                                    return value.strip()
+                    normalized = cleaned.replace("：", ":")
+                    for line in normalized.splitlines():
+                        line = line.strip().lstrip("-*# ").strip()
+                        if ":" not in line:
+                            continue
+                        key, value = line.split(":", 1)
+                        key = "".join(ch for ch in key.strip().upper() if ch.isalpha())
+                        if key in {{"PROMPT", "PROMT", "PROMP"}} and value.strip():
+                            return value.strip().strip(chr(96)).strip()
+                    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+                    if len(lines) == 1:
+                        line = lines[0]
+                        if ":" in line and line.casefold().startswith(("here is", "here's", "image prompt", "visual prompt")):
+                            line = line.split(":", 1)[1].strip()
+                        return line
+                    return ""
+
+                def looks_vietnamese(text):
+                    chars = set("ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồỗộớờởỡợúùủũụứừửữựýỳỷỹỵ")
+                    return any(ch in chars for ch in text.casefold())
+
+                def compile_prompt(model_name):
+                    load_started = time.perf_counter()
+                    tokenizer = AutoTokenizer.from_pretrained(model_name)
+                    planner_model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float16,
+                        device_map="auto",
+                        low_cpu_mem_usage=True,
+                    )
+                    planner_model.eval()
+                    model_ready = time.perf_counter()
+                    instruction = (
+                        "MEDIA_COMMAND_COMPILE\\n"
+                        "Translate the USER_COMMAND into ONE concise ENGLISH still-image description. "
+                        "Preserve subject count, species/person/object, action, location, camera/framing, lighting, "
+                        "and visual style. Do not invent alternatives. Return exactly one line: "
+                        "PROMPT: <English image description>\\nUSER_COMMAND: "
+                        + CONFIG["inline_planner_raw_command"]
+                    )
+                    messages = [{{"role": "user", "content": instruction}}]
+                    template_kwargs = {{
+                        "tokenize": False,
+                        "add_generation_prompt": True,
+                        "enable_thinking": False,
+                    }}
+                    rendered = tokenizer.apply_chat_template(messages, **template_kwargs)
+                    inputs = tokenizer([rendered], return_tensors="pt").to(planner_model.device)
+                    generate_started = time.perf_counter()
+                    with torch.inference_mode():
+                        generated = planner_model.generate(
+                            **inputs,
+                            max_new_tokens=120,
+                            do_sample=False,
+                            use_cache=True,
+                            repetition_penalty=1.05,
+                            no_repeat_ngram_size=3,
+                        )
+                    new_tokens = generated[:, inputs.input_ids.shape[1]:]
+                    raw_text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+                    generate_finished = time.perf_counter()
+                    compiled = parse_compiled_prompt(raw_text)
+                    valid = (
+                        len(compiled) >= 20
+                        and not looks_vietnamese(compiled)
+                        and "USER_COMMAND" not in compiled
+                    )
+                    timing = {{
+                        "model_load_seconds": round(model_ready - load_started, 3),
+                        "generate_seconds": round(generate_finished - generate_started, 3),
+                        "total_seconds": round(generate_finished - load_started, 3),
+                    }}
+                    del generated, inputs, planner_model, tokenizer
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    return compiled if valid else "", raw_text, timing
+
+                compiled_prompt, planner_raw, planner_timing = compile_prompt(
+                    CONFIG["inline_planner_fast_model"]
+                )
+                planner_model_used = CONFIG["inline_planner_fast_model"]
+                planner_fallback_used = False
+                if not compiled_prompt:
+                    planner_fallback_used = True
+                    compiled_prompt, planner_raw, planner_timing = compile_prompt(
+                        CONFIG["inline_planner_final_model"]
+                    )
+                    planner_model_used = CONFIG["inline_planner_final_model"]
+                if not compiled_prompt:
+                    raise RuntimeError("inline media planner did not produce a usable English prompt")
+                CONFIG["prompt"] = (
+                    compiled_prompt.rstrip(" .")
+                    + ". Quality requirements: "
+                    + CONFIG["inline_planner_positive_constraints"].strip().rstrip(" .")
+                    + "."
+                )
+                inline_planner = {{
+                    "model": planner_model_used,
+                    "fallback_used": planner_fallback_used,
+                    "raw_output": planner_raw,
+                    "compiled_prompt": compiled_prompt,
+                    "final_prompt": CONFIG["prompt"],
+                    "timings": planner_timing,
+                    "total_stage_seconds": round(time.perf_counter() - planner_started, 3),
+                }}
+
             image_model_load_started = time.perf_counter()
 
             pipe = AutoPipelineForText2Image.from_pretrained(
@@ -454,6 +611,8 @@ class KaggleImageProvider:
                 "visual_defect_score": visual_defect_score,
                 "visual_quality_margin": visual_quality_margin,
                 "clip_precheck": bool(CONFIG["enable_clip_precheck"]),
+                "inline_planner": inline_planner,
+                "compiled_prompt": CONFIG["prompt"],
                 "inline_vlm": inline_vlm,
                 "hf_xet_high_performance": os.environ.get("HF_XET_HIGH_PERFORMANCE") == "1",
                 "timings": {{

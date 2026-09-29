@@ -299,3 +299,57 @@ def test_image_worker_enables_hf_xet_high_performance():
 
     assert 'HF_XET_HIGH_PERFORMANCE' in source
     assert 'HF_HUB_DISABLE_TELEMETRY' in source
+
+
+
+def test_inline_planner_and_vlm_share_one_generated_worker():
+    provider = KaggleImageProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        enable_clip_precheck=False,
+        enable_cpu_offload=False,
+        enable_inline_planner=True,
+        inline_planner_raw_command="Tạo ảnh một chú chó Golden Retriever thật ngoài trời",
+        inline_planner_positive_constraints="natural realistic dog photo with correct anatomy",
+        enable_inline_vlm=True,
+        inline_vlm_model="Qwen/Qwen3-VL-2B-Instruct",
+        inline_vlm_profile="animal_photo_premium",
+        inline_vlm_rubric=("correct canine anatomy", "natural camera realism"),
+        inline_vlm_expected_subject_count=1,
+        inline_vlm_min_score=9.0,
+    )
+
+    source = provider._build_worker_source(
+        ImageGenerationRequest(
+            "placeholder prompt",
+            negative_prompt="bad anatomy",
+            width=512,
+            height=512,
+            seed=42,
+        )
+    )
+
+    compile(source, "<generated-image-worker>", "exec")
+    assert "Qwen/Qwen3-0.6B" in source
+    assert "Qwen/Qwen3-1.7B" in source
+    assert "inline media planner did not produce a usable English prompt" in source
+    assert source.index("compile_prompt(") < source.index("AutoPipelineForText2Image.from_pretrained")
+    assert source.index("AutoPipelineForText2Image.from_pretrained") < source.index(
+        "Qwen3VLForConditionalGeneration.from_pretrained"
+    )
+
+
+def test_inline_planner_requires_raw_command_and_constraints():
+    with pytest.raises(ValueError, match="inline_planner_raw_command"):
+        KaggleImageProvider(
+            worker=FakeWorker(),
+            enable_inline_planner=True,
+            inline_planner_positive_constraints="quality",
+        )
+
+    with pytest.raises(ValueError, match="inline_planner_positive_constraints"):
+        KaggleImageProvider(
+            worker=FakeWorker(),
+            enable_inline_planner=True,
+            inline_planner_raw_command="dog outside",
+        )
