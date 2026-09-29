@@ -43,6 +43,7 @@ def main() -> int:
         max_poll_attempts=120,
         max_new_tokens=180,
         temperature=0.0,
+        enable_thinking=False,
     )
     plan = MediaCommandPlanner(language_model).plan(command)
     if plan.mode != "image":
