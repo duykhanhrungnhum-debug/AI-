@@ -18,6 +18,7 @@ class KaggleImageProvider:
 
     worker: KaggleGpuWorker
     model: str = "playgroundai/playground-v2.5-1024px-aesthetic"
+    model_variant: str | None = None
     kernel_slug: str = "ai-agent-image-worker"
     poll_interval: float = 15.0
     max_poll_attempts: int = 120
@@ -193,6 +194,7 @@ class KaggleImageProvider:
                 f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin and self.enable_clip_precheck}",
                 f"gpu:{report.get('gpu_name')}",
                 f"model:{self.model}",
+                f"model_variant:{self.model_variant or 'default'}",
             ),
         )
 
@@ -200,6 +202,7 @@ class KaggleImageProvider:
         seed = 0 if request.seed is None else request.seed
         config = {
             "model": self.model,
+            "model_variant": self.model_variant,
             "prompt": request.prompt,
             "negative_prompt": request.negative_prompt,
             "width": request.width,
@@ -419,9 +422,12 @@ class KaggleImageProvider:
 
             image_model_load_started = time.perf_counter()
 
+            pipe_kwargs = {"torch_dtype": torch.float16}
+            if CONFIG.get("model_variant"):
+                pipe_kwargs["variant"] = CONFIG["model_variant"]
             pipe = AutoPipelineForText2Image.from_pretrained(
                 CONFIG["model"],
-                torch_dtype=torch.float16,
+                **pipe_kwargs,
             )
             if CONFIG["scheduler"] == "edm_dpm":
                 pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
@@ -604,6 +610,7 @@ class KaggleImageProvider:
                 "height": image.height,
                 "seed": int(CONFIG["seed"]),
                 "model": CONFIG["model"],
+                "model_variant": CONFIG.get("model_variant"),
                 "gpu_name": gpu_name,
                 "prompt_sha256": sha256(CONFIG["prompt"].encode("utf-8")).hexdigest(),
                 "prompt_alignment_score": prompt_alignment_score,
