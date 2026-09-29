@@ -13,6 +13,7 @@ from PIL import Image
 
 from .invariants import assert_core_invariants
 from .kaggle_worker import KaggleGpuWorker
+from .media_command import benchmark_manifest
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,11 @@ class KaggleVisionQualityVerifier:
                 *self._string_tuple(defect_parsed.get("uncertain_regions")),
             )))
             defect_reject = defect_parsed.get("reject") is True or bool(defect_issues)
+            profile_config = benchmark_manifest().get("profiles", {}).get(request.profile, {})
+            user_rejected = (
+                sha256(request.image).hexdigest()
+                in set(profile_config.get("known_rejected_sha256", ()))
+            )
             quality_score = self._score(parsed.get("quality_score"))
             prompt_match_score = self._score(parsed.get("prompt_match_score"))
             structure_score = self._score(parsed.get("structure_score"))
@@ -204,11 +210,14 @@ class KaggleVisionQualityVerifier:
                 and prompt_match_score >= self.min_prompt_match_score
                 and all(score >= self.min_quality_score for score in component_scores)
                 and not defect_reject
+                and not user_rejected
                 and not major_issues
                 and count_pass
             )
 
             issues = list(major_issues)
+            if user_rejected:
+                issues.append("image exactly matches a user-rejected quality example")
             if quality_score < self.min_quality_score:
                 issues.append(
                     f"VLM quality score below threshold: {quality_score:.2f} < {self.min_quality_score:.2f}"
@@ -270,6 +279,7 @@ class KaggleVisionQualityVerifier:
                     f"benchmark_match_score:{benchmark_match_score:.2f}",
                     f"defect_hunter_reject:{defect_reject}",
                     f"defect_hunter_issue_count:{len(defect_issues)}",
+                    f"user_rejected_feedback:{user_rejected}",
                     "review_passes:2",
                     "review_views:5",
                     f"subject_count:{subject_count}",
@@ -402,7 +412,7 @@ class KaggleVisionQualityVerifier:
             "    subprocess.check_call([",
             '        sys.executable, "-m", "pip", "install", "--quiet",',
             '        "transformers>=4.57,<5", "accelerate<2", "safetensors",',
-            '        "bitsandbytes>=0.45", "Pillow",',
+            '        "bitsandbytes>=0.46.1", "Pillow",',
             "    ])",
             "    import torch",
             "    from PIL import Image",
