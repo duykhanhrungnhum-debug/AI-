@@ -1179,13 +1179,16 @@ def compile_items(model_name, pending):
         instruction = (
             "MEDIA_COMMAND_COMPILE\n"
             "Understand USER_COMMAND semantically without a fixed species list. "
-            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species, subject count, action, location and requested style. "
+            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species/entity, subject count, action, location and requested style. "
             "SUBJECT_CLASS must be exactly animal, human, or general. "
             "STYLE_CLASS must be exactly photo, 3d, mascot, illustration, or general. "
-            "Return exactly three lines and no commentary:\n"
-            "SUBJECT_CLASS: animal|human|general\n"
-            "STYLE_CLASS: photo|3d|mascot|illustration|general\n"
-            "PROMPT: English image description\n"
+            "SUBJECT_NAME must be the exact English common name of the requested main species/entity, for example water buffalo, giraffe, woman, red sports car. "
+            "Do NOT copy schema examples or placeholder wording into any value. "
+            "Return exactly four labeled lines and no commentary:\n"
+            "SUBJECT_CLASS: <choose one allowed class>\n"
+            "STYLE_CLASS: <choose one allowed style>\n"
+            "SUBJECT_NAME: <exact English subject/entity name>\n"
+            "PROMPT: <complete English image description that explicitly names SUBJECT_NAME>\n"
             "USER_COMMAND: " + item["command"]
         )
         raw = generate_text(instruction, 180)
@@ -1198,24 +1201,34 @@ def compile_items(model_name, pending):
             len(parsed["prompt"]) >= 20
             and not looks_vietnamese(parsed["prompt"])
             and "USER_COMMAND" not in parsed["prompt"]
+            and not is_placeholder_prompt(parsed["prompt"])
         )
-        if not prompt_valid:
+        subject_name_valid = valid_subject_name(parsed.get("subject_name", ""))
+        if not prompt_valid or not subject_name_valid:
             retries += 1
             retry_raw = generate_text(
-                "Translate this image request into one complete concise ENGLISH image prompt. "
-                "Preserve the exact species, count, action, location and requested photo/3D style. "
-                "Return ONLY the English prompt sentence and nothing else. REQUEST: " + item["command"],
-                140,
+                "Translate the image request into English and identify the exact requested main species/entity. "
+                "Do not generalize or substitute the subject. Do not use placeholders. "
+                "Return exactly two labeled lines:\n"
+                "SUBJECT_NAME: <exact English common subject/entity name>\n"
+                "PROMPT: <one complete English image prompt that explicitly names that subject/entity>\n"
+                "REQUEST: " + item["command"],
+                170,
             )
             retry_parsed = parse_compiled_result(retry_raw)
-            retry_prompt = (retry_parsed["prompt"] or retry_raw).strip().strip(chr(96)).strip()
+            retry_prompt = (retry_parsed["prompt"] or "").strip().strip(chr(96)).strip()
+            retry_subject_name = (retry_parsed.get("subject_name") or "").strip()
             if (
                 len(retry_prompt) >= 20
                 and not looks_vietnamese(retry_prompt)
                 and "USER_COMMAND" not in retry_prompt
+                and not is_placeholder_prompt(retry_prompt)
             ):
                 parsed["prompt"] = retry_prompt
                 prompt_valid = True
+            if valid_subject_name(retry_subject_name):
+                parsed["subject_name"] = retry_subject_name
+                subject_name_valid = True
 
         classes_valid = (
             parsed["subject_class"] in valid_subjects
@@ -1225,7 +1238,7 @@ def compile_items(model_name, pending):
         if prompt_valid and not classes_valid:
             retries += 1
             class_raw = generate_text(
-                "Classify the image request semantically. Do not name the species. "
+                "Classify the image request semantically. "
                 "Return ONLY two tokens separated by a vertical bar: "
                 "first token animal, human, or general; second token photo, 3d, mascot, illustration, or general. "
                 "REQUEST: " + item["command"] + "\nENGLISH_PROMPT: " + parsed["prompt"],
@@ -1256,7 +1269,7 @@ def compile_items(model_name, pending):
             )
             classes_valid = True
 
-        valid = prompt_valid and classes_valid
+        valid = prompt_valid and subject_name_valid and classes_valid
         outputs[item["item_id"]] = {
             "valid": valid,
             "raw": raw,
