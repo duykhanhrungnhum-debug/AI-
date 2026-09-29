@@ -1,1 +1,1 @@
-buffalo-standard-final-v4-single-pass-hard-gate
+buffalo-hard-gate-branding-subject-v3
