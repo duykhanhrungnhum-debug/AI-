@@ -143,13 +143,13 @@ def test_command_compiler_rejects_untranslated_vietnamese_prompt_before_image_gp
         planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời trên cầu kính")
 
 
-def test_command_compiler_rejects_missing_prompt_label_before_image_gpu():
+def test_command_compiler_accepts_boilerplate_english_prompt_without_label():
     planner = MediaCommandPlanner(FakeModel(
         "Here is your translated image request: a woman jogging on a bridge"
     ))
 
-    with pytest.raises(ValueError, match="did not return a usable English image prompt"):
-        planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời")
+    plan = planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời")
+    assert plan.prompt.startswith("a woman jogging on a bridge")
 
 
 def test_qwen_real_label_typos_use_first_prompt_and_ignore_later_variant():
