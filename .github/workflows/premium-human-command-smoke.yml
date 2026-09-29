@@ -1,0 +1,63 @@
+name: Premium Human Command Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/premium-human-command-smoke.trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  premium-human:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      MEDIA_OUTPUT_DIR: premium-human-output
+      MEDIA_COMMAND: >-
+        Tạo một bức ảnh toàn thân chất lượng cao của một cô gái trẻ châu Á đang chạy bộ ngoài trời
+        trên cầu kính hiện đại vào buổi sáng, trang phục thể thao màu đen và xanh ngọc, cầm chai nước,
+        gương mặt tự nhiên vui vẻ, toàn thân rõ ràng từ đầu đến chân, bàn tay và ngón tay phải đúng giải phẫu,
+        ánh sáng tự nhiên, phong cách ảnh chụp chân thực cao cấp, chỉ một người trong ảnh.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require Kaggle token
+        run: test -n "$KAGGLE_API_TOKEN"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Compile command pipeline
+        run: >-
+          python -m py_compile
+          src/ai_agent/core/media_command.py
+          src/ai_agent/core/kaggle_image.py
+          scripts/generate_premium_image.py
+
+      - name: Generate premium human image from Vietnamese command
+        run: python scripts/generate_premium_image.py
+
+      - name: Upload premium human evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: premium-human-command-output
+          path: premium-human-output/
+          if-no-files-found: warn
+          retention-days: 7

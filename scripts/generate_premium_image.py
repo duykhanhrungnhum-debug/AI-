@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Generate a premium image from one natural-language command."""
+from __future__ import annotations
+
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+
+from ai_agent.core.image_model import ImageGenerationRequest
+from ai_agent.core.kaggle_image import KaggleImageProvider
+from ai_agent.core.kaggle_model import KaggleModelProvider
+from ai_agent.core.kaggle_worker import KaggleGpuWorker
+from ai_agent.core.media_command import MediaCommandPlanner
+
+
+def main() -> int:
+    command = os.environ.get("MEDIA_COMMAND", "").strip()
+    if not command:
+        raise ValueError("MEDIA_COMMAND is required")
+
+    token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+    username = os.environ.get("KAGGLE_USERNAME", "").strip()
+    if not token or not username:
+        raise RuntimeError("KAGGLE_API_TOKEN and KAGGLE_USERNAME are required")
+
+    output = Path(os.environ.get("MEDIA_OUTPUT_DIR", "premium-image-output"))
+    output.mkdir(parents=True, exist_ok=True)
+
+    worker = KaggleGpuWorker(
+        api_token=token,
+        username=username,
+        timeout=120,
+        submission_retry_attempts=5,
+        submission_retry_delay_seconds=30,
+    )
+    language_model = KaggleModelProvider(
+        worker=worker,
+        model=os.environ.get("MEDIA_COMMAND_MODEL", "Qwen/Qwen2.5-3B-Instruct"),
+        kernel_slug="ai-agent-media-command-planner",
+        poll_interval=15,
+        max_poll_attempts=120,
+        max_new_tokens=500,
+        temperature=0.0,
+    )
+    plan = MediaCommandPlanner(language_model).plan(command)
+    if plan.mode != "image":
+        raise ValueError("MEDIA_COMMAND resolved to video; use the video pipeline")
+
+    config = plan.model_config
+    provider = KaggleImageProvider(
+        worker=worker,
+        model=config.model,
+        kernel_slug="ai-agent-premium-image-command",
+        poll_interval=15,
+        max_poll_attempts=180,
+        inference_steps=config.inference_steps,
+        guidance_scale=config.guidance_scale,
+        scheduler=config.scheduler,
+        prompt_alignment_threshold=float(os.environ.get("MEDIA_PROMPT_ALIGNMENT_THRESHOLD", "0.22")),
+        visual_quality_margin_threshold=float(os.environ.get("MEDIA_VISUAL_QUALITY_MARGIN_THRESHOLD", "0.015")),
+        quality_good_text=config.quality_good_text,
+        quality_bad_texts=config.quality_bad_texts,
+    )
+    seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
+    request = ImageGenerationRequest(
+        prompt=plan.prompt,
+        negative_prompt=plan.negative_prompt,
+        width=plan.profile.width,
+        height=plan.profile.height,
+        seed=seed,
+    )
+
+    plan_data = {
+        "command": command,
+        "mode": plan.mode,
+        "profile": plan.profile.name,
+        "model": config.model,
+        "inference_steps": config.inference_steps,
+        "guidance_scale": config.guidance_scale,
+        "scheduler": config.scheduler,
+        "prompt": plan.prompt,
+        "negative_prompt": plan.negative_prompt,
+        "width": plan.profile.width,
+        "height": plan.profile.height,
+        "seed": seed,
+    }
+    (output / "plan.json").write_text(
+        json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        artifact = provider.generate(request)
+    except Exception as exc:
+        failure = {"verified": False, "error": str(exc), **plan_data}
+        (output / "failure.json").write_text(
+            json.dumps(failure, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        # Preserve the rejected candidate without another GPU render.
+        try:
+            (output / "candidate.png").write_bytes(
+                worker.download_output_file(provider.kernel_slug, "generated.png")
+            )
+            (output / "image_report.json").write_bytes(
+                worker.download_output_file(provider.kernel_slug, "image_report.json")
+            )
+        except Exception as collect_exc:
+            (output / "candidate-collect-error.txt").write_text(
+                repr(collect_exc) + "\n", encoding="utf-8"
+            )
+        raise
+
+    image_path = output / "image.png"
+    image_path.write_bytes(artifact.data)
+    manifest = {
+        "verified": True,
+        **plan_data,
+        "provider": artifact.provider,
+        "evidence": list(artifact.evidence),
+        "image_path": str(image_path),
+        "image_sha256": sha256(artifact.data).hexdigest(),
+        "size_bytes": len(artifact.data),
+    }
+    (output / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print("PREMIUM_IMAGE_COMMAND_OK")
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
