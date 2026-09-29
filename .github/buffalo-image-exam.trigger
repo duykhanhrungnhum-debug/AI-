@@ -1,1 +1,1 @@
-buffalo-image-exam-v2-species-guard-longer-wait
+buffalo-image-exam-v2-semantic-unified-model
