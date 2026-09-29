@@ -13,7 +13,16 @@ from ai_agent.core.image_model import ImageGenerationRequest
 from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
-from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MEDIA_COMMAND_FAST_MODEL, MediaCommandPlanner, benchmark_manifest
+from ai_agent.core.media_command import (
+    ANIMAL_PHOTO_PREMIUM,
+    GENERAL_PREMIUM,
+    HUMAN_PHOTO_PREMIUM,
+    MASCOT_PREMIUM,
+    MEDIA_COMMAND_BRAIN_MODEL,
+    MEDIA_COMMAND_FAST_MODEL,
+    MediaCommandPlanner,
+    benchmark_manifest,
+)
 from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
 
 
@@ -122,6 +131,20 @@ def main() -> int:
     timings["planning"] = round(perf_counter() - planning_started, 3)
     planner_models_used: dict[str, str] = {}
 
+    semantic_profiles = (
+        HUMAN_PHOTO_PREMIUM,
+        ANIMAL_PHOTO_PREMIUM,
+        MASCOT_PREMIUM,
+        GENERAL_PREMIUM,
+    )
+    profile_positive = {profile.name: profile.positive_constraints for profile in semantic_profiles}
+    profile_negative = {profile.name: profile.negative_constraints for profile in semantic_profiles}
+    manifest_profiles = benchmark_manifest()["profiles"]
+    profile_rubrics = {
+        profile.name: tuple(manifest_profiles[profile.name]["must_pass"])
+        for profile in semantic_profiles
+    }
+
     generated: dict[str, tuple[object, object, dict]] = {}
     inline_reviews: dict[str, tuple[VisionQualityRequest, object]] = {}
     statuses: dict[str, dict] = {}
@@ -175,6 +198,9 @@ def main() -> int:
             inline_planner_final_model=final_model_name,
             inline_planner_raw_command=command if use_inline_planner else "",
             inline_planner_positive_constraints=plan.profile.positive_constraints if use_inline_planner else "",
+            inline_profile_positive_constraints=profile_positive if use_inline_planner else {},
+            inline_profile_negative_constraints=profile_negative if use_inline_planner else {},
+            inline_profile_rubrics=profile_rubrics if use_inline_planner else {},
             quality_good_text=config.quality_good_text,
             quality_bad_texts=config.quality_bad_texts,
             enable_inline_vlm=True,
@@ -217,19 +243,29 @@ def main() -> int:
                     "fallback_used": bool(inline_planner_report.get("fallback_used")),
                 }
             actual_prompt = str(provider.last_report.get("compiled_prompt") or "").strip()
+            actual_profile = str(
+                provider.last_report.get("semantic_profile")
+                or inline_planner_report.get("semantic_profile")
+                or plan.profile.name
+            ).strip()
+            if actual_profile not in manifest_profiles:
+                actual_profile = plan.profile.name
+            plan_data["profile"] = actual_profile
+            plan_data["subject_class"] = str(inline_planner_report.get("subject_class") or "")
+            plan_data["style_class"] = str(inline_planner_report.get("style_class") or "")
             if actual_prompt:
                 plan_data["compiler_output"] = str(inline_planner_report.get("raw_output") or "")
                 plan_data["prompt"] = actual_prompt
-                (item_dir / "plan.json").write_text(
-                    json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
-                )
+            (item_dir / "plan.json").write_text(
+                json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         inline_report = provider.last_report.get("inline_vlm")
         if isinstance(inline_report, dict) and isinstance(inline_report.get("timings"), dict):
             timings["inline_vlm_worker"][item_id] = inline_report["timings"]
 
         (item_dir / "candidate.png").write_bytes(artifact.data)
-        benchmark = benchmark_manifest()["profiles"][plan.profile.name]
+        benchmark = manifest_profiles[str(plan_data.get("profile") or plan.profile.name)]
         digest = sha256(artifact.data).hexdigest()
         if digest in set(benchmark.get("known_rejected_sha256", ())):
             statuses[item_id] = {
@@ -261,7 +297,7 @@ def main() -> int:
             item_id=item_id,
             image=artifact.data,
             prompt=str(plan_data.get("prompt") or plan.prompt),
-            profile=plan.profile.name,
+            profile=str(plan_data.get("profile") or plan.profile.name),
             rubric=tuple(benchmark["must_pass"]),
             expected_subject_count=1,
         )
