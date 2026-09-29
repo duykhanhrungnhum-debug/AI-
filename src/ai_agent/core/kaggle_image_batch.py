@@ -1323,6 +1323,7 @@ for item in CONFIG["items"]:
         "negative_prompt": negative,
         "subject_class": parsed["subject_class"],
         "style_class": parsed["style_class"],
+        "subject_name": parsed["subject_name"],
         "semantic_profile": profile,
         "planner_raw": entry["raw"],
         "planner_retry_raw": entry.get("retry_raw", ""),
