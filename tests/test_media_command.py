@@ -83,7 +83,7 @@ def test_benchmark_manifest_pins_exact_user_reference_set():
     manifest = benchmark_manifest()
     refs = manifest["reference_set"]
 
-    assert manifest["version"] == 2
+    assert manifest["version"] == 3
     assert len(refs) == 4
     assert {item["profile"] for item in refs} == {"human_photo_premium", "mascot_premium"}
     assert {item["sha256"] for item in refs} == {
@@ -179,3 +179,16 @@ def test_qwen_spaced_prompt_label_is_normalized_without_using_alternative_descri
 
     assert plan.prompt.startswith("A high-quality full-body portrait")
     assert "alternative description" not in plan.prompt
+
+
+def test_benchmark_manifest_encodes_user_rejected_current_candidates_and_3d_style_target():
+    manifest = benchmark_manifest()
+    mascot = manifest["profiles"]["mascot_premium"]
+    human = manifest["profiles"]["human_photo_premium"]
+
+    assert "2525bafcc74e14444cb64e9c355a882d280417c712a23d1eaadd126aa3c28034" in mascot["known_rejected_sha256"]
+    assert "8e38371165a9c1017a1b56a414061f827ff11133cbe23231b7ab5aa800ffe1e9" in human["known_rejected_sha256"]
+    assert any("squat low wide crab silhouette" in item for item in mascot["must_pass"])
+    assert any("NOT a tall spherical balloon body" in item for item in mascot["must_pass"])
+    assert any("crisp white outline" in item for item in mascot["must_pass"])
+    assert any("NOT shiny plastic-toy material" in item for item in mascot["must_pass"])
