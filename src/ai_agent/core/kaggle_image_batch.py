@@ -974,7 +974,7 @@ def normalize_style(value):
 
 def parse_compiled_result(raw):
     raw = (raw or "").strip().strip(chr(96)).strip()
-    result = {"prompt": "", "subject_class": "", "style_class": "", "subject_name": ""}
+    result = {"prompt": "", "subject_class": "", "style_class": "", "subject_name": "", "structure_contract": ""}
     if not raw:
         return result
     cleaned = raw
@@ -1014,6 +1014,13 @@ def parse_compiled_result(raw):
             or payload.get("entity")
             or ""
         ).strip()
+        result["structure_contract"] = str(
+            payload.get("STRUCTURE_CONTRACT")
+            or payload.get("structure_contract")
+            or payload.get("ANATOMY_CONTRACT")
+            or payload.get("anatomy_contract")
+            or ""
+        ).strip()
         if result["prompt"]:
             return result
 
@@ -1029,6 +1036,8 @@ def parse_compiled_result(raw):
         "SUBJECTNAME": "subject_name",
         "SPECIES": "subject_name",
         "ENTITY": "subject_name",
+        "STRUCTURECONTRACT": "structure_contract",
+        "ANATOMYCONTRACT": "structure_contract",
     }
     lines = []
     for line in cleaned.replace("：", ":").splitlines():
@@ -1145,6 +1154,17 @@ def subject_name_matches_prompt(subject_name, prompt):
     return matched >= required
 
 
+def valid_structure_contract(value):
+    text = " ".join((value or "").strip().split())
+    if not (12 <= len(text) <= 420):
+        return False
+    if looks_vietnamese(text) or is_placeholder_prompt(text):
+        return False
+    lowered = text.casefold()
+    placeholders = ("describe anatomy", "structure here", "anatomy here", "exact structure")
+    return not any(token in lowered for token in placeholders)
+
+
 def choose_profile(subject, style, fallback):
     if style in ("3d", "mascot"):
         return "mascot_premium"
@@ -1204,11 +1224,15 @@ def compile_items(model_name, pending):
             "SUBJECT_CLASS must be exactly animal, human, or general. "
             "STYLE_CLASS must be exactly photo, 3d, mascot, illustration, or general. "
             "SUBJECT_NAME must be the exact English common name of the requested main species/entity, for example water buffalo, giraffe, woman, red sports car. "
+            "STRUCTURE_CONTRACT must state concise visible structural invariants with exact counts when known. "
+            "For animals include expected leg/hoof/paw, horn/antler, ear, tail, wing/fin/tusk counts and explicitly forbid lookalike appendages that species should not have. "
+            "For people include normal limb/head counts; for objects include key structural parts. "
             "Do NOT copy schema examples or placeholder wording into any value. "
-            "Return exactly four labeled lines and no commentary:\n"
+            "Return exactly five labeled lines and no commentary:\n"
             "SUBJECT_CLASS: <choose one allowed class>\n"
             "STYLE_CLASS: <choose one allowed style>\n"
             "SUBJECT_NAME: <exact English subject/entity name>\n"
+            "STRUCTURE_CONTRACT: <concise exact visible structure/count invariants>\n"
             "PROMPT: <complete English image description that explicitly names SUBJECT_NAME>\n"
             "USER_COMMAND: " + item["command"]
         )
@@ -1228,13 +1252,17 @@ def compile_items(model_name, pending):
             valid_subject_name(parsed.get("subject_name", ""))
             and subject_name_matches_prompt(parsed.get("subject_name", ""), parsed["prompt"])
         )
-        if not prompt_valid or not subject_name_valid:
+        structure_contract_valid = valid_structure_contract(parsed.get("structure_contract", ""))
+        if not prompt_valid or not subject_name_valid or not structure_contract_valid:
             retries += 1
             retry_raw = generate_text(
                 "Translate the image request into English and identify the exact requested main species/entity. "
                 "Do not generalize or substitute the subject. Do not use placeholders. "
-                "Return exactly two labeled lines:\n"
+                "Also produce a strict visible structure contract with exact appendage/part counts when known. "
+                "For animals explicitly state horn/antler/tusk/leg/ear/tail counts and forbid appendages the species should not have. "
+                "Return exactly three labeled lines:\n"
                 "SUBJECT_NAME: <exact English common subject/entity name>\n"
+                "STRUCTURE_CONTRACT: <concise exact visible structure/count invariants>\n"
                 "PROMPT: <one complete English image prompt that explicitly names that subject/entity>\n"
                 "REQUEST: " + item["command"],
                 170,
@@ -1242,6 +1270,7 @@ def compile_items(model_name, pending):
             retry_parsed = parse_compiled_result(retry_raw)
             retry_prompt = (retry_parsed["prompt"] or "").strip().strip(chr(96)).strip()
             retry_subject_name = (retry_parsed.get("subject_name") or "").strip()
+            retry_structure_contract = (retry_parsed.get("structure_contract") or "").strip()
             if (
                 len(retry_prompt) >= 20
                 and not looks_vietnamese(retry_prompt)
@@ -1256,6 +1285,9 @@ def compile_items(model_name, pending):
             ):
                 parsed["subject_name"] = retry_subject_name
                 subject_name_valid = True
+            if valid_structure_contract(retry_structure_contract):
+                parsed["structure_contract"] = retry_structure_contract
+                structure_contract_valid = True
 
         classes_valid = (
             parsed["subject_class"] in valid_subjects
@@ -1296,7 +1328,7 @@ def compile_items(model_name, pending):
             )
             classes_valid = True
 
-        valid = prompt_valid and subject_name_valid and classes_valid
+        valid = prompt_valid and subject_name_valid and structure_contract_valid and classes_valid
         outputs[item["item_id"]] = {
             "valid": valid,
             "raw": raw,
@@ -1344,7 +1376,15 @@ for item in CONFIG["items"]:
     positive = CONFIG["profile_positive_constraints"][profile]
     negative = CONFIG["profile_negative_constraints"][profile]
     width, height = CONFIG["profile_dimensions"][profile]
-    final_prompt = parsed["prompt"].rstrip(" .") + ". Quality requirements: " + positive.rstrip(" .") + "."
+    structure_contract = parsed["structure_contract"].strip().rstrip(" .")
+    final_prompt = (
+        parsed["prompt"].rstrip(" .")
+        + ". STRUCTURAL CONTRACT (hard requirement): "
+        + structure_contract
+        + ". Any extra, missing, duplicated or anatomically impossible listed part is forbidden. Quality requirements: "
+        + positive.rstrip(" .")
+        + "."
+    )
     if profile == "mascot_premium":
         final_prompt += (
             " Composition safety: keep the complete character fully inside the central 78 percent of the frame with generous clean margin "
@@ -1361,6 +1401,7 @@ for item in CONFIG["items"]:
         "subject_class": parsed["subject_class"],
         "style_class": parsed["style_class"],
         "subject_name": parsed["subject_name"],
+        "structure_contract": structure_contract,
         "semantic_profile": profile,
         "planner_raw": entry["raw"],
         "planner_retry_raw": entry.get("retry_raw", ""),
@@ -1563,11 +1604,13 @@ for item in compiled_items:
             "Judge only what is actually visible in the SAME image shown as full frame plus crops. "
             "PROFILE: " + item["semantic_profile"]
             + "; EXPECTED EXACT SUBJECT/SPECIES/ENTITY: " + item["subject_name"]
+            + "; STRUCTURAL CONTRACT: " + item["structure_contract"]
             + "; EXPECTED STYLE: " + item["style_class"]
             + "; ORIGINAL PROMPT: " + item["prompt"]
             + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
             + ("The complete full body must be visibly inside the frame. " if requires_full_body else "")
             + "Hard requirements: the main subject must be exactly the expected species/entity; style must match; subject count must be one; "
+            "STRUCTURAL CONTRACT is a hard count constraint: every listed part/count must match exactly, with no extra horns, antlers, tusks, ears, legs, tails, wings, fins or other prominent appendages; "
             "critical anatomy/appendages must be coherent; required framing must be satisfied; "
             "there must be NO unrequested visible text, letters, logo, watermark, emblem, signature, UI/app mark, corner badge or branding anywhere. "
             "For animal_photo_premium require unmistakable real-camera photographic realism and correct species anatomy; CGI or illustration means style_ok=false. "
@@ -1579,7 +1622,7 @@ for item in compiled_items:
             "If uncertain about exact species/entity, text/logo, anatomy, style, or framing, set the relevant boolean false and p=false. "
             "Return ONLY one JSON object and no Markdown. Required keys: "
             "p boolean; q,m,s,d,a,c,b numbers 0-10; n integer; "
-            "subject_ok,style_ok,count_ok,framing_ok,anatomy_ok,no_text_logo booleans; "
+            "subject_ok,style_ok,count_ok,framing_ok,anatomy_ok,structure_contract_ok,no_text_logo booleans; "
             "x,f,u,i arrays of short strings. Do not copy example values because no example values are provided."
         )
         review_started = time.perf_counter()
@@ -1593,6 +1636,7 @@ for item in compiled_items:
             "count_ok",
             "framing_ok",
             "anatomy_ok",
+            "structure_contract_ok",
             "no_text_logo",
         )
         main_hard_passed = bool(review_payload) and all(
@@ -1678,6 +1722,7 @@ for item in compiled_items:
             "hard_gate": {
                 "passed": hard_passed,
                 "subject_name": item["subject_name"],
+                "structure_contract": item["structure_contract"],
                 "requires_full_body": requires_full_body,
                 "checks": {flag: review_payload.get(flag) for flag in required_flags},
                 "branding_gate": {
