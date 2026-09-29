@@ -340,6 +340,26 @@ class KaggleVisionQualityVerifier:
             raise ValueError("VLM review JSON is malformed") from exc
         if not isinstance(parsed, dict):
             raise ValueError("VLM review JSON must be an object")
+
+        # Fast worker output may use compact keys to reduce generation latency.
+        if "p" in parsed or "q" in parsed:
+            parsed = {
+                "pass": parsed.get("p") is True,
+                "quality_score": parsed.get("q"),
+                "prompt_match_score": parsed.get("m"),
+                "structure_score": parsed.get("s"),
+                "detail_score": parsed.get("d"),
+                "aesthetic_score": parsed.get("a"),
+                "composition_score": parsed.get("c"),
+                "benchmark_match_score": parsed.get("b"),
+                "subject_count": parsed.get("n"),
+                "major_issues": [],
+                "critical_defects": parsed.get("x") or [],
+                "benchmark_failures": parsed.get("f") or [],
+                "uncertain_regions": parsed.get("u") or [],
+                "minor_issues": parsed.get("i") or [],
+                "summary": "",
+            }
         return parsed
 
     @staticmethod
@@ -476,10 +496,10 @@ class KaggleVisionQualityVerifier:
             '        "Set pass=true ONLY if every score including benchmark_match_score is >= 8, subject count is correct, and all defect/benchmark/uncertainty lists are empty. "',
             '        "Act as scorer and defect hunter in this single pass. Put blocking visible defects in critical_defects, benchmark misses in benchmark_failures, and any critical region you cannot verify in uncertain_regions. "',
             '        "If a critical region is uncertain, pass MUST be false. Never average a local defect away with a high overall score. "',
-            '        "Return JSON only with exactly these keys: "',
-            '        \'{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "structure_score": 0.0, \'',
-            '        \'"detail_score": 0.0, "aesthetic_score": 0.0, "composition_score": 0.0, "benchmark_match_score": 0.0, "subject_count": 1, \'',
-            '        \'"major_issues": [], "critical_defects": [], "benchmark_failures": [], "uncertain_regions": [], "minor_issues": [], "summary": ""}\'',
+            '        "Return ONLY one compact JSON object, with no prose before or after it. Use short issue phrases. "',
+            '        "Keys: p=pass, q=quality, m=prompt_match, s=structure, d=detail, a=aesthetic, c=composition, b=benchmark_match, "',
+            '        "n=subject_count, x=critical_defects, f=benchmark_failures, u=uncertain_regions, i=minor_issues. "',
+            '        \'Example schema: {"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}\'',
             "    )",
             "    def run_review(text_instruction):",
             "        content = [{\"type\": \"image\", \"image\": view} for view in views]",
@@ -492,12 +512,13 @@ class KaggleVisionQualityVerifier:
             "            return_dict=True,",
             '            return_tensors="pt",',
             "        ).to(model.device)",
-            "        with torch.no_grad():",
+            "        with torch.inference_mode():",
             "            generated = model.generate(",
             "                **inputs,",
-            "                max_new_tokens=220,",
+            "                max_new_tokens=200,",
             "                do_sample=False,",
-            "                repetition_penalty=1.04,",
+            "                use_cache=True,",
+            "                repetition_penalty=1.03,",
             "            )",
             "        generated_trimmed = [",
             "            output_ids[len(input_ids):]",
