@@ -69,9 +69,25 @@ def main() -> int:
         max_poll_attempts=120,
         max_new_tokens=180,
         temperature=0.0,
+        enable_thinking=False,
     )
     planner = MediaCommandPlanner(language_model)
-    plans = planner.plan_many(tuple(command for _, command in items))
+    try:
+        plans = planner.plan_many(tuple(command for _, command in items))
+    except Exception as exc:
+        (output / "planning-failure.json").write_text(
+            json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            raw_report = worker.download_output_file(
+                language_model.kernel_slug,
+                "responses.json",
+            )
+            (output / "compiler-responses.json").write_bytes(raw_report)
+        except Exception:
+            pass
+        raise
 
     generated: dict[str, tuple[object, object, dict]] = {}
     statuses: dict[str, dict] = {}
