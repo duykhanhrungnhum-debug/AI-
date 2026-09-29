@@ -148,7 +148,7 @@ def test_command_compiler_rejects_missing_prompt_label_before_image_gpu():
         "Here is your translated image request: a woman jogging on a bridge"
     ))
 
-    with pytest.raises(ValueError, match="did not return a PROMPT line"):
+    with pytest.raises(ValueError, match="did not return a usable English image prompt"):
         planner.plan("Tạo ảnh cô gái đang chạy bộ ngoài trời")
 
 
@@ -241,3 +241,23 @@ def test_dog_exam_routes_real_photo_and_cute_3d_to_different_profiles():
     assert "crab" not in cute.prompt.casefold()
     assert "lily pad" not in cute.prompt.casefold()
     assert cute.model_config.inference_steps == 40
+
+
+def test_command_compiler_accepts_json_prompt_output():
+    planner = MediaCommandPlanner(FakeModel(
+        '{"prompt":"one photorealistic golden retriever standing on grass in daylight","motion":""}'
+    ))
+    plan = planner.plan("Tạo ảnh chó Golden Retriever thật ngoài trời")
+
+    assert plan.prompt.startswith("one photorealistic golden retriever")
+    assert plan.motion_prompt == ""
+
+
+def test_command_compiler_accepts_clean_single_english_prompt_without_label():
+    planner = MediaCommandPlanner(FakeModel(
+        "one premium cute 3D golden retriever puppy mascot with coherent dog anatomy and studio lighting"
+    ))
+    plan = planner.plan("Tạo ảnh chó Golden Retriever 3D cute")
+
+    assert plan.prompt.startswith("one premium cute 3D golden retriever puppy mascot")
+    assert plan.profile == MASCOT_PREMIUM
