@@ -1,1 +1,1 @@
-premium-mascot-sdxl-v1
+premium-mascot-playground-v2
