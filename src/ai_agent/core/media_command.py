@@ -271,7 +271,11 @@ class MediaCommandPlanner:
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
-            key = key.strip().upper().replace(" ", "_")
+            key = "".join(
+                character
+                for character in key.strip().upper()
+                if character.isalpha()
+            )
             canonical = aliases.get(key)
             if canonical is not None and canonical not in values:
                 values[canonical] = value.strip().strip(chr(96)).strip()
