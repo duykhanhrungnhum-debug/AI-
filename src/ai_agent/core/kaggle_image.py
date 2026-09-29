@@ -26,6 +26,7 @@ class KaggleImageProvider:
     scheduler: str = "edm_dpm"
     prompt_alignment_threshold: float = 0.22
     visual_quality_margin_threshold: float = 0.015
+    enforce_visual_quality_margin: bool = True
     quality_good_text: str = (
         "premium production-ready image, coherent geometry, crisp detail, professional composition and lighting, "
         "clean materials and textures, no obvious AI artifacts"
@@ -115,7 +116,10 @@ class KaggleImageProvider:
             visual_quality_margin = float(report.get("visual_quality_margin"))
         except (TypeError, ValueError):
             visual_quality_margin = -2.0
-        if visual_quality_margin < self.visual_quality_margin_threshold:
+        if (
+            self.enforce_visual_quality_margin
+            and visual_quality_margin < self.visual_quality_margin_threshold
+        ):
             raise ValueError(
                 "visual quality margin below threshold: "
                 f"{visual_quality_margin:.4f} < {self.visual_quality_margin_threshold:.4f}"
@@ -134,6 +138,7 @@ class KaggleImageProvider:
                 f"prompt_alignment_score:{prompt_alignment_score:.6f}",
                 f"visual_quality_margin:{visual_quality_margin:.6f}",
                 f"visual_defect_score:{float(report.get('visual_defect_score', 0.0)):.6f}",
+                f"visual_quality_margin_enforced:{self.enforce_visual_quality_margin}",
                 f"gpu:{report.get('gpu_name')}",
                 f"model:{self.model}",
             ),
