@@ -692,3 +692,571 @@ class KaggleBatchImageProvider:
             print(json.dumps(batch_report, indent=2))
             """
         ).strip() + "\n"
+
+
+
+@dataclass(frozen=True)
+class SemanticImageBatchItem:
+    item_id: str
+    command: str
+    seed: int
+    fallback_profile: str = "general_premium"
+
+    def __post_init__(self) -> None:
+        if not self.item_id.strip() or not self.command.strip():
+            raise ValueError("item_id and command are required")
+        if self.seed < 0:
+            raise ValueError("seed must be non-negative")
+
+
+@dataclass(frozen=True)
+class SemanticImageBatchOutput:
+    artifacts: dict[str, ImageArtifact]
+    reports: dict[str, dict]
+    batch_report: dict
+
+
+@dataclass
+class KaggleSemanticImageBatchProvider:
+    """Semantic planner -> one image model load -> one VLM load for the whole batch."""
+
+    worker: KaggleGpuWorker
+    model: str = "SG161222/RealVisXL_V5.0"
+    model_variant: str | None = "fp16"
+    kernel_slug: str = "ai-agent-semantic-image-batch"
+    poll_interval: float = 3.0
+    max_poll_attempts: int = 600
+    inference_steps: int = 28
+    guidance_scale: float = 4.0
+    planner_fast_model: str = "Qwen/Qwen3-0.6B"
+    planner_final_model: str = "Qwen/Qwen3-1.7B"
+    vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
+    vlm_min_score: float = 9.0
+    profile_positive_constraints: dict[str, str] | None = None
+    profile_negative_constraints: dict[str, str] | None = None
+    profile_rubrics: dict[str, tuple[str, ...]] | None = None
+    profile_dimensions: dict[str, tuple[int, int]] | None = None
+    provider: str = "kaggle-gpu-semantic-image-batch"
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("model is required")
+        if not self.kernel_slug.strip() or "/" in self.kernel_slug:
+            raise ValueError("kernel_slug must be a plain Kaggle slug")
+        if self.poll_interval < 0 or self.max_poll_attempts <= 0:
+            raise ValueError("poll configuration must be valid")
+        if self.inference_steps <= 0:
+            raise ValueError("inference_steps must be positive")
+        if not 0 <= self.vlm_min_score <= 10:
+            raise ValueError("vlm_min_score must be in [0, 10]")
+        maps = (
+            self.profile_positive_constraints,
+            self.profile_negative_constraints,
+            self.profile_rubrics,
+            self.profile_dimensions,
+        )
+        if any(value is None for value in maps):
+            raise ValueError("semantic profile maps are required")
+        keys = set(self.profile_positive_constraints or {})
+        if not keys:
+            raise ValueError("semantic profile maps must not be empty")
+        if any(set(value or {}) != keys for value in maps[1:]):
+            raise ValueError("semantic profile maps must have matching keys")
+
+    def generate_batch(
+        self,
+        items: tuple[SemanticImageBatchItem, ...] | list[SemanticImageBatchItem],
+    ) -> SemanticImageBatchOutput:
+        assert_core_invariants()
+        items = tuple(items)
+        if not items:
+            raise ValueError("at least one semantic image item is required")
+        ids = [item.item_id for item in items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("semantic image item ids must be unique")
+
+        source = self._build_worker_source(items)
+        submission = self.worker.submit_script(
+            slug=self.kernel_slug,
+            title=self.kernel_slug.replace("-", " ").title(),
+            source=source,
+            enable_internet=True,
+            is_private=True,
+        )
+        for _ in range(self.max_poll_attempts):
+            status = self.worker.status(self.kernel_slug)
+            if status.terminal:
+                if not status.successful:
+                    logs = ""
+                    try:
+                        logs = self.worker.logs(self.kernel_slug)
+                    except Exception:
+                        pass
+                    detail = (status.failure_message or logs or status.status).strip()
+                    if len(detail) > 8000:
+                        detail = "...[tail]\n" + detail[-8000:]
+                    raise RuntimeError(f"Kaggle semantic image batch failed: {detail}")
+                break
+            if self.poll_interval:
+                time.sleep(self.poll_interval)
+        else:
+            raise TimeoutError("Timed out waiting for Kaggle semantic image batch")
+
+        report = self._parse_report(
+            self.worker.download_output_file(self.kernel_slug, "batch_report.json")
+        )
+        if report.get("model") != self.model:
+            raise ValueError("semantic batch report model mismatch")
+        reports = report.get("items")
+        if not isinstance(reports, dict):
+            raise ValueError("semantic batch report has no item map")
+        gpu_name = str(report.get("gpu_name", "")).strip()
+        if not gpu_name:
+            raise ValueError("semantic batch report has no GPU evidence")
+
+        artifacts: dict[str, ImageArtifact] = {}
+        normalized_reports: dict[str, dict] = {}
+        for item in items:
+            entry = reports.get(item.item_id)
+            if not isinstance(entry, dict):
+                raise ValueError(f"semantic batch report missing item: {item.item_id}")
+            image = self.worker.download_output_file(
+                self.kernel_slug,
+                f"{item.item_id}.png",
+            )
+            digest = sha256(image).hexdigest()
+            if entry.get("image_sha256") != digest:
+                raise ValueError(f"semantic batch hash mismatch: {item.item_id}")
+            try:
+                width, height = KaggleBatchImageProvider._png_dimensions(image)
+            except ValueError as exc:
+                raise ValueError(f"semantic batch invalid PNG: {item.item_id}") from exc
+            if width != int(entry.get("width", 0)) or height != int(entry.get("height", 0)):
+                raise ValueError(f"semantic batch dimensions mismatch: {item.item_id}")
+            profile = str(entry.get("semantic_profile", "")).strip()
+            if profile not in set(self.profile_rubrics or {}):
+                raise ValueError(f"semantic batch profile invalid: {item.item_id}")
+            normalized_reports[item.item_id] = entry
+            artifacts[item.item_id] = ImageArtifact(
+                data=image,
+                mime_type="image/png",
+                provider=self.provider,
+                model=self.model,
+                evidence=(
+                    f"kaggle_kernel:{submission.ref}",
+                    f"item_id:{item.item_id}",
+                    f"image_sha256:{digest}",
+                    f"dimensions:{width}x{height}",
+                    f"seed:{item.seed}",
+                    f"semantic_profile:{profile}",
+                    f"subject_class:{entry.get('subject_class')}",
+                    f"style_class:{entry.get('style_class')}",
+                    f"planner_model:{entry.get('planner_model')}",
+                    f"vlm_model:{self.vlm_model}",
+                    f"gpu:{gpu_name}",
+                    f"model:{self.model}",
+                    f"model_variant:{self.model_variant or 'default'}",
+                ),
+            )
+        return SemanticImageBatchOutput(
+            artifacts=artifacts,
+            reports=normalized_reports,
+            batch_report=report,
+        )
+
+    @staticmethod
+    def _parse_report(data: bytes) -> dict:
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("semantic batch report is invalid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("semantic batch report must be an object")
+        return parsed
+
+    def _build_worker_source(
+        self,
+        items: tuple[SemanticImageBatchItem, ...],
+    ) -> str:
+        config = {
+            "model": self.model,
+            "model_variant": self.model_variant,
+            "inference_steps": self.inference_steps,
+            "guidance_scale": self.guidance_scale,
+            "planner_fast_model": self.planner_fast_model,
+            "planner_final_model": self.planner_final_model,
+            "vlm_model": self.vlm_model,
+            "vlm_min_score": self.vlm_min_score,
+            "profile_positive_constraints": self.profile_positive_constraints,
+            "profile_negative_constraints": self.profile_negative_constraints,
+            "profile_rubrics": {
+                key: list(value)
+                for key, value in (self.profile_rubrics or {}).items()
+            },
+            "profile_dimensions": {
+                key: list(value)
+                for key, value in (self.profile_dimensions or {}).items()
+            },
+            "items": [
+                {
+                    "item_id": item.item_id,
+                    "command": item.command,
+                    "seed": item.seed,
+                    "fallback_profile": item.fallback_profile,
+                }
+                for item in items
+            ],
+        }
+        config_json = json.dumps(config, ensure_ascii=False)
+        template = r"""
+from __future__ import annotations
+
+from hashlib import sha256
+import gc
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CONFIG = json.loads(__CONFIG_JSON__)
+os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+try:
+    import torch
+    from PIL import Image
+    from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler
+    from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer, Qwen3VLForConditionalGeneration
+except ImportError:
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--quiet",
+        "diffusers<1", "transformers>=4.57,<5", "accelerate<2", "safetensors", "Pillow<13",
+    ])
+    import torch
+    from PIL import Image
+    from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler
+    from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer, Qwen3VLForConditionalGeneration
+
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA GPU is not available")
+
+started = time.perf_counter()
+gpu_name = torch.cuda.get_device_name(0)
+
+
+def parse_compiled_result(raw):
+    raw = (raw or "").strip().strip(chr(96)).strip()
+    result = {"prompt": "", "subject_class": "", "style_class": ""}
+    if not raw:
+        return result
+    cleaned = raw
+    if cleaned.casefold().startswith("json"):
+        cleaned = cleaned[4:].lstrip("\n :")
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    candidates = [cleaned]
+    if 0 <= first_brace < last_brace:
+        candidates.insert(0, cleaned[first_brace:last_brace + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        result["prompt"] = str(payload.get("PROMPT") or payload.get("prompt") or "").strip()
+        result["subject_class"] = str(payload.get("SUBJECT_CLASS") or payload.get("subject_class") or "").strip().casefold()
+        result["style_class"] = str(payload.get("STYLE_CLASS") or payload.get("style_class") or "").strip().casefold()
+        if result["prompt"]:
+            return result
+    aliases = {
+        "PROMPT": "prompt",
+        "PROMT": "prompt",
+        "PROMP": "prompt",
+        "SUBJECTCLASS": "subject_class",
+        "SUBJECT": "subject_class",
+        "STYLECLASS": "style_class",
+        "STYLE": "style_class",
+    }
+    for line in cleaned.replace("：", ":").splitlines():
+        line = line.strip().lstrip("-*# ").strip()
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = "".join(ch for ch in key.strip().upper() if ch.isalpha())
+        canonical = aliases.get(key)
+        if canonical and value.strip() and not result[canonical]:
+            result[canonical] = value.strip().strip(chr(96)).strip()
+    result["subject_class"] = result["subject_class"].casefold()
+    result["style_class"] = result["style_class"].casefold()
+    return result
+
+
+def looks_vietnamese(text):
+    chars = set("ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồỗộớờởỡợúùủũụứừửữựýỳỷỹỵ")
+    return any(ch in chars for ch in text.casefold())
+
+
+def choose_profile(subject, style, fallback):
+    if style in ("3d", "mascot"):
+        return "mascot_premium"
+    if subject == "animal" and style == "photo":
+        return "animal_photo_premium"
+    if subject == "human" and style == "photo":
+        return "human_photo_premium"
+    if subject == "animal":
+        return "animal_photo_premium"
+    if subject == "human":
+        return "human_photo_premium"
+    return fallback if fallback in CONFIG["profile_rubrics"] else "general_premium"
+
+
+def compile_items(model_name, pending):
+    load_started = time.perf_counter()
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+    )
+    model.eval()
+    ready = time.perf_counter()
+    outputs = {}
+    valid_subjects = {"animal", "human", "general"}
+    valid_styles = {"photo", "3d", "mascot", "illustration", "general"}
+    for item in pending:
+        instruction = (
+            "MEDIA_COMMAND_COMPILE\n"
+            "Understand USER_COMMAND semantically without a fixed species list. "
+            "Translate it into ONE concise ENGLISH still-image description and preserve the exact species, subject count, action, location and requested style. "
+            "SUBJECT_CLASS must be exactly animal, human, or general. "
+            "STYLE_CLASS must be exactly photo, 3d, mascot, illustration, or general. "
+            "Return exactly three lines and no commentary:\n"
+            "SUBJECT_CLASS: <animal|human|general>\n"
+            "STYLE_CLASS: <photo|3d|mascot|illustration|general>\n"
+            "PROMPT: <English image description>\n"
+            "USER_COMMAND: " + item["command"]
+        )
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": instruction}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
+        gen_started = time.perf_counter()
+        with torch.inference_mode():
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=150,
+                do_sample=False,
+                use_cache=True,
+                repetition_penalty=1.05,
+                no_repeat_ngram_size=3,
+            )
+        new_tokens = generated[:, inputs.input_ids.shape[1]:]
+        raw = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+        parsed = parse_compiled_result(raw)
+        valid = (
+            len(parsed["prompt"]) >= 20
+            and not looks_vietnamese(parsed["prompt"])
+            and parsed["subject_class"] in valid_subjects
+            and parsed["style_class"] in valid_styles
+        )
+        outputs[item["item_id"]] = {
+            "valid": valid,
+            "raw": raw,
+            "parsed": parsed,
+            "generate_seconds": round(time.perf_counter() - gen_started, 3),
+        }
+    timing = {
+        "model_load_seconds": round(ready - load_started, 3),
+        "total_seconds": round(time.perf_counter() - load_started, 3),
+    }
+    del model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+    return outputs, timing
+
+
+planner_outputs, planner_fast_timing = compile_items(CONFIG["planner_fast_model"], CONFIG["items"])
+failed_ids = {
+    item["item_id"]
+    for item in CONFIG["items"]
+    if not planner_outputs[item["item_id"]]["valid"]
+}
+planner_final_timing = None
+if failed_ids:
+    pending = [item for item in CONFIG["items"] if item["item_id"] in failed_ids]
+    fallback_outputs, planner_final_timing = compile_items(CONFIG["planner_final_model"], pending)
+    planner_outputs.update(fallback_outputs)
+
+compiled_items = []
+for item in CONFIG["items"]:
+    entry = planner_outputs[item["item_id"]]
+    if not entry["valid"]:
+        raise RuntimeError("semantic planner failed for item " + item["item_id"])
+    parsed = entry["parsed"]
+    profile = choose_profile(
+        parsed["subject_class"],
+        parsed["style_class"],
+        item["fallback_profile"],
+    )
+    positive = CONFIG["profile_positive_constraints"][profile]
+    negative = CONFIG["profile_negative_constraints"][profile]
+    width, height = CONFIG["profile_dimensions"][profile]
+    compiled_items.append({
+        **item,
+        "prompt": parsed["prompt"].rstrip(" .") + ". Quality requirements: " + positive.rstrip(" .") + ".",
+        "negative_prompt": negative,
+        "subject_class": parsed["subject_class"],
+        "style_class": parsed["style_class"],
+        "semantic_profile": profile,
+        "planner_raw": entry["raw"],
+        "planner_model": CONFIG["planner_final_model"] if item["item_id"] in failed_ids else CONFIG["planner_fast_model"],
+        "planner_generate_seconds": entry["generate_seconds"],
+        "width": int(width),
+        "height": int(height),
+    })
+
+image_load_started = time.perf_counter()
+pipe_kwargs = {"torch_dtype": torch.float16}
+if CONFIG.get("model_variant"):
+    pipe_kwargs["variant"] = CONFIG["model_variant"]
+pipe = AutoPipelineForText2Image.from_pretrained(CONFIG["model"], **pipe_kwargs)
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+    pipe.scheduler.config,
+    use_karras_sigmas=True,
+)
+pipe = pipe.to("cuda")
+pipe.enable_vae_slicing()
+image_ready = time.perf_counter()
+
+image_reports = {}
+for item in compiled_items:
+    generate_started = time.perf_counter()
+    generator = torch.Generator(device="cpu").manual_seed(int(item["seed"]))
+    result = pipe(
+        prompt=item["prompt"],
+        negative_prompt=item["negative_prompt"] or None,
+        width=item["width"],
+        height=item["height"],
+        num_inference_steps=int(CONFIG["inference_steps"]),
+        guidance_scale=float(CONFIG["guidance_scale"]),
+        generator=generator,
+    )
+    image = result.images[0]
+    output_path = Path("/kaggle/working") / (item["item_id"] + ".png")
+    image.save(output_path, format="PNG")
+    data = output_path.read_bytes()
+    image_reports[item["item_id"]] = {
+        **item,
+        "image_sha256": sha256(data).hexdigest(),
+        "model": CONFIG["model"],
+        "model_variant": CONFIG.get("model_variant"),
+        "image_generation_seconds": round(time.perf_counter() - generate_started, 3),
+    }
+
+del pipe
+gc.collect()
+torch.cuda.empty_cache()
+
+qa_load_started = time.perf_counter()
+qa_model = Qwen3VLForConditionalGeneration.from_pretrained(
+    CONFIG["vlm_model"],
+    torch_dtype=torch.float16,
+    device_map="auto",
+    low_cpu_mem_usage=True,
+    attn_implementation="sdpa",
+)
+qa_processor = AutoProcessor.from_pretrained(CONFIG["vlm_model"])
+qa_model.eval()
+qa_ready = time.perf_counter()
+
+for item in compiled_items:
+    image = Image.open(Path("/kaggle/working") / (item["item_id"] + ".png")).convert("RGB")
+    image.thumbnail((1024, 1024))
+    width, height = image.size
+    views = [
+        image,
+        image.crop((0, 0, width, max(1, height // 2))),
+        image.crop((0, height // 2, width, height)),
+    ]
+    rubric = "\n".join(
+        "- " + value
+        for value in CONFIG["profile_rubrics"][item["semantic_profile"]]
+    )
+    instruction = (
+        "You are the strict final visual-quality inspector for a production image pipeline. "
+        "Judge only what is visible. PROFILE: " + item["semantic_profile"]
+        + "; ORIGINAL PROMPT: " + item["prompt"]
+        + "; EXPECTED MAIN SUBJECT COUNT: 1; QUALITY RUBRIC: " + rubric + ". "
+        "Inspect anatomy/geometry, appendages, face/eyes, materials, lighting, perspective, texture continuity, background coherence and AI artifacts. "
+        "For animal photo profile require real-camera realism and correct species anatomy. "
+        "For mascot profile require the requested premium 3D style, species-correct anatomy, clean appendages and non-cheap materials. "
+        "Score 0-10 for q=quality,m=prompt match,s=structure,d=detail,a=aesthetic,c=composition,b=benchmark. "
+        "Set p=true ONLY if every score is at least " + str(CONFIG["vlm_min_score"])
+        + ", subject count is correct, and x/f/u are empty. If uncertain about a critical region, p=false. "
+        "Return ONLY compact JSON: "
+        '{"p":true,"q":9,"m":9,"s":9,"d":9,"a":9,"c":9,"b":9,"n":1,"x":[],"f":[],"u":[],"i":[]}'
+    )
+    content = [{"type": "image", "image": view} for view in views]
+    content.append({"type": "text", "text": instruction})
+    qa_inputs = qa_processor.apply_chat_template(
+        [{"role": "user", "content": content}],
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(qa_model.device)
+    review_started = time.perf_counter()
+    with torch.inference_mode():
+        generated = qa_model.generate(
+            **qa_inputs,
+            max_new_tokens=180,
+            do_sample=False,
+            use_cache=True,
+            repetition_penalty=1.03,
+        )
+    trimmed = [
+        output_ids[len(input_ids):]
+        for input_ids, output_ids in zip(qa_inputs.input_ids, generated)
+    ]
+    review_text = qa_processor.batch_decode(
+        trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )[0].strip()
+    if not review_text:
+        raise RuntimeError("empty VLM review for " + item["item_id"])
+    image_reports[item["item_id"]]["review_text"] = review_text
+    image_reports[item["item_id"]]["qa_review_seconds"] = round(
+        time.perf_counter() - review_started,
+        3,
+    )
+
+report = {
+    "gpu_name": gpu_name,
+    "model": CONFIG["model"],
+    "model_variant": CONFIG.get("model_variant"),
+    "planner_fast_timing": planner_fast_timing,
+    "planner_final_timing": planner_final_timing,
+    "image_model_load_seconds": round(image_ready - image_load_started, 3),
+    "qa_model_load_seconds": round(qa_ready - qa_load_started, 3),
+    "worker_total_seconds": round(time.perf_counter() - started, 3),
+    "items": image_reports,
+}
+Path("/kaggle/working/batch_report.json").write_text(
+    json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+print("AI_AGENT_SEMANTIC_IMAGE_BATCH_OK")
+print(json.dumps(report, ensure_ascii=False, indent=2))
+"""
+        return textwrap.dedent(template).replace(
+            "__CONFIG_JSON__",
+            repr(config_json),
+        ).strip() + "\n"
