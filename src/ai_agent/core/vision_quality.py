@@ -51,6 +51,7 @@ class VisionQualityResult:
     detail_score: float
     aesthetic_score: float
     composition_score: float
+    benchmark_match_score: float
     subject_count: int | None
     major_issues: tuple[str, ...]
     minor_issues: tuple[str, ...]
@@ -167,6 +168,7 @@ class KaggleVisionQualityVerifier:
             detail_score = self._score(parsed.get("detail_score"))
             aesthetic_score = self._score(parsed.get("aesthetic_score"))
             composition_score = self._score(parsed.get("composition_score"))
+            benchmark_match_score = self._score(parsed.get("benchmark_match_score"))
             major_issues = self._string_tuple(parsed.get("major_issues"))
             minor_issues = self._string_tuple(parsed.get("minor_issues"))
             try:
@@ -184,6 +186,7 @@ class KaggleVisionQualityVerifier:
                 detail_score,
                 aesthetic_score,
                 composition_score,
+                benchmark_match_score,
             )
             passed = (
                 vlm_pass
@@ -209,6 +212,7 @@ class KaggleVisionQualityVerifier:
                 ("detail", detail_score),
                 ("aesthetic", aesthetic_score),
                 ("composition", composition_score),
+                ("benchmark_match", benchmark_match_score),
             ):
                 if score < self.min_quality_score:
                     issues.append(
@@ -231,6 +235,7 @@ class KaggleVisionQualityVerifier:
                 detail_score=detail_score,
                 aesthetic_score=aesthetic_score,
                 composition_score=composition_score,
+                benchmark_match_score=benchmark_match_score,
                 subject_count=subject_count,
                 major_issues=tuple(dict.fromkeys(issues)),
                 minor_issues=minor_issues,
@@ -248,6 +253,7 @@ class KaggleVisionQualityVerifier:
                     f"detail_score:{detail_score:.2f}",
                     f"aesthetic_score:{aesthetic_score:.2f}",
                     f"composition_score:{composition_score:.2f}",
+                    f"benchmark_match_score:{benchmark_match_score:.2f}",
                     "review_views:5",
                     f"subject_count:{subject_count}",
                     f"profile:{request.profile}",
@@ -427,13 +433,15 @@ class KaggleVisionQualityVerifier:
             '        "plastic or melted clothing/skin, warped architecture or props, or obvious AI artifacts. "',
             '        "For mascot_premium, reject crude or generic 3D, malformed/duplicated claws or legs, melted shell/body, inconsistent eyes, "',
             '        "weak expression, muddy materials, flat lighting, dirty silhouette/cutout edges, or anything below polished studio asset quality. "',
+            '        "Treat QUALITY RUBRIC as the user-approved benchmark target, not optional advice. Generic technical beauty is insufficient if benchmark shape/material/style differs. "',
             '        "Score 0-10: quality_score overall production readiness; prompt_match_score; structure_score anatomy/geometry; "',
-            '        "detail_score local materials/textures/edges; aesthetic_score polish/lighting/expression; composition_score framing/background. "',
-            '        "Set pass=true ONLY if every score is >= 8, subject count is correct, and major_issues is empty. "',
+            '        "detail_score local materials/textures/edges; aesthetic_score polish/lighting/expression; composition_score framing/background; "',
+            '        "benchmark_match_score how closely the output reaches the specific user benchmark visual language described in QUALITY RUBRIC. "',
+            '        "Set pass=true ONLY if every score including benchmark_match_score is >= 8, subject count is correct, and major_issues is empty. "',
             '        "If a critical region is visibly suspicious or malformed, list it as a major issue rather than averaging it away. "',
             '        "Return JSON only with exactly these keys: "',
             '        \'{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "structure_score": 0.0, \'',
-            '        \'"detail_score": 0.0, "aesthetic_score": 0.0, "composition_score": 0.0, "subject_count": 1, \'',
+            '        \'"detail_score": 0.0, "aesthetic_score": 0.0, "composition_score": 0.0, "benchmark_match_score": 0.0, "subject_count": 1, \'',
             '        \'"major_issues": [], "minor_issues": [], "summary": ""}\'',
             "    )",
             "    content = [{\"type\": \"image\", \"image\": view} for view in views]",
