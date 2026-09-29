@@ -283,3 +283,19 @@ def test_inline_vlm_requires_profile_and_rubric():
             enable_inline_vlm=True,
             inline_vlm_profile="animal_photo_premium",
         )
+
+
+
+def test_image_worker_enables_hf_xet_high_performance():
+    provider = KaggleImageProvider(
+        worker=FakeWorker(),
+        poll_interval=0,
+        enable_clip_precheck=False,
+        enable_cpu_offload=False,
+    )
+    source = provider._build_worker_source(
+        ImageGenerationRequest("one dog", width=512, height=512, seed=42)
+    )
+
+    assert 'HF_XET_HIGH_PERFORMANCE' in source
+    assert 'HF_HUB_DISABLE_TELEMETRY' in source

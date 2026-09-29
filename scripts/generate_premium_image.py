@@ -11,7 +11,7 @@ from ai_agent.core.image_model import ImageGenerationRequest
 from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
-from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MediaCommandPlanner, benchmark_manifest
+from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MEDIA_COMMAND_FAST_MODEL, MediaCommandPlanner, benchmark_manifest
 from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
 
 
@@ -35,17 +35,32 @@ def main() -> int:
         submission_retry_attempts=5,
         submission_retry_delay_seconds=30,
     )
-    language_model = KaggleModelProvider(
+    fast_model_name = os.environ.get("MEDIA_COMMAND_FAST_MODEL", MEDIA_COMMAND_FAST_MODEL)
+    final_model_name = os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL)
+    fast_language_model = KaggleModelProvider(
         worker=worker,
-        model=os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
-        kernel_slug="ai-agent-media-command-planner",
+        model=fast_model_name,
+        kernel_slug="ai-agent-media-command-fast",
         poll_interval=15,
         max_poll_attempts=120,
-        max_new_tokens=180,
+        max_new_tokens=140,
         temperature=0.0,
         enable_thinking=False,
     )
-    plan = MediaCommandPlanner(language_model).plan(command)
+    try:
+        plan = MediaCommandPlanner(fast_language_model).plan(command)
+    except Exception:
+        final_language_model = KaggleModelProvider(
+            worker=worker,
+            model=final_model_name,
+            kernel_slug="ai-agent-media-command-final",
+            poll_interval=15,
+            max_poll_attempts=120,
+            max_new_tokens=180,
+            temperature=0.0,
+            enable_thinking=False,
+        )
+        plan = MediaCommandPlanner(final_language_model).plan(command)
     if plan.mode != "image":
         raise ValueError("MEDIA_COMMAND resolved to video; use the video pipeline")
 

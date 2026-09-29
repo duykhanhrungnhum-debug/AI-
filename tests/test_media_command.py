@@ -4,6 +4,7 @@ from ai_agent.core.media_command import (
     ANIMAL_PHOTO_PREMIUM,
     HUMAN_PHOTO_PREMIUM,
     MEDIA_COMMAND_BRAIN_MODEL,
+    MEDIA_COMMAND_FAST_MODEL,
     MASCOT_PREMIUM,
     MediaCommandPlanner,
     benchmark_manifest,
@@ -190,6 +191,7 @@ def test_qwen_spaced_prompt_label_is_normalized_without_using_alternative_descri
 
 
 def test_media_command_brain_uses_qwen3_instruct_generation():
+    assert MEDIA_COMMAND_FAST_MODEL == "Qwen/Qwen3-0.6B"
     assert MEDIA_COMMAND_BRAIN_MODEL == "Qwen/Qwen3-1.7B"
 
 

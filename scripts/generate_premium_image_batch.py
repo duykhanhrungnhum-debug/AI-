@@ -13,7 +13,7 @@ from ai_agent.core.image_model import ImageGenerationRequest
 from ai_agent.core.kaggle_image import KaggleImageProvider
 from ai_agent.core.kaggle_model import KaggleModelProvider
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
-from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MediaCommandPlanner, benchmark_manifest
+from ai_agent.core.media_command import MEDIA_COMMAND_BRAIN_MODEL, MEDIA_COMMAND_FAST_MODEL, MediaCommandPlanner, benchmark_manifest
 from ai_agent.core.vision_quality import HybridVisionQualityVerifier, VisionQualityRequest, result_from_inline_review
 
 
@@ -62,39 +62,56 @@ def main() -> int:
         submission_retry_attempts=5,
         submission_retry_delay_seconds=30,
     )
-    language_model = KaggleModelProvider(
+    fast_model_name = os.environ.get("MEDIA_COMMAND_FAST_MODEL", MEDIA_COMMAND_FAST_MODEL)
+    final_model_name = os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL)
+    fast_language_model = KaggleModelProvider(
         worker=worker,
-        model=os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
-        kernel_slug="ai-agent-media-command-batch",
+        model=fast_model_name,
+        kernel_slug="ai-agent-media-command-fast",
         poll_interval=15,
         max_poll_attempts=120,
-        max_new_tokens=180,
+        max_new_tokens=140,
         temperature=0.0,
         enable_thinking=False,
     )
-    planner = MediaCommandPlanner(language_model)
     timings: dict[str, float | dict[str, float]] = {
         "image_generation": {},
         "image_worker": {},
         "inline_vlm_worker": {},
     }
     planning_started = perf_counter()
+    planner_model_used = fast_model_name
+    planner_fallback_used = False
     try:
-        plans = planner.plan_many(tuple(command for _, command in items))
-    except Exception as exc:
-        (output / "planning-failure.json").write_text(
-            json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        plans = MediaCommandPlanner(fast_language_model).plan_many(
+            tuple(command for _, command in items)
+        )
+    except Exception as fast_exc:
+        planner_fallback_used = True
+        final_language_model = KaggleModelProvider(
+            worker=worker,
+            model=final_model_name,
+            kernel_slug="ai-agent-media-command-final",
+            poll_interval=15,
+            max_poll_attempts=120,
+            max_new_tokens=180,
+            temperature=0.0,
+            enable_thinking=False,
         )
         try:
-            raw_report = worker.download_output_file(
-                language_model.kernel_slug,
-                "responses.json",
+            plans = MediaCommandPlanner(final_language_model).plan_many(
+                tuple(command for _, command in items)
             )
-            (output / "compiler-responses.json").write_bytes(raw_report)
-        except Exception:
-            pass
-        raise
+            planner_model_used = final_model_name
+        except Exception as final_exc:
+            (output / "planning-failure.json").write_text(
+                json.dumps({
+                    "fast_error": str(fast_exc),
+                    "final_error": str(final_exc),
+                }, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            raise
     timings["planning"] = round(perf_counter() - planning_started, 3)
 
     generated: dict[str, tuple[object, object, dict]] = {}
@@ -317,7 +334,10 @@ def main() -> int:
         "batch_size": len(items),
         "verified_count": sum(1 for item in statuses.values() if item.get("verified")),
         "failed_count": sum(1 for item in statuses.values() if not item.get("verified")),
-        "brain_model": os.environ.get("MEDIA_COMMAND_MODEL", MEDIA_COMMAND_BRAIN_MODEL),
+        "brain_model": planner_model_used,
+        "planner_fast_model": fast_model_name,
+        "planner_final_model": final_model_name,
+        "planner_fallback_used": planner_fallback_used,
         "clip_precheck": os.environ.get("MEDIA_CLIP_PRECHECK", "0") == "1",
         "cpu_offload": os.environ.get("MEDIA_CPU_OFFLOAD", "0") == "1",
         "timing_seconds": timings,
