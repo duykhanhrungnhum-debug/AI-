@@ -324,132 +324,131 @@ class KaggleVisionQualityVerifier:
             ],
         }
         config_json = json.dumps(config, ensure_ascii=False)
-        return textwrap.dedent(
-            f"""
-            from __future__ import annotations
-
-            import base64
-            from hashlib import sha256
-            from io import BytesIO
-            import json
-            import subprocess
-            import sys
-            from pathlib import Path
-
-            CONFIG = json.loads({config_json!r})
-
-            try:
-                import torch
-                from PIL import Image
-                from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-                from qwen_vl_utils import process_vision_info
-            except ImportError:
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", "--quiet",
-                    "transformers>=4.49,<5", "accelerate<2", "safetensors",
-                    "Pillow", "qwen-vl-utils",
-                ])
-                import torch
-                from PIL import Image
-                from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-                from qwen_vl_utils import process_vision_info
-
-            if not torch.cuda.is_available():
-                raise RuntimeError("CUDA GPU is not available")
-
-            gpu_name = torch.cuda.get_device_name(0)
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                CONFIG["model"],
-                torch_dtype=torch.float16,
-                device_map="auto",
-            )
-            processor = AutoProcessor.from_pretrained(CONFIG["model"])
-            model.eval()
-
-            reports = []
-            for item in CONFIG["items"]:
-                image_bytes = base64.b64decode(item["image_b64"])
-                if sha256(image_bytes).hexdigest() != item["review_image_sha256"]:
-                    raise RuntimeError("vision-quality review image hash mismatch")
-                image = Image.open(BytesIO(image_bytes)).convert("RGB")
-
-                rubric = "\n".join(f"- {{criterion}}" for criterion in item["rubric"])
-                expected = item.get("expected_subject_count")
-                instruction = (
-                    f"You are the final visual-quality inspector for a production image pipeline. "
-                    f"Be strict and judge what is actually visible, not what the prompt intended. "
-                    f"PROFILE: {{item['profile']}}; ORIGINAL PROMPT: {{item['prompt']}}; "
-                    f"EXPECTED MAIN SUBJECT COUNT: {{expected}}; QUALITY RUBRIC: {{rubric}}. "
-                    "Inspect specifically for wrong subject count, duplicated people/characters/objects, "
-                    "malformed or fused hands/fingers/limbs, broken anatomy, distorted face/eyes/mouth, "
-                    "warped geometry, impossible object connections, bad perspective, unreadable accidental "
-                    "pseudo-text, muddy or unfinished details, identity drift when visually evident, and prompt mismatch. "
-                    "Minor stylistic preferences are not major defects. A clean anatomically plausible stylized mascot "
-                    "may have its normal species limbs. Score production readiness from 0 to 10 and prompt match from 0 to 10. "
-                    "Set pass=true ONLY if quality_score >= 8, prompt_match_score >= 8, subject count is correct, and "
-                    "major_issues is empty. Return JSON only with exactly these keys: "
-                    '{{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "subject_count": 1, '
-                    '"major_issues": [], "minor_issues": [], "summary": ""}}'
-                )
-                messages = [{{
-                    "role": "user",
-                    "content": [
-                        {{"type": "image", "image": image}},
-                        {{"type": "text", "text": instruction}},
-                    ],
-                }}]
-                rendered = processor.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-                image_inputs, video_inputs = process_vision_info(messages)
-                inputs = processor(
-                    text=[rendered],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt",
-                ).to(model.device)
-                with torch.no_grad():
-                    generated = model.generate(
-                        **inputs,
-                        max_new_tokens=420,
-                        do_sample=False,
-                        repetition_penalty=1.04,
-                    )
-                generated_trimmed = [
-                    output_ids[len(input_ids):]
-                    for input_ids, output_ids in zip(inputs.input_ids, generated)
-                ]
-                review_text = processor.batch_decode(
-                    generated_trimmed,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )[0].strip()
-                if not review_text:
-                    raise RuntimeError("vision-quality model returned empty review")
-                reports.append({{
-                    "item_id": item["item_id"],
-                    "image_sha256": item["image_sha256"],
-                    "review_image_sha256": item["review_image_sha256"],
-                    "review_text": review_text,
-                }})
-
-            result = {{
-                "model": CONFIG["model"],
-                "gpu_name": gpu_name,
-                "items": reports,
-            }}
-            Path("/kaggle/working/vision_quality.json").write_text(
-                json.dumps(result, ensure_ascii=False, indent=2) + "\\n",
-                encoding="utf-8",
-            )
-            print("AI_AGENT_VISION_QUALITY_OK")
-            print(json.dumps({{
-                "model": CONFIG["model"],
-                "gpu_name": gpu_name,
-                "item_count": len(reports),
-            }}, indent=2))
-            """
-        ).strip() + "\n"
+        lines = [
+            "from __future__ import annotations",
+            "",
+            "import base64",
+            "from hashlib import sha256",
+            "from io import BytesIO",
+            "import json",
+            "import subprocess",
+            "import sys",
+            "from pathlib import Path",
+            "",
+            f"CONFIG = json.loads({config_json!r})",
+            "",
+            "try:",
+            "    import torch",
+            "    from PIL import Image",
+            "    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration",
+            "    from qwen_vl_utils import process_vision_info",
+            "except ImportError:",
+            "    subprocess.check_call([",
+            '        sys.executable, "-m", "pip", "install", "--quiet",',
+            '        "transformers>=4.49,<5", "accelerate<2", "safetensors",',
+            '        "Pillow", "qwen-vl-utils",',
+            "    ])",
+            "    import torch",
+            "    from PIL import Image",
+            "    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration",
+            "    from qwen_vl_utils import process_vision_info",
+            "",
+            "if not torch.cuda.is_available():",
+            '    raise RuntimeError("CUDA GPU is not available")',
+            "",
+            "gpu_name = torch.cuda.get_device_name(0)",
+            "model = Qwen2_5_VLForConditionalGeneration.from_pretrained(",
+            '    CONFIG["model"],',
+            "    torch_dtype=torch.float16,",
+            '    device_map="auto",',
+            ")",
+            'processor = AutoProcessor.from_pretrained(CONFIG["model"])',
+            "model.eval()",
+            "",
+            "reports = []",
+            'for item in CONFIG["items"]:',
+            '    image_bytes = base64.b64decode(item["image_b64"])',
+            '    if sha256(image_bytes).hexdigest() != item["review_image_sha256"]:',
+            '        raise RuntimeError("vision-quality review image hash mismatch")',
+            '    image = Image.open(BytesIO(image_bytes)).convert("RGB")',
+            "",
+            '    rubric = "\\n".join(f"- {criterion}" for criterion in item["rubric"])',
+            '    expected = item.get("expected_subject_count")',
+            "    instruction = (",
+            '        f"You are the final visual-quality inspector for a production image pipeline. "',
+            '        f"Be strict and judge what is actually visible, not what the prompt intended. "',
+            '        f"PROFILE: {item[\'profile\']}; ORIGINAL PROMPT: {item[\'prompt\']}; "',
+            '        f"EXPECTED MAIN SUBJECT COUNT: {expected}; QUALITY RUBRIC: {rubric}. "',
+            '        "Inspect specifically for wrong subject count, duplicated people/characters/objects, "',
+            '        "malformed or fused hands/fingers/limbs, broken anatomy, distorted face/eyes/mouth, "',
+            '        "warped geometry, impossible object connections, bad perspective, unreadable accidental "',
+            '        "pseudo-text, muddy or unfinished details, identity drift when visually evident, and prompt mismatch. "',
+            '        "Minor stylistic preferences are not major defects. A clean anatomically plausible stylized mascot "',
+            '        "may have its normal species limbs. Score production readiness from 0 to 10 and prompt match from 0 to 10. "',
+            '        "Set pass=true ONLY if quality_score >= 8, prompt_match_score >= 8, subject count is correct, and "',
+            '        "major_issues is empty. Return JSON only with exactly these keys: "',
+            '        \'{"pass": true, "quality_score": 0.0, "prompt_match_score": 0.0, "subject_count": 1, \'',
+            '        \'"major_issues": [], "minor_issues": [], "summary": ""}\'',
+            "    )",
+            "    messages = [{",
+            '        "role": "user",',
+            '        "content": [',
+            '            {"type": "image", "image": image},',
+            '            {"type": "text", "text": instruction},',
+            "        ],",
+            "    }]",
+            "    rendered = processor.apply_chat_template(",
+            "        messages,",
+            "        tokenize=False,",
+            "        add_generation_prompt=True,",
+            "    )",
+            "    image_inputs, video_inputs = process_vision_info(messages)",
+            "    inputs = processor(",
+            "        text=[rendered],",
+            "        images=image_inputs,",
+            "        videos=video_inputs,",
+            "        padding=True,",
+            '        return_tensors="pt",',
+            "    ).to(model.device)",
+            "    with torch.no_grad():",
+            "        generated = model.generate(",
+            "            **inputs,",
+            "            max_new_tokens=420,",
+            "            do_sample=False,",
+            "            repetition_penalty=1.04,",
+            "        )",
+            "    generated_trimmed = [",
+            "        output_ids[len(input_ids):]",
+            "        for input_ids, output_ids in zip(inputs.input_ids, generated)",
+            "    ]",
+            "    review_text = processor.batch_decode(",
+            "        generated_trimmed,",
+            "        skip_special_tokens=True,",
+            "        clean_up_tokenization_spaces=False,",
+            "    )[0].strip()",
+            "    if not review_text:",
+            '        raise RuntimeError("vision-quality model returned empty review")',
+            "    reports.append({",
+            '        "item_id": item["item_id"],',
+            '        "image_sha256": item["image_sha256"],',
+            '        "review_image_sha256": item["review_image_sha256"],',
+            '        "review_text": review_text,',
+            "    })",
+            "",
+            "result = {",
+            '    "model": CONFIG["model"],',
+            '    "gpu_name": gpu_name,',
+            '    "items": reports,',
+            "}",
+            'Path("/kaggle/working/vision_quality.json").write_text(',
+            '    json.dumps(result, ensure_ascii=False, indent=2) + "\\n",',
+            '    encoding="utf-8",',
+            ")",
+            'print("AI_AGENT_VISION_QUALITY_OK")',
+            "print(json.dumps({",
+            '    "model": CONFIG["model"],',
+            '    "gpu_name": gpu_name,',
+            '    "item_count": len(reports),',
+            "}, indent=2))",
+        ]
+        return "\n".join(lines) + "\n"
