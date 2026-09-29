@@ -39,8 +39,11 @@ class FakeWorker:
                 "width": 512,
                 "height": 512,
                 "seed": 42,
-                "model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+                "model": "stabilityai/stable-diffusion-xl-base-1.0",
                 "gpu_name": "Tesla T4",
+                "prompt_alignment_score": 0.35,
+                "visual_quality_margin": 0.05,
+                "visual_defect_score": 0.10,
             }).encode()
         raise FileNotFoundError(filename)
 
@@ -64,7 +67,9 @@ def test_kaggle_image_provider_runs_open_model_and_verifies_evidence(monkeypatch
     assert worker.submitted["enable_internet"] is True
     assert worker.submitted["is_private"] is True
     assert worker.submitted["title"] == "Ai Agent Image Worker"
-    assert "StableDiffusionPipeline.from_pretrained" in worker.submitted["source"]
+    assert "AutoPipelineForText2Image.from_pretrained" in worker.submitted["source"]
+    assert "stable-diffusion-xl-base-1.0" in worker.submitted["source"]
+    assert "visual_quality_margin" in worker.submitted["source"]
     assert artifact.data == b"PNG-BYTES"
     assert artifact.provider == "kaggle-gpu-local-model"
     assert artifact.mime_type == "image/png"
@@ -90,12 +95,40 @@ def test_kaggle_image_provider_rejects_hash_mismatch():
             "width": 512,
             "height": 512,
             "seed": 42,
-            "model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+            "model": "stabilityai/stable-diffusion-xl-base-1.0",
             "gpu_name": "Tesla T4",
+                "prompt_alignment_score": 0.35,
+                "visual_quality_margin": 0.05,
+                "visual_defect_score": 0.10,
         }).encode()
 
     worker.download_output_file = bad_download
     provider = KaggleImageProvider(worker=worker, poll_interval=0)
 
     with pytest.raises(ValueError, match="hash"):
+        provider.generate(ImageGenerationRequest("scene", width=512, height=512, seed=42))
+
+
+def test_kaggle_image_provider_rejects_low_visual_quality_margin():
+    worker = FakeWorker()
+
+    def bad_quality(slug, filename):
+        if filename == "generated.png":
+            return worker.image
+        return json.dumps({
+            "image_sha256": hashlib.sha256(worker.image).hexdigest(),
+            "width": 512,
+            "height": 512,
+            "seed": 42,
+            "model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "gpu_name": "Tesla T4",
+            "prompt_alignment_score": 0.35,
+            "visual_quality_margin": -0.02,
+            "visual_defect_score": 0.30,
+        }).encode()
+
+    worker.download_output_file = bad_quality
+    provider = KaggleImageProvider(worker=worker, poll_interval=0)
+
+    with pytest.raises(ValueError, match="visual quality margin"):
         provider.generate(ImageGenerationRequest("scene", width=512, height=512, seed=42))
