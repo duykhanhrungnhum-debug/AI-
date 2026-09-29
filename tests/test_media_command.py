@@ -228,22 +228,46 @@ def test_benchmark_manifest_keeps_user_rejected_examples_but_generalizes_3d_qual
     assert all("lily pad" not in item for item in mascot["must_pass"])
 
 
-def test_dog_exam_routes_real_photo_and_cute_3d_to_different_profiles():
-    planner = MediaCommandPlanner()
-    real = planner.plan("Tạo ảnh một chú chó Golden Retriever thật, ảnh chụp chân thực ngoài trời")
-    cute = planner.plan("Tạo ảnh một chú chó Golden Retriever 3D cute")
+def test_semantic_compiler_routes_unlisted_animals_without_species_keyword_table():
+    cases = (
+        ("voi", "one photorealistic Asian elephant standing in grass"),
+        ("cá mập", "one photorealistic shark swimming underwater"),
+        ("chim đại bàng", "one photorealistic eagle perched on a branch"),
+        ("hươu cao cổ", "one photorealistic giraffe walking on savanna"),
+    )
+    for vietnamese_species, english_prompt in cases:
+        model = FakeModel(
+            "SUBJECT_CLASS: animal\n"
+            "STYLE_CLASS: photo\n"
+            f"PROMPT: {english_prompt}\n"
+            "MOTION:"
+        )
+        plan = MediaCommandPlanner(model).plan(
+            f"Tạo ảnh {vietnamese_species} thật, ảnh chụp chân thực"
+        )
+        assert plan.profile == ANIMAL_PHOTO_PREMIUM
+        assert plan.model_config.model == "SG161222/RealVisXL_V5.0"
+        assert plan.prompt.startswith(english_prompt)
+
+
+def test_semantic_compiler_uses_same_model_for_animal_photo_and_3d():
+    real = MediaCommandPlanner(FakeModel(
+        "SUBJECT_CLASS: animal\n"
+        "STYLE_CLASS: photo\n"
+        "PROMPT: one realistic water buffalo in a field\n"
+        "MOTION:"
+    )).plan("Tạo ảnh trâu nước thật ngoài đồng")
+    cute = MediaCommandPlanner(FakeModel(
+        "SUBJECT_CLASS: animal\n"
+        "STYLE_CLASS: 3d\n"
+        "PROMPT: one cute 3D water buffalo mascot in a clean studio\n"
+        "MOTION:"
+    )).plan("Tạo ảnh trâu nước 3D cute")
 
     assert real.profile == ANIMAL_PHOTO_PREMIUM
-    assert real.model_config.model == "SG161222/RealVisXL_V5.0"
-    assert "species-correct anatomy" in real.prompt
-    assert "cartoon" in real.negative_prompt
-
     assert cute.profile == MASCOT_PREMIUM
-    assert cute.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
-    assert "premium polished cute 3D character render" in cute.prompt
-    assert "crab" not in cute.prompt.casefold()
-    assert "lily pad" not in cute.prompt.casefold()
-    assert cute.model_config.inference_steps == 40
+    assert real.model_config.model == cute.model_config.model == "SG161222/RealVisXL_V5.0"
+    assert real.model_config.inference_steps == cute.model_config.inference_steps == 28
 
 
 def test_command_compiler_accepts_json_prompt_output():
@@ -326,23 +350,28 @@ def test_animal_photo_profile_prefers_natural_unretouched_camera_look():
 
 
 
-def test_buffalo_exam_routes_real_and_3d_to_different_profiles():
+
+
+
+def test_command_compiler_parses_semantic_labels():
+    parsed = MediaCommandPlanner._parse_compiler_output(
+        "SUBJECT_CLASS: animal\n"
+        "STYLE_CLASS: 3d\n"
+        "PROMPT: one cute 3D tapir mascot with coherent anatomy\n"
+        "MOTION:"
+    )
+    assert parsed["SUBJECT_CLASS"] == "animal"
+    assert parsed["STYLE_CLASS"] == "3d"
+    assert parsed["PROMPT"].startswith("one cute 3D tapir")
+
+
+def test_one_production_model_is_shared_across_profiles():
     planner = MediaCommandPlanner()
-    real = planner.plan("Tạo ảnh một con trâu nước thật, ảnh chụp chân thực ngoài đồng")
-    cute = planner.plan("Tạo ảnh một con trâu nước 3D cute, mascot toàn thân")
-
-    assert real.profile == ANIMAL_PHOTO_PREMIUM
-    assert real.model_config.model == "SG161222/RealVisXL_V5.0"
-    assert cute.profile == MASCOT_PREMIUM
-    assert cute.model_config.model == "playgroundai/playground-v2.5-1024px-aesthetic"
-
-
-
-def test_buffalo_species_is_preserved_when_compiler_says_cow():
-    planner = MediaCommandPlanner(FakeModel(
-        "PROMPT: A realistic Vietnamese cow standing in a natural field\nMOTION:"
-    ))
-    plan = planner.plan("Tạo ảnh một con trâu nước Việt Nam thật ngoài đồng")
-
-    assert "water buffalo" in plan.prompt.casefold()
-    assert " cow " not in (" " + plan.prompt.casefold() + " ")
+    profiles = (
+        HUMAN_PHOTO_PREMIUM,
+        ANIMAL_PHOTO_PREMIUM,
+        MASCOT_PREMIUM,
+        GENERAL_PREMIUM,
+    )
+    models = {image_model_config(profile).model for profile in profiles}
+    assert models == {"SG161222/RealVisXL_V5.0"}
