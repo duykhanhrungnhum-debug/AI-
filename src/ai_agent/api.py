@@ -39,10 +39,10 @@ class AIRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
-        expected = os.environ.get("AI_AGENT_API_TOKEN", "")
+        expected = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
         if not expected:
             return False
-        supplied = self.headers.get("authorization", "")
+        supplied = self.headers.get("authorization", "").strip()
         return hmac.compare_digest(supplied, f"Bearer {expected}")
 
     def do_GET(self) -> None:
@@ -97,7 +97,7 @@ class AIRequestHandler(BaseHTTPRequestHandler):
 def main() -> None:
     host = os.environ.get("AI_AGENT_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
-    if not os.environ.get("AI_AGENT_API_TOKEN"):
+    if not os.environ.get("AI_AGENT_API_TOKEN", "").strip():
         raise SystemExit("AI_AGENT_API_TOKEN is required")
     ThreadingHTTPServer((host, port), AIRequestHandler).serve_forever()
 
