@@ -1,1 +1,1 @@
-media-v2-adult-glamour-check-1
+media-v2-aika-dual-portrait-check-2
