@@ -1,0 +1,106 @@
+name: AIKA Two Outfits Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aika-two-outfits-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  test-two-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install AIKA
+        run: python -m pip install -e .
+      - name: Require Kaggle credential
+        run: test -n "$KAGGLE_API_TOKEN"
+      - name: Ask AIKA for two separate images in one Image V2 session
+        run: |
+          python - <<'PY'
+          import json, os
+          from hashlib import sha256
+          from pathlib import Path
+          from ai_agent.chat_session import classify_chat_intent
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          from ai_agent.core.media_v2 import ImageRequestV2, KaggleImageV2Provider
+
+          commands = [
+              (
+                  "ao_dai_vietnam",
+                  "AIKA tạo một tấm ảnh riêng biệt: một cô gái châu Á trẻ trung xinh đẹp, trưởng thành, mặc áo dài truyền thống Việt Nam thanh lịch. Chỉ một cô gái trong ảnh, không ghép ảnh, phong cách ảnh chân thực, toàn thân, khuôn mặt tự nhiên, trang phục rõ ràng."
+              ),
+              (
+                  "suon_xam_trung_quoc",
+                  "AIKA tạo một tấm ảnh riêng biệt: một cô gái châu Á trẻ trung xinh đẹp, trưởng thành, mặc sườn xám (qipao/cheongsam) truyền thống Trung Quốc thanh lịch. Chỉ một cô gái trong ảnh, không ghép ảnh, phong cách ảnh chân thực, toàn thân, khuôn mặt tự nhiên, trang phục rõ ràng."
+              ),
+          ]
+          for _, command in commands:
+              assert classify_chat_intent(command) == "image", command
+
+          provider = KaggleImageV2Provider(
+              worker=KaggleGpuWorker(
+                  api_token=os.environ["KAGGLE_API_TOKEN"],
+                  username=os.environ["KAGGLE_USERNAME"],
+                  timeout=120,
+                  submission_retry_attempts=5,
+                  submission_retry_delay_seconds=30,
+              ),
+              kernel_slug="ai-agent-image-v2-two-outfits",
+              poll_interval=3,
+              max_poll_attempts=600,
+          )
+          requests = []
+          for item_id, command in commands:
+              seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
+              requests.append(ImageRequestV2(
+                  item_id=item_id,
+                  command=command,
+                  seed=seed,
+                  width=1024,
+                  height=1024,
+              ))
+          results = provider.generate_many(requests)
+          out = Path("aika-two-outfits")
+          out.mkdir(exist_ok=True)
+          report = {"items": []}
+          for result in results:
+              path = out / f"{result.item_id}.png"
+              path.write_bytes(result.data)
+              report["items"].append({
+                  "item_id": result.item_id,
+                  "file": path.name,
+                  "model": result.model,
+                  "elapsed_seconds": result.elapsed_seconds,
+                  "generation_prompt": result.prompt,
+                  "evidence": list(result.evidence),
+              })
+              print("AIKA_IMAGE_OK", result.item_id, result.model, result.elapsed_seconds, flush=True)
+          (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
+          assert len(results) == 2
+          assert all(r.data.startswith(b"\x89PNG\r\n\x1a\n") for r in results)
+          print("AIKA_TWO_SEPARATE_IMAGES_OK")
+          PY
+      - name: Upload AIKA test images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aika-two-outfits
+          path: aika-two-outfits/
+          if-no-files-found: warn
+          retention-days: 3
