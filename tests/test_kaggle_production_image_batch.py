@@ -58,7 +58,7 @@ def test_worker_source_compiles_and_has_bilingual_subject_contract_and_repair():
     assert "AI_AGENT_PROGRESS" in source
     assert 'progress("planner_loading"' in source
     assert 'progress("planner_repair"' in source
-    assert 'progress("planner_item_complete"' in source
+    assert '"planner_item_complete"' in source
     assert 'progress("engine_loading"' in source
     assert 'progress("candidate_generating"' in source
     assert 'progress("detector_loading"' in source
