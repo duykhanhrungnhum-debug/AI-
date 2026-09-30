@@ -258,8 +258,11 @@ torch.cuda.empty_cache()
 progress("image_model_loading", model=CONFIG["image_model"])
 dtype = torch.float16
 pipe = Flux2KleinPipeline.from_pretrained(CONFIG["image_model"], torch_dtype=dtype)
-pipe = pipe.to("cuda")
-progress("image_model_ready", model=CONFIG["image_model"], dtype=str(dtype))
+# A Kaggle T4 has 14.56 GiB VRAM while the full fp16 pipeline peaks slightly
+# above that. Diffusers model CPU offload keeps the architecture unchanged and
+# moves only the component currently executing onto the GPU.
+pipe.enable_model_cpu_offload()
+progress("image_model_ready", model=CONFIG["image_model"], dtype=str(dtype), execution="model_cpu_offload")
 
 reports = {}
 for index, item in enumerate(CONFIG["items"]):
