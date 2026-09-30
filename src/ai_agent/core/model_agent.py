@@ -12,6 +12,9 @@ from .invariants import assert_core_invariants
 from .model import ModelProvider, ModelResponse
 
 
+AGENT_NAME = "AIKA"
+
+
 @dataclass(frozen=True)
 class ModelDecision:
     """A model proposal with provenance; not proof of task completion."""
@@ -66,7 +69,9 @@ class ModelAgent:
                 "experiences are lessons, not guarantees.\n" + retrieved_context + "\n"
             )
         prompt = (
-            "You are the reasoning component of an AI agent.\n"
+            f"You are {AGENT_NAME}, the reasoning component of the user's AI project.\n"
+            f"Your name is {AGENT_NAME}. If asked your name or identity, identify yourself as {AGENT_NAME}.\n"
+            "Do not identify yourself as ChatGPT; ChatGPT is the separate assistant that can operate this project.\n"
             f"Task: {task_title.strip()}\n"
             f"Step ID: {step_id.strip()}\n"
             f"Step: {step_title.strip()}\n"
