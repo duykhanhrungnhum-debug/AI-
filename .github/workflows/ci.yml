@@ -17,7 +17,7 @@ jobs:
           python-version: '3.11'
       - name: Install package and test dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
-      - name: Compile Hidden Beyond longform workers
+      - name: Compile production paths
         run: >-
           python -m py_compile
           hidden_beyond/longform_audio_worker_v3.py
@@ -27,11 +27,8 @@ jobs:
           src/ai_agent/core/generative_video_pipeline.py
           src/ai_agent/core/production_learning.py
           src/ai_agent/core/episode_pipeline.py
-          src/ai_agent/core/media_command.py
-          src/ai_agent/core/kaggle_image.py
-          src/ai_agent/core/vision_quality.py
-          scripts/generate_premium_image.py
-          scripts/generate_premium_image_batch.py
+          src/ai_agent/core/media_v2.py
+          scripts/generate_image_v2.py
           scripts/kaggle_video_smoke.py
           scripts/generate_ai_video.py
           scripts/generate_reference_video.py
