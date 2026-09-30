@@ -1,11 +1,9 @@
 """Production image generation: semantic router -> style engine -> detector gate.
 
-Design goals:
-- one trusted semantic planner (Qwen3-1.7B), no species whitelist;
-- style-specialized image engines loaded sequentially in one Kaggle GPU session;
-- structured live progress streamed from Kaggle logs;
-- optional zero-shot object-count hard gates supplied only by trusted task/test contracts;
-- original user command is preserved for downstream VLM QA.
+The worker keeps the user's original-language subject phrase separate from the
+English generation prompt. This prevents a correct translation from being
+rejected merely because SUBJECT_NAME stays in the source language, while still
+rejecting hallucinated subject labels that do not occur in the user's command.
 """
 from __future__ import annotations
 
@@ -277,6 +275,7 @@ import os
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 CONFIG = json.loads(__CONFIG_JSON__)
@@ -296,12 +295,7 @@ try:
     import torch
     from PIL import Image
     from diffusers import AutoPipelineForText2Image, DPMSolverMultistepScheduler, EDMDPMSolverMultistepScheduler
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        AutoProcessor,
-        AutoModelForZeroShotObjectDetection,
-    )
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor, AutoModelForZeroShotObjectDetection
 except ImportError:
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "--quiet",
@@ -353,18 +347,29 @@ def placeholder(text):
     value = " ".join((text or "").strip().casefold().split())
     return not value or value in {
         "english image description", "english image prompt", "english prompt",
-        "image description", "subject name", "exact english subject name",
+        "image description", "subject name", "exact subject phrase",
     } or "<" in value or ">" in value
 
 
-def words(text):
-    return [token for token in "".join(ch.casefold() if ch.isalnum() else " " for ch in (text or "")).split() if len(token) >= 3]
+def fold_text(text):
+    decomposed = unicodedata.normalize("NFKD", (text or "").casefold())
+    ascii_like = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in ascii_like).split())
 
 
-def subject_matches_prompt(subject_name, prompt):
-    subject_tokens = [token for token in words(subject_name) if token not in {"the", "one", "main"}]
-    prompt_tokens = set(words(prompt))
-    return bool(subject_tokens) and any(token in prompt_tokens for token in subject_tokens)
+def subject_matches_source(subject_name, source_command):
+    subject = fold_text(subject_name)
+    source = fold_text(source_command)
+    if not subject or not source:
+        return False
+    if subject in source:
+        return True
+    subject_tokens = [token for token in subject.split() if len(token) >= 2]
+    source_tokens = set(source.split())
+    if not subject_tokens:
+        return False
+    matched = sum(1 for token in subject_tokens if token in source_tokens)
+    return matched >= max(1, (len(subject_tokens) * 2 + 2) // 3)
 
 
 def parse_compiled(raw):
@@ -426,15 +431,16 @@ for item_index, item in enumerate(CONFIG["items"]):
     progress("planner_item", item_id=item["item_id"], item_index=item_index + 1, item_total=len(CONFIG["items"]))
     instruction = (
         "MEDIA_COMMAND_COMPILE\n"
-        "Translate and preserve the user's exact named subject/species. Never generalize a specific species into a broader or different animal. "
+        "Never generalize a specific species or named entity into a broader or different subject. "
         "Understand USER_COMMAND semantically without a fixed species list. Preserve subject count and requested visual style. "
         "SUBJECT_CLASS must be animal, human, or general. STYLE_CLASS must be photo, 3d, mascot, illustration, or general. "
-        "SUBJECT_NAME must be the exact English common name of the requested main subject/species and that same name must appear in PROMPT. "
+        "SUBJECT_NAME must copy the exact main subject/species phrase from USER_COMMAND and MAY remain in the user's original language. "
+        "PROMPT must be a complete ENGLISH generation prompt that accurately translates that exact subject/species and the requested scene/style. "
         "Do not invent anatomy counts or appendages. Return exactly four labeled lines and no commentary:\n"
         "SUBJECT_CLASS: animal|human|general\n"
         "STYLE_CLASS: photo|3d|mascot|illustration|general\n"
-        "SUBJECT_NAME: exact English common subject/species name\n"
-        "PROMPT: complete English image description containing SUBJECT_NAME\n"
+        "SUBJECT_NAME: exact source-language subject/species phrase from USER_COMMAND\n"
+        "PROMPT: complete English image description\n"
         "USER_COMMAND: " + item["command"]
     )
     rendered = tokenizer.apply_chat_template(
@@ -450,12 +456,12 @@ for item_index, item in enumerate(CONFIG["items"]):
         and not looks_vietnamese(parsed["prompt"])
         and not placeholder(parsed["prompt"])
         and not placeholder(parsed["subject_name"])
-        and subject_matches_prompt(parsed["subject_name"], parsed["prompt"])
+        and subject_matches_source(parsed["subject_name"], item["command"])
         and parsed["subject_class"] in {"animal", "human", "general"}
         and parsed["style_class"] in {"photo", "3d", "mascot", "illustration", "general"}
     )
     if not valid:
-        raise RuntimeError("semantic planner failed exact-subject contract for item " + item["item_id"] + ": " + raw[:700])
+        raise RuntimeError("semantic planner failed source-subject contract for item " + item["item_id"] + ": " + raw[:700])
     planner[item["item_id"]] = {"raw": raw, "parsed": parsed}
     del generated, inputs
 
