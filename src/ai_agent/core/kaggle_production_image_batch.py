@@ -1,9 +1,9 @@
 """Production image generation: semantic router -> style engine -> detector gate.
 
-The worker keeps the user's original-language subject phrase separate from the
-English generation prompt. This prevents a correct translation from being
-rejected merely because SUBJECT_NAME stays in the source language, while still
-rejecting hallucinated subject labels that do not occur in the user's command.
+Subject identity is represented twice on purpose:
+- SUBJECT_NAME: exact source-language phrase copied from the user's command.
+- SUBJECT_ENGLISH: English common name used by the image model.
+The worker validates both sides before spending GPU time on image generation.
 """
 from __future__ import annotations
 
@@ -197,6 +197,7 @@ class KaggleProductionImageBatchProvider:
                         f"image_sha256:{digest}",
                         f"semantic_profile:{profile}",
                         f"subject_name:{entry.get('subject_name')}",
+                        f"subject_english:{entry.get('subject_english')}",
                         f"engine_id:{raw_candidate.get('engine_id')}",
                         f"detector_gate_passed:{raw_candidate.get('detector_gate', {}).get('passed')}",
                         f"model:{model}",
@@ -347,7 +348,7 @@ def placeholder(text):
     value = " ".join((text or "").strip().casefold().split())
     return not value or value in {
         "english image description", "english image prompt", "english prompt",
-        "image description", "subject name", "exact subject phrase",
+        "image description", "subject name", "subject english", "exact subject phrase",
     } or "<" in value or ">" in value
 
 
@@ -372,14 +373,30 @@ def subject_matches_source(subject_name, source_command):
     return matched >= max(1, (len(subject_tokens) * 2 + 2) // 3)
 
 
+def english_subject_matches_prompt(subject_english, prompt):
+    subject = fold_text(subject_english)
+    prompt_folded = fold_text(prompt)
+    if not subject or not prompt_folded:
+        return False
+    if subject in prompt_folded:
+        return True
+    tokens = [token for token in subject.split() if len(token) >= 2]
+    prompt_tokens = set(prompt_folded.split())
+    return bool(tokens) and all(token in prompt_tokens for token in tokens)
+
+
 def parse_compiled(raw):
     raw = (raw or "").strip().strip(chr(96)).strip()
-    result = {"prompt": "", "subject_class": "", "style_class": "", "subject_name": ""}
+    result = {
+        "prompt": "", "subject_class": "", "style_class": "",
+        "subject_name": "", "subject_english": "",
+    }
     aliases = {
         "PROMPT": "prompt", "PROMT": "prompt", "PROMP": "prompt",
         "SUBJECTCLASS": "subject_class", "SUBJECT": "subject_class",
         "STYLECLASS": "style_class", "STYLE": "style_class",
         "SUBJECTNAME": "subject_name", "SPECIES": "subject_name", "ENTITY": "subject_name",
+        "SUBJECTENGLISH": "subject_english", "ENGLISHSUBJECT": "subject_english",
     }
     cleaned = raw.replace("：", ":")
     first, last = cleaned.find("{"), cleaned.rfind("}")
@@ -393,6 +410,7 @@ def parse_compiled(raw):
             result["subject_class"] = normalize_subject(str(payload.get("SUBJECT_CLASS") or payload.get("subject_class") or ""))
             result["style_class"] = normalize_style(str(payload.get("STYLE_CLASS") or payload.get("style_class") or ""))
             result["subject_name"] = str(payload.get("SUBJECT_NAME") or payload.get("subject_name") or payload.get("species") or "").strip()
+            result["subject_english"] = str(payload.get("SUBJECT_ENGLISH") or payload.get("subject_english") or "").strip()
             return result
     for line in cleaned.splitlines():
         line = line.strip().lstrip("-*#> ").strip()
@@ -406,6 +424,21 @@ def parse_compiled(raw):
     result["subject_class"] = normalize_subject(result["subject_class"])
     result["style_class"] = normalize_style(result["style_class"])
     return result
+
+
+def plan_valid(parsed, command):
+    return (
+        len(parsed["prompt"]) >= 20
+        and not looks_vietnamese(parsed["prompt"])
+        and not placeholder(parsed["prompt"])
+        and not placeholder(parsed["subject_name"])
+        and not placeholder(parsed["subject_english"])
+        and not looks_vietnamese(parsed["subject_english"])
+        and subject_matches_source(parsed["subject_name"], command)
+        and english_subject_matches_prompt(parsed["subject_english"], parsed["prompt"])
+        and parsed["subject_class"] in {"animal", "human", "general"}
+        and parsed["style_class"] in {"photo", "3d", "mascot", "illustration", "general"}
+    )
 
 
 def choose_profile(subject, style, fallback):
@@ -426,44 +459,66 @@ planner_model = AutoModelForCausalLM.from_pretrained(
 )
 planner_model.eval()
 planner_ready = time.perf_counter()
-planner = {}
-for item_index, item in enumerate(CONFIG["items"]):
-    progress("planner_item", item_id=item["item_id"], item_index=item_index + 1, item_total=len(CONFIG["items"]))
+
+
+def generate_plan(item, previous_raw=""):
+    repair = ""
+    if previous_raw:
+        repair = (
+            "\nThe previous result failed validation. Repair it. SUBJECT_NAME must be copied from USER_COMMAND; "
+            "SUBJECT_ENGLISH must be the correct English common name of that same exact subject; PROMPT must be fully English and must literally contain SUBJECT_ENGLISH. "
+            "Do not transliterate or invent a near-sounding English word.\nPREVIOUS_RESULT:\n" + previous_raw[:900]
+        )
     instruction = (
         "MEDIA_COMMAND_COMPILE\n"
         "Never generalize a specific species or named entity into a broader or different subject. "
         "Understand USER_COMMAND semantically without a fixed species list. Preserve subject count and requested visual style. "
         "SUBJECT_CLASS must be animal, human, or general. STYLE_CLASS must be photo, 3d, mascot, illustration, or general. "
-        "SUBJECT_NAME must copy the exact main subject/species phrase from USER_COMMAND and MAY remain in the user's original language. "
-        "PROMPT must be a complete ENGLISH generation prompt that accurately translates that exact subject/species and the requested scene/style. "
-        "Do not invent anatomy counts or appendages. Return exactly four labeled lines and no commentary:\n"
+        "SUBJECT_NAME must copy the exact main subject/species phrase from USER_COMMAND and may remain in the user's original language. "
+        "SUBJECT_ENGLISH must be the exact English common name/translation of SUBJECT_NAME. "
+        "PROMPT must be a complete ENGLISH generation prompt and must literally contain SUBJECT_ENGLISH. "
+        "Do not invent anatomy counts or appendages. Return exactly five labeled lines and no commentary:\n"
         "SUBJECT_CLASS: animal|human|general\n"
         "STYLE_CLASS: photo|3d|mascot|illustration|general\n"
         "SUBJECT_NAME: exact source-language subject/species phrase from USER_COMMAND\n"
-        "PROMPT: complete English image description\n"
-        "USER_COMMAND: " + item["command"]
+        "SUBJECT_ENGLISH: exact English common name of SUBJECT_NAME\n"
+        "PROMPT: complete English image description containing SUBJECT_ENGLISH\n"
+        "USER_COMMAND: " + item["command"] + repair
     )
     rendered = tokenizer.apply_chat_template(
-        [{"role": "user", "content": instruction}], tokenize=False, add_generation_prompt=True, enable_thinking=False
+        [{"role": "user", "content": instruction}], tokenize=False,
+        add_generation_prompt=True, enable_thinking=False,
     )
     inputs = tokenizer([rendered], return_tensors="pt").to(planner_model.device)
     with torch.inference_mode():
-        generated = planner_model.generate(**inputs, max_new_tokens=220, do_sample=False, use_cache=True, repetition_penalty=1.04)
-    raw = tokenizer.batch_decode(generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)[0].strip()
-    parsed = parse_compiled(raw)
-    valid = (
-        len(parsed["prompt"]) >= 20
-        and not looks_vietnamese(parsed["prompt"])
-        and not placeholder(parsed["prompt"])
-        and not placeholder(parsed["subject_name"])
-        and subject_matches_source(parsed["subject_name"], item["command"])
-        and parsed["subject_class"] in {"animal", "human", "general"}
-        and parsed["style_class"] in {"photo", "3d", "mascot", "illustration", "general"}
-    )
-    if not valid:
-        raise RuntimeError("semantic planner failed source-subject contract for item " + item["item_id"] + ": " + raw[:700])
-    planner[item["item_id"]] = {"raw": raw, "parsed": parsed}
+        generated = planner_model.generate(
+            **inputs, max_new_tokens=260, do_sample=False, use_cache=True,
+            repetition_penalty=1.04,
+        )
+    raw = tokenizer.batch_decode(
+        generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True
+    )[0].strip()
     del generated, inputs
+    return raw, parse_compiled(raw)
+
+
+planner = {}
+for item_index, item in enumerate(CONFIG["items"]):
+    progress("planner_item", item_id=item["item_id"], item_index=item_index + 1, item_total=len(CONFIG["items"]))
+    raw, parsed = generate_plan(item)
+    repaired = False
+    if not plan_valid(parsed, item["command"]):
+        repaired = True
+        progress("planner_repair", item_id=item["item_id"])
+        raw, parsed = generate_plan(item, raw)
+    if not plan_valid(parsed, item["command"]):
+        raise RuntimeError("semantic planner failed bilingual-subject contract for item " + item["item_id"] + ": " + raw[:900])
+    planner[item["item_id"]] = {"raw": raw, "parsed": parsed, "repaired": repaired}
+    progress(
+        "planner_item_complete", item_id=item["item_id"],
+        subject_name=parsed["subject_name"], subject_english=parsed["subject_english"],
+        repaired=repaired,
+    )
 
 del planner_model, tokenizer
 gc.collect(); torch.cuda.empty_cache()
@@ -480,8 +535,9 @@ for item in CONFIG["items"]:
     prompt = parsed["prompt"].rstrip(" .") + ". Quality requirements: " + positive.rstrip(" .") + "."
     if profile == "mascot_premium":
         prompt += (
-            " Species-anatomy guard: keep only anatomy naturally belonging to the named species; never duplicate horns, antlers, tusks, ears, limbs, tail, wings or fins. "
-            "Cute stylization may change proportions but must not create extra body parts. Keep the character fully inside a clean unbranded frame."
+            " Species-anatomy guard: keep only anatomy naturally belonging to " + parsed["subject_english"] + "; "
+            "never duplicate horns, antlers, tusks, ears, limbs, tail, wings or fins. Cute stylization may change proportions but must not create extra body parts. "
+            "Keep the character fully inside a clean unbranded frame."
         )
         negative = negative.rstrip(" ,") + ", extra horns, duplicate horns, extra antlers, extra tusks, extra ears, extra legs, extra tails, duplicated appendages, pseudo-logo, signature, watermark"
     else:
@@ -493,8 +549,10 @@ for item in CONFIG["items"]:
         "subject_class": parsed["subject_class"],
         "style_class": parsed["style_class"],
         "subject_name": parsed["subject_name"],
+        "subject_english": parsed["subject_english"],
         "semantic_profile": profile,
         "planner_raw": planner[item["item_id"]]["raw"],
+        "planner_repaired": planner[item["item_id"]]["repaired"],
         "width": int(width), "height": int(height), "engine": engine,
     })
 
@@ -559,8 +617,10 @@ for engine_id, engine_items in engine_groups.items():
             progress("candidate_generated", item_id=item["item_id"], candidate=candidate_index + 1, generation_seconds=candidates[-1]["generation_seconds"])
         item_reports[item["item_id"]] = {
             "user_command": item["command"], "prompt": item["prompt"], "negative_prompt": item["negative_prompt"],
-            "subject_class": item["subject_class"], "style_class": item["style_class"], "subject_name": item["subject_name"],
+            "subject_class": item["subject_class"], "style_class": item["style_class"],
+            "subject_name": item["subject_name"], "subject_english": item["subject_english"],
             "semantic_profile": item["semantic_profile"], "planner_raw": item["planner_raw"],
+            "planner_repaired": item["planner_repaired"],
             "width": item["width"], "height": item["height"], "engine_id": engine_id,
             "hard_gates": item["hard_gates"], "candidates": candidates,
         }
@@ -572,8 +632,7 @@ for engine_id, engine_items in engine_groups.items():
 gc.collect(); torch.cuda.empty_cache()
 progress("generation_complete", engine_ids=list(engine_groups))
 
-# Optional detector stage. Counts are supplied only by trusted test/task contracts;
-# the planner never invents expected anatomy counts.
+# Counts come only from trusted test/task contracts; the planner never invents them.
 gated_items = [item for item in compiled if item["hard_gates"]]
 detector_timing = None
 if gated_items:
