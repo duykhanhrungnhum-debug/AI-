@@ -3,6 +3,7 @@ import json
 
 from ai_agent.core.kaggle_worker import KaggleKernelStatus, KaggleKernelSubmission
 from ai_agent.core.media_v2 import (
+    IMAGE_BATCH_DELIMITER,
     IMAGE_GUIDANCE,
     IMAGE_MODEL,
     IMAGE_STEPS,
@@ -70,7 +71,6 @@ def test_v2_is_one_recaption_plus_one_unified_image_model():
     assert "pipe.enable_model_cpu_offload()" in source
     assert 'execution="model_cpu_offload"' in source
 
-    # Production V2 must not recreate the architecture that caused prior loops.
     banned = (
         "GroundingDINO",
         "Qwen3-VL",
@@ -101,6 +101,20 @@ def test_natural_request_contract_has_no_species_table_or_json_planner():
     assert "subject_class" not in folded
     assert "style_class" not in folded
     assert "species table" not in folded
+
+
+def test_natural_multi_image_command_uses_one_recaption_model_and_one_flux_load():
+    provider = KaggleImageV2Provider(worker=FakeWorker(), poll_interval=0)
+    source = provider._build_command_worker_source(
+        "Tạo hai ảnh riêng: một cô gái mặc áo dài và một cô gái mặc sườn xám",
+        seed=7,
+    )
+    assert IMAGE_BATCH_DELIMITER in source
+    assert source.count("AutoModelForCausalLM.from_pretrained") == 1
+    assert source.count("Flux2KleinPipeline.from_pretrained") == 1
+    assert "Multiple subjects requested together in one image must stay in ONE description" in source
+    assert "Only create multiple descriptions when the user explicitly asks for multiple separate images" in source
+    assert "Never exceed" in source
 
 
 def test_request_validation_is_small_and_deterministic():
