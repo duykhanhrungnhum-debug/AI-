@@ -42,7 +42,7 @@ def provider():
     )
 
 
-def test_worker_source_compiles_and_has_structured_progress_and_exact_subject_contract():
+def test_worker_source_compiles_and_has_structured_progress_and_native_subject_contract():
     source = provider()._build_worker_source((
         ProductionImageItem(
             "real", "Tạo ảnh đúng một con trâu nước Việt Nam thật", 1,
@@ -64,7 +64,10 @@ def test_worker_source_compiles_and_has_structured_progress_and_exact_subject_co
     assert "Qwen/Qwen3-1.7B" in source
     assert "Qwen/Qwen3-0.6B" not in source
     assert "Never generalize a specific species" in source
-    assert "subject_matches_prompt" in source
+    assert "subject_matches_source" in source
+    assert "subject_matches_prompt" not in source
+    assert "MAY remain in the user's original language" in source
+    assert "PROMPT must be a complete ENGLISH generation prompt" in source
     assert "ORIGINAL" not in source  # original-request QA is host-side, not planner hallucination
 
 
