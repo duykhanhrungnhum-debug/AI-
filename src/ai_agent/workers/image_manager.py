@@ -14,7 +14,13 @@ import time
 import textwrap
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
-from ai_agent.core.media_v2 import IMAGE_GUIDANCE, IMAGE_MODEL, IMAGE_STEPS, RECAPTION_MODEL
+from ai_agent.core.media_v2 import (
+    IMAGE_BATCH_DELIMITER,
+    IMAGE_GUIDANCE,
+    IMAGE_MODEL,
+    IMAGE_STEPS,
+    RECAPTION_MODEL,
+)
 
 
 class WorkerState(str, Enum):
@@ -48,16 +54,20 @@ class WarmImageWorkerManager:
         heartbeat_ttl: int = 60,
         circuit_failure_threshold: int = 3,
         circuit_cooldown_seconds: int = 300,
+        max_images_per_job: int = 6,
     ) -> None:
         if idle_seconds <= 0:
             raise ValueError("idle_seconds must be positive")
         if heartbeat_ttl <= 0:
             raise ValueError("heartbeat_ttl must be positive")
+        if max_images_per_job <= 0 or max_images_per_job > 8:
+            raise ValueError("max_images_per_job must be between 1 and 8")
         self.kernel_slug = kernel_slug
         self.idle_seconds = idle_seconds
         self.heartbeat_ttl = heartbeat_ttl
         self.circuit_failure_threshold = circuit_failure_threshold
         self.circuit_cooldown_seconds = circuit_cooldown_seconds
+        self.max_images_per_job = max_images_per_job
         self._lock = threading.Lock()
         self._state = WorkerState.OFFLINE
         self._last_seen = 0.0
@@ -213,6 +223,8 @@ class WarmImageWorkerManager:
             "guidance": IMAGE_GUIDANCE,
             "idle_seconds": self.idle_seconds,
             "poll_seconds": 3,
+            "max_images": self.max_images_per_job,
+            "delimiter": IMAGE_BATCH_DELIMITER,
         }, ensure_ascii=False)
         template = r'''
 from __future__ import annotations
@@ -254,6 +266,54 @@ def request(method, path, payload=None):
         raise RuntimeError(f"HTTP {exc.code} {path}: {detail[:1000]}") from exc
 
 
+def recaption_batch(command):
+    delimiter = CONFIG["delimiter"]
+    contract = (
+        "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "
+        "important attributes, and explicit exclusions. Preserve culturally specific names instead of substituting an "
+        "item from another culture. Vietnamese 'áo dài' must remain Vietnamese áo dài and preserve its long tunic panels "
+        "over separate trousers when requested. Do not generalize a named subject. "
+    )
+    instruction = (
+        "Convert the USER REQUEST into faithful English image-generation descriptions. " + contract +
+        "Only create multiple descriptions when the user explicitly asks for multiple separate images, pictures, files, "
+        "or variants. Multiple subjects requested together in one image must stay in ONE description. When multiple "
+        "separate images are requested, output exactly one complete description per image in the user's requested order, "
+        "separated only by the exact delimiter " + delimiter + ". Do not number or label the descriptions. Do not output "
+        "JSON, explanation, scoring, or commentary. Never exceed " + str(CONFIG["max_images"]) + " descriptions.\n"
+        "USER REQUEST: " + command
+    )
+    recaptioner.to("cuda")
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": instruction}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    inputs = tokenizer([rendered], return_tensors="pt").to("cuda")
+    with torch.inference_mode():
+        generated = recaptioner.generate(
+            **inputs,
+            max_new_tokens=640,
+            do_sample=False,
+            use_cache=True,
+            repetition_penalty=1.03,
+        )
+    planned = tokenizer.batch_decode(
+        generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True
+    )[0].strip().strip('"')
+    del generated, inputs
+    recaptioner.to("cpu")
+    gc.collect()
+    torch.cuda.empty_cache()
+    prompts = [part.strip().strip('"') for part in planned.split(delimiter) if part.strip()]
+    if not prompts:
+        raise RuntimeError("recaption returned no image descriptions")
+    if len(prompts) > int(CONFIG["max_images"]):
+        raise RuntimeError("recaption exceeded max_images")
+    return prompts
+
+
 request("POST", "/internal/image/heartbeat", {"state": "booting"})
 try:
     import torch
@@ -274,8 +334,6 @@ if not torch.cuda.is_available():
 
 request("POST", "/internal/image/heartbeat", {"state": "loading"})
 tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
-# Keep the recaption model resident in CPU RAM between jobs; move it to CUDA only
-# for the short recaption step. This avoids downloading/loading weights again.
 recaptioner = AutoModelForCausalLM.from_pretrained(
     CONFIG["recaption_model"],
     torch_dtype=torch.float16,
@@ -300,65 +358,33 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
     seed = int(job["seed"])
     width = int(job.get("width", 1024))
     height = int(job.get("height", 1024))
-    started = time.perf_counter()
     request("POST", "/internal/image/heartbeat", {"state": "busy"})
     try:
-        instruction = (
-            "Rewrite the USER REQUEST as one concise, vivid English image-generation description. "
-            "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "
-            "important attributes, and explicit exclusions. Preserve culturally specific names and untranslated proper "
-            "terms verbatim instead of substituting an item from another culture. For named garments, foods, places, or "
-            "art forms, keep the original name and optionally add a short English gloss. Vietnamese 'áo dài' must remain "
-            "Vietnamese áo dài and should preserve its long tunic panels over separate trousers when requested. "
-            "Do not generalize a named subject. Output only the final English description, with no labels, JSON, explanation, "
-            "scoring, or commentary.\nUSER REQUEST: " + command
-        )
-        recaptioner.to("cuda")
-        rendered = tokenizer.apply_chat_template(
-            [{"role": "user", "content": instruction}],
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        inputs = tokenizer([rendered], return_tensors="pt").to("cuda")
-        with torch.inference_mode():
-            generated = recaptioner.generate(
-                **inputs,
-                max_new_tokens=320,
-                do_sample=False,
-                use_cache=True,
-                repetition_penalty=1.03,
-            )
-        prompt = tokenizer.batch_decode(
-            generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True
-        )[0].strip().strip('"')
-        del generated, inputs
-        recaptioner.to("cpu")
-        gc.collect()
-        torch.cuda.empty_cache()
-        if len(prompt) < 12:
-            raise RuntimeError("recaption returned an empty/invalid description")
-
-        generator = torch.Generator(device="cpu").manual_seed(seed)
-        image = pipe(
-            prompt=prompt,
-            height=height,
-            width=width,
-            guidance_scale=float(CONFIG["guidance"]),
-            num_inference_steps=int(CONFIG["steps"]),
-            generator=generator,
-        ).images[0]
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        request("POST", "/internal/image/result", {
-            "job_id": job_id,
-            "provider": "kaggle-image-warm",
-            "model": CONFIG["image_model"],
-            "image_mime": "image/png",
-            "image_b64": base64.b64encode(buffer.getvalue()).decode("ascii"),
-            "generation_prompt": prompt,
-            "elapsed_seconds": round(time.perf_counter() - started, 3),
-        })
+        prompts = recaption_batch(command)
+        for index, prompt in enumerate(prompts):
+            item_started = time.perf_counter()
+            generator = torch.Generator(device="cpu").manual_seed((seed + index) % (2 ** 32))
+            image = pipe(
+                prompt=prompt,
+                height=height,
+                width=width,
+                guidance_scale=float(CONFIG["guidance"]),
+                num_inference_steps=int(CONFIG["steps"]),
+                generator=generator,
+            ).images[0]
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            request("POST", "/internal/image/result", {
+                "job_id": job_id,
+                "provider": "kaggle-image-warm",
+                "model": CONFIG["image_model"],
+                "image_index": index,
+                "image_total": len(prompts),
+                "image_mime": "image/png",
+                "image_b64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+                "generation_prompt": prompt,
+                "elapsed_seconds": round(time.perf_counter() - item_started, 3),
+            })
     except Exception as exc:
         try:
             recaptioner.to("cpu")
