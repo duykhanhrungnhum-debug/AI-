@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import threading
@@ -44,6 +44,11 @@ class ChatJob:
     image_mime: str = "image/png"
     generation_prompt: str = ""
     elapsed_seconds: float = 0.0
+    image_datas: list[bytes] = field(default_factory=list)
+    image_mimes: list[str] = field(default_factory=list)
+    generation_prompts: list[str] = field(default_factory=list)
+    image_elapsed_seconds: list[float] = field(default_factory=list)
+    expected_images: int = 0
 
 
 class ChatSessionBroker:
@@ -96,12 +101,24 @@ class ChatSessionBroker:
             self.ensure_worker()
         return job
 
+    def _clear_image_outputs_locked(self, job: ChatJob) -> None:
+        job.image_data = None
+        job.image_mime = "image/png"
+        job.generation_prompt = ""
+        job.elapsed_seconds = 0.0
+        job.image_datas.clear()
+        job.image_mimes.clear()
+        job.generation_prompts.clear()
+        job.image_elapsed_seconds.clear()
+        job.expected_images = 0
+
     def _start_cold_fallback(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None or job.status in {"done", "error"} or job_id in self._cold_fallbacks:
                 return
             self._cold_fallbacks.add(job_id)
+            self._clear_image_outputs_locked(job)
             job.status = "processing"
         threading.Thread(
             target=self._run_image_job,
@@ -133,24 +150,36 @@ class ChatSessionBroker:
                 if job is None or job.status == "done":
                     return
                 command = job.message or job.prompt
-            result = self._image_executor.execute_cold(
+            results = self._image_executor.execute_command_cold(
                 command,
-                item_id=f"chat-{job_id[:12]}",
                 width=1024,
                 height=1024,
+                max_images=6,
             )
+            if not results:
+                raise RuntimeError("cold image executor returned no images")
             with self._lock:
                 job = self._jobs.get(job_id)
                 if job is None or job.status == "done":
                     return
+                self._clear_image_outputs_locked(job)
                 job.status = "done"
-                job.text = "AIKA đã tạo ảnh xong."
+                job.text = (
+                    "AIKA đã tạo ảnh xong."
+                    if len(results) == 1
+                    else f"AIKA đã tạo xong {len(results)} ảnh riêng."
+                )
                 job.provider = "kaggle-image-v2"
-                job.model = result.model
-                job.image_data = result.data
+                job.model = results[0].model
+                job.image_datas = [result.data for result in results]
+                job.image_mimes = ["image/png" for _ in results]
+                job.generation_prompts = [result.prompt for result in results]
+                job.image_elapsed_seconds = [result.elapsed_seconds for result in results]
+                job.expected_images = len(results)
+                job.image_data = results[0].data
                 job.image_mime = "image/png"
-                job.generation_prompt = result.prompt
-                job.elapsed_seconds = result.elapsed_seconds
+                job.generation_prompt = results[0].prompt
+                job.elapsed_seconds = sum(result.elapsed_seconds for result in results)
                 job.error = ""
         except Exception as exc:
             with self._lock:
@@ -208,21 +237,44 @@ class ChatSessionBroker:
         if not data.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("warm image result is not PNG")
 
+        index = int(payload.get("image_index", 0))
+        total = int(payload.get("image_total", 1))
+        if total <= 0 or total > 8 or index < 0 or index >= total:
+            raise ValueError("invalid warm image index/total")
+
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
             if job.status == "done":
                 return
-            job.status = "done"
-            job.text = "AIKA đã tạo ảnh xong."
+            if job.expected_images not in {0, total}:
+                raise ValueError("warm image total changed during job")
+            if job.expected_images == 0:
+                job.expected_images = total
+                job.image_datas = [b"" for _ in range(total)]
+                job.image_mimes = ["image/png" for _ in range(total)]
+                job.generation_prompts = ["" for _ in range(total)]
+                job.image_elapsed_seconds = [0.0 for _ in range(total)]
             job.provider = str(payload.get("provider", "kaggle-image-warm"))
             job.model = str(payload.get("model", ""))
-            job.image_data = data
-            job.image_mime = str(payload.get("image_mime", "image/png"))
-            job.generation_prompt = str(payload.get("generation_prompt", ""))
-            job.elapsed_seconds = float(payload.get("elapsed_seconds") or 0.0)
+            job.image_datas[index] = data
+            job.image_mimes[index] = str(payload.get("image_mime", "image/png"))
+            job.generation_prompts[index] = str(payload.get("generation_prompt", ""))
+            job.image_elapsed_seconds[index] = float(payload.get("elapsed_seconds") or 0.0)
             job.error = ""
+            if index == 0:
+                job.image_data = data
+                job.image_mime = job.image_mimes[index]
+                job.generation_prompt = job.generation_prompts[index]
+            if all(job.image_datas):
+                job.status = "done"
+                job.elapsed_seconds = sum(job.image_elapsed_seconds)
+                job.text = (
+                    "AIKA đã tạo ảnh xong."
+                    if total == 1
+                    else f"AIKA đã tạo xong {total} ảnh riêng."
+                )
 
     def ensure_worker(self) -> None:
         with self._lock:
@@ -314,6 +366,11 @@ class ChatSessionBroker:
             else:
                 image_state = job.status
                 image_error = ""
+            complete_images = len(job.image_datas) if job.status == "done" and job.image_datas else (1 if job.status == "done" and job.image_data else 0)
+            image_urls = [
+                f"/v1/chat/image?job_id={job.job_id}&index={index}"
+                for index in range(complete_images)
+            ]
             return {
                 "job_id": job.job_id,
                 "kind": job.kind,
@@ -322,22 +379,31 @@ class ChatSessionBroker:
                 "provider": job.provider,
                 "model": job.model,
                 "error": job.error,
-                "has_image": bool(job.image_data),
-                "image_url": f"/v1/chat/image?job_id={job.job_id}" if job.image_data else "",
+                "has_image": bool(image_urls),
+                "image_count": len(image_urls),
+                "image_urls": image_urls,
+                "image_url": image_urls[0] if image_urls else "",
                 "generation_prompt": job.generation_prompt,
+                "generation_prompts": list(job.generation_prompts),
                 "elapsed_seconds": job.elapsed_seconds,
                 "worker_state": self._worker_state if job.kind == "chat" else image_state,
                 "worker_error": self._worker_error if job.kind == "chat" else image_error,
                 "warm_image_enabled": self._warm_image.enabled if job.kind == "image" else False,
             }
 
-    def get_image(self, job_id: str) -> tuple[bytes, str]:
+    def get_image(self, job_id: str, *, index: int = 0) -> tuple[bytes, str]:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            if job.status != "done" or not job.image_data:
+            if job.status != "done":
                 raise ValueError("image is not ready")
+            if job.image_datas:
+                if index < 0 or index >= len(job.image_datas):
+                    raise IndexError(index)
+                return job.image_datas[index], job.image_mimes[index]
+            if index != 0 or not job.image_data:
+                raise IndexError(index)
             return job.image_data, job.image_mime
 
     def pull_job(self) -> dict | None:
