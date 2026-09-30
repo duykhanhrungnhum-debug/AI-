@@ -1,4 +1,4 @@
-"""Web-chat API layer with asynchronous Kaggle chat sessions."""
+"""Web-chat API layer with asynchronous AIKA skill execution."""
 from __future__ import annotations
 
 import hmac
@@ -12,7 +12,7 @@ from ai_agent.chat_session import CHAT_BROKER
 
 
 class ChatRequestHandler(AIRequestHandler):
-    server_version = "AI-Agent-Chat-API/0.1"
+    server_version = "AIKA-Chat-API/0.2"
 
     def _worker_authorized(self) -> bool:
         expected = os.environ.get("AI_AGENT_API_TOKEN", "")
@@ -25,6 +25,15 @@ class ChatRequestHandler(AIRequestHandler):
         if not isinstance(body, dict):
             raise ValueError("request body must be a JSON object")
         return body
+
+    def _binary(self, status: int, data: bytes, content_type: str, *, filename: str) -> None:
+        self.send_response(status)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(data)))
+        self.send_header("content-disposition", f'inline; filename="{filename}"')
+        self.send_header("cache-control", "private, no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -55,6 +64,23 @@ class ChatRequestHandler(AIRequestHandler):
                 self._json(404, {"error": "job_not_found"})
             return
 
+        if parsed.path == "/v1/chat/image":
+            if not self._authorized():
+                self._json(401, {"error": "unauthorized"})
+                return
+            job_id = parse_qs(parsed.query).get("job_id", [""])[0].strip()
+            if not job_id:
+                self._json(400, {"error": "job_id is required"})
+                return
+            try:
+                data, mime = CHAT_BROKER.get_image(job_id)
+                self._binary(200, data, mime, filename=f"AIKA-{job_id[:12]}.png")
+            except KeyError:
+                self._json(404, {"error": "job_not_found"})
+            except ValueError as exc:
+                self._json(409, {"error": str(exc)})
+            return
+
         super().do_GET()
 
     def do_POST(self) -> None:
@@ -82,11 +108,15 @@ class ChatRequestHandler(AIRequestHandler):
                     self._json(401, {"error": "unauthorized"})
                     return
                 body = self._read_body()
-                job = CHAT_BROKER.create_job(str(body.get("prompt", "")))
+                message = str(body.get("message", ""))
+                prompt = str(body.get("prompt", ""))
+                job = CHAT_BROKER.create_job(prompt, message=message)
+                state = CHAT_BROKER.get_job(job.job_id)
                 self._json(202, {
                     "job_id": job.job_id,
+                    "kind": job.kind,
                     "status": job.status,
-                    "worker_state": "starting",
+                    "worker_state": state["worker_state"],
                 })
                 return
 
@@ -102,8 +132,6 @@ class ChatRequestHandler(AIRequestHandler):
 def main() -> None:
     host = os.environ.get("AI_AGENT_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
-    if not os.environ.get("AI_AGENT_API_TOKEN"):
-        raise SystemExit("AI_AGENT_API_TOKEN is required")
     if not os.environ.get("AI_AGENT_API_TOKEN"):
         raise SystemExit("AI_AGENT_API_TOKEN is required")
     ThreadingHTTPServer((host, port), ChatRequestHandler).serve_forever()
