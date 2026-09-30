@@ -12,6 +12,13 @@ from uuid import uuid4
 from .core.kaggle_worker import KaggleGpuWorker
 
 
+AIKA_SYSTEM_PROMPT = (
+    "You are AIKA, the AI assistant of the user's AI project. "
+    "Your name is AIKA. If asked your name or identity, answer AIKA. "
+    "Do not identify yourself as ChatGPT; ChatGPT is a separate assistant that can operate this project."
+)
+
+
 @dataclass
 class ChatJob:
     job_id: str
@@ -107,7 +114,7 @@ class ChatSessionBroker:
             )
             worker.submit_script(
                 slug=self.kernel_slug,
-                title="AI Agent Chat Session",
+                title="AIKA Chat Session",
                 source=source,
                 enable_internet=True,
                 enable_gpu=True,
@@ -190,6 +197,7 @@ class ChatSessionBroker:
             "max_new_tokens": 512,
             "idle_polls": 60,
             "poll_seconds": 5,
+            "system_prompt": AIKA_SYSTEM_PROMPT,
         }, ensure_ascii=False)
         return textwrap.dedent(f"""
             from __future__ import annotations
@@ -223,7 +231,7 @@ class ChatSessionBroker:
                         "Authorization": "Bearer " + CONFIG["worker_token"],
                         "Content-Type": "application/json",
                         "Accept": "application/json",
-                        "User-Agent": "AI-Agent-Kaggle-Chat/1.0",
+                        "User-Agent": "AIKA-Kaggle-Chat/1.0",
                     }},
                 )
                 try:
@@ -265,7 +273,10 @@ class ChatSessionBroker:
                 job_id = str(job["job_id"])
                 prompt = str(job["prompt"])
                 try:
-                    messages = [{{"role": "user", "content": prompt}}]
+                    messages = [
+                        {{"role": "system", "content": CONFIG["system_prompt"]}},
+                        {{"role": "user", "content": prompt}},
+                    ]
                     rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                     inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
                     generated = model.generate(
@@ -290,7 +301,7 @@ class ChatSessionBroker:
                         "job_id": job_id,
                         "error": type(exc).__name__ + ": " + str(exc),
                     }})
-            print("AI_AGENT_CHAT_SESSION_IDLE_EXIT")
+            print("AIKA_CHAT_SESSION_IDLE_EXIT")
         """).strip() + "\n"
 
 
