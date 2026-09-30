@@ -1,0 +1,31 @@
+name: AIKA Chat Public Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aika-chat-public-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public AIKA chat deployment
+        run: |
+          set -euo pipefail
+          BASE="https://aika-chat-production.up.railway.app"
+          for i in $(seq 1 36); do
+            HEALTH="$(curl -fsS --max-time 15 "$BASE/health" 2>/dev/null || true)"
+            CHAT="$(curl -fsS --max-time 15 "$BASE/chat" 2>/dev/null || true)"
+            if printf '%s' "$HEALTH" | grep -q '"status": "ok"' \
+              && printf '%s' "$CHAT" | grep -q 'AIKA Chat' \
+              && printf '%s' "$CHAT" | grep -q '/v1/chat'; then
+              echo "AIKA_PUBLIC_CHAT_OK"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "AIKA public chat smoke failed" >&2
+          exit 1
