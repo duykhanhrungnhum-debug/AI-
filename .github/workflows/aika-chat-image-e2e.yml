@@ -1,5 +1,7 @@
 name: AIKA Chat Image E2E
 
+# End-to-end proof that a natural-language command entered in AIKA chat routes
+# through the existing Image V2 skill and returns a real PNG.
 on:
   push:
     branches: [main]
