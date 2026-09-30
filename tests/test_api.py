@@ -37,7 +37,7 @@ def test_chat_ui_is_served(api):
     with urlopen(api + "/chat") as response:
         body = response.read().decode("utf-8")
         assert response.headers["content-type"].startswith("text/html")
-        assert "AI- Chat" in body
+        assert "AIKA Chat" in body
         assert "/v1/chat" in body
 
 
