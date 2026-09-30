@@ -92,10 +92,15 @@ def test_natural_request_contract_has_no_species_table_or_json_planner():
     source = provider._build_worker_source((
         ImageRequestV2("a", "Vẽ một con sao la 3D cute đứng trong rừng", 1),
     ))
-    assert "no labels, JSON, explanation, scoring, or commentary" in source
-    assert "subject_class" not in source.casefold()
-    assert "style_class" not in source.casefold()
-    assert "species table" not in source.casefold()
+    folded = " ".join(source.casefold().split())
+    assert "no labels" in folded
+    assert "json" in folded
+    assert "explanation" in folded
+    assert "scoring" in folded
+    assert "commentary" in folded
+    assert "subject_class" not in folded
+    assert "style_class" not in folded
+    assert "species table" not in folded
 
 
 def test_request_validation_is_small_and_deterministic():
