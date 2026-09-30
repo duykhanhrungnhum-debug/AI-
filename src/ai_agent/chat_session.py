@@ -1,15 +1,19 @@
-"""Asynchronous Kaggle-backed chat sessions for the web chat UI."""
+"""Asynchronous AIKA chat sessions with direct skill routing."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 import os
+import re
 import threading
 import time
 import textwrap
+import unicodedata
 from uuid import uuid4
 
 from .core.kaggle_worker import KaggleGpuWorker
+from .core.media_v2 import ImageRequestV2, KaggleImageV2Provider
 
 
 AIKA_SYSTEM_PROMPT = (
@@ -19,16 +23,44 @@ AIKA_SYSTEM_PROMPT = (
 )
 
 
+def _fold_text(value: str) -> str:
+    text = unicodedata.normalize("NFD", value.casefold())
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+
+
+def classify_chat_intent(message: str) -> str:
+    """Route explicit natural-language creation commands without invoking another LLM."""
+    text = _fold_text(message.strip())
+    if not text:
+        return "chat"
+    image_nouns = (
+        "anh", "hinh anh", "hinh", "image", "photo", "picture", "portrait",
+        "poster", "minh hoa", "illustration",
+    )
+    create_verbs = (
+        "tao", "ve", "lam", "generate", "create", "draw", "render", "thiet ke",
+    )
+    has_image = any(re.search(rf"\b{re.escape(noun)}\b", text) for noun in image_nouns)
+    has_action = any(re.search(rf"\b{re.escape(verb)}\b", text) for verb in create_verbs)
+    return "image" if has_image and has_action else "chat"
+
+
 @dataclass
 class ChatJob:
     job_id: str
     prompt: str
+    message: str = ""
+    kind: str = "chat"
     status: str = "pending"
     text: str = ""
     provider: str = ""
     model: str = ""
     error: str = ""
     created_at: float = 0.0
+    image_data: bytes | None = None
+    image_mime: str = "image/png"
+    generation_prompt: str = ""
+    elapsed_seconds: float = 0.0
 
 
 class ChatSessionBroker:
@@ -40,20 +72,92 @@ class ChatSessionBroker:
         self._worker_last_seen = 0.0
         self._launching = False
         self.kernel_slug = "ai-agent-chat-session"
+        self.image_kernel_slug = "ai-agent-image-v2"
 
-    def create_job(self, prompt: str) -> ChatJob:
+    def create_job(self, prompt: str, *, message: str = "") -> ChatJob:
         prompt = prompt.strip()
+        message = message.strip()
+        if not prompt and not message:
+            raise ValueError("prompt or message is required")
         if not prompt:
-            raise ValueError("prompt is required")
-        job = ChatJob(job_id=uuid4().hex, prompt=prompt, created_at=time.time())
+            prompt = message
+        kind = classify_chat_intent(message) if message else "chat"
+        job = ChatJob(
+            job_id=uuid4().hex,
+            prompt=prompt,
+            message=message,
+            kind=kind,
+            status="processing" if kind == "image" else "pending",
+            created_at=time.time(),
+        )
         with self._lock:
             self._jobs[job.job_id] = job
-            if len(self._jobs) > 100:
-                oldest = sorted(self._jobs.values(), key=lambda j: j.created_at)[:-80]
+            if len(self._jobs) > 60:
+                oldest = sorted(self._jobs.values(), key=lambda j: j.created_at)[:-45]
                 for item in oldest:
                     self._jobs.pop(item.job_id, None)
-        self.ensure_worker()
+        if kind == "image":
+            threading.Thread(
+                target=self._run_image_job,
+                args=(job.job_id,),
+                name=f"aika-image-{job.job_id[:8]}",
+                daemon=True,
+            ).start()
+        else:
+            self.ensure_worker()
         return job
+
+    def _run_image_job(self, job_id: str) -> None:
+        try:
+            token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+            username = os.environ.get("KAGGLE_USERNAME", "").strip()
+            if not token:
+                raise RuntimeError("KAGGLE_API_TOKEN is required")
+            if not username:
+                raise RuntimeError("KAGGLE_USERNAME is required")
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                command = job.message or job.prompt
+            seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
+            provider = KaggleImageV2Provider(
+                worker=KaggleGpuWorker(
+                    api_token=token,
+                    username=username,
+                    timeout=120,
+                    submission_retry_attempts=5,
+                    submission_retry_delay_seconds=30,
+                ),
+                kernel_slug=self.image_kernel_slug,
+                poll_interval=3,
+                max_poll_attempts=600,
+            )
+            result = provider.generate_many((ImageRequestV2(
+                item_id=f"chat-{job_id[:12]}",
+                command=command,
+                seed=seed,
+                width=1024,
+                height=1024,
+            ),))[0]
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                job.status = "done"
+                job.text = "AIKA đã tạo ảnh xong."
+                job.provider = "kaggle-image-v2"
+                job.model = result.model
+                job.image_data = result.data
+                job.image_mime = "image/png"
+                job.generation_prompt = result.prompt
+                job.elapsed_seconds = result.elapsed_seconds
+        except Exception as exc:
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is not None:
+                    job.status = "error"
+                    job.error = f"{type(exc).__name__}: {exc}"[:2000]
 
     def ensure_worker(self) -> None:
         with self._lock:
@@ -127,7 +231,7 @@ class ChatSessionBroker:
                 self._worker_state = "error"
                 self._worker_error = str(exc)[:1000]
                 for job in self._jobs.values():
-                    if job.status == "pending":
+                    if job.kind == "chat" and job.status == "pending":
                         job.status = "error"
                         job.error = self._worker_error
         finally:
@@ -141,19 +245,33 @@ class ChatSessionBroker:
                 raise KeyError(job_id)
             return {
                 "job_id": job.job_id,
+                "kind": job.kind,
                 "status": job.status,
                 "text": job.text,
                 "provider": job.provider,
                 "model": job.model,
                 "error": job.error,
-                "worker_state": self._worker_state,
-                "worker_error": self._worker_error,
+                "has_image": bool(job.image_data),
+                "image_url": f"/v1/chat/image?job_id={job.job_id}" if job.image_data else "",
+                "generation_prompt": job.generation_prompt,
+                "elapsed_seconds": job.elapsed_seconds,
+                "worker_state": self._worker_state if job.kind == "chat" else job.status,
+                "worker_error": self._worker_error if job.kind == "chat" else "",
             }
+
+    def get_image(self, job_id: str) -> tuple[bytes, str]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if job.status != "done" or not job.image_data:
+                raise ValueError("image is not ready")
+            return job.image_data, job.image_mime
 
     def pull_job(self) -> dict | None:
         with self._lock:
             for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
-                if job.status == "pending":
+                if job.kind == "chat" and job.status == "pending":
                     job.status = "processing"
                     return {"job_id": job.job_id, "prompt": job.prompt}
         return None
@@ -173,6 +291,8 @@ class ChatSessionBroker:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
+            if job.kind != "chat":
+                raise ValueError("only chat jobs can be finished by the chat worker")
             error = str(payload.get("error", "")).strip()
             if error:
                 job.status = "error"
