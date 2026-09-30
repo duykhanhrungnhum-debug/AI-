@@ -1,1 +1,1 @@
-buffalo-semantic-structure-contract-v5
+buffalo-production-hardening-v4
