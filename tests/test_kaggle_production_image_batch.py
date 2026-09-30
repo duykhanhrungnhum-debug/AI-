@@ -42,7 +42,7 @@ def provider():
     )
 
 
-def test_worker_source_compiles_and_has_structured_progress_and_native_subject_contract():
+def test_worker_source_compiles_and_has_bilingual_subject_contract_and_repair():
     source = provider()._build_worker_source((
         ProductionImageItem(
             "real", "Tạo ảnh đúng một con trâu nước Việt Nam thật", 1,
@@ -57,6 +57,8 @@ def test_worker_source_compiles_and_has_structured_progress_and_native_subject_c
 
     assert "AI_AGENT_PROGRESS" in source
     assert 'progress("planner_loading"' in source
+    assert 'progress("planner_repair"' in source
+    assert '"planner_item_complete"' in source
     assert 'progress("engine_loading"' in source
     assert 'progress("candidate_generating"' in source
     assert 'progress("detector_loading"' in source
@@ -65,10 +67,12 @@ def test_worker_source_compiles_and_has_structured_progress_and_native_subject_c
     assert "Qwen/Qwen3-0.6B" not in source
     assert "Never generalize a specific species" in source
     assert "subject_matches_source" in source
-    assert "subject_matches_prompt" not in source
-    assert "MAY remain in the user's original language" in source
+    assert "english_subject_matches_prompt" in source
+    assert "SUBJECT_ENGLISH" in source
+    assert "exact English common name/translation" in source
     assert "PROMPT must be a complete ENGLISH generation prompt" in source
-    assert "ORIGINAL" not in source  # original-request QA is host-side, not planner hallucination
+    assert "Do not transliterate or invent a near-sounding English word" in source
+    assert "ORIGINAL" not in source  # original-request QA is host-side
 
 
 def test_detector_count_is_trusted_contract_not_planner_output():
@@ -80,9 +84,9 @@ def test_detector_count_is_trusted_contract_not_planner_output():
     ))
     assert "AutoModelForZeroShotObjectDetection" in source
     assert "grounding-dino-tiny" in source
-    assert '"expected_count": gate.expected_count' not in source  # already serialized before worker
+    assert '"expected_count": gate.expected_count' not in source
     assert 'item["hard_gates"]' in source
-    assert "planner never invents expected anatomy counts" in source
+    assert "planner never invents them" in source
     assert "detected_count" in source
 
 
