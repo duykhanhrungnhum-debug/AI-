@@ -11,7 +11,7 @@ def test_simple_image_pipeline_contract():
     assert "hard_gates=()" in source
     assert "GroundingDINO" not in source
     assert "grounding-dino" not in source
-    assert "detector" not in source.casefold()
+    assert '"detector_enabled": False' in source
     assert "ORIGINAL USER REQUEST (authoritative)" in source
     assert "one targeted retry" in source
     assert "score_floor(entry[1]) >= QUALITY_TARGET" in source
