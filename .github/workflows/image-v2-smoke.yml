@@ -2,11 +2,6 @@ name: Image V2 Smoke
 
 on:
   workflow_dispatch:
-    inputs:
-      commands_json:
-        description: Natural-language image requests as JSON list
-        required: false
-        default: '[{"id":"dual_portrait","command":"Tạo một ảnh chân dung thời trang chân thực của hai phụ nữ trưởng thành trẻ khoảng 22-25 tuổi đứng cạnh nhau: một cô gái Đông Á và một cô gái châu Âu. Cả hai đều trẻ trung, xinh đẹp, sắc sảo, thần thái tự tin, đường nét khuôn mặt rõ và khác biệt tự nhiên theo vùng, mắt biểu cảm, tóc đẹp, trang điểm tinh tế. Trang phục thời trang hiện đại thanh lịch, không khỏa thân. Bố cục từ eo trở lên, cả hai nhân vật hiện rõ và cân đối, ánh sáng studio điện ảnh, da và khuôn mặt chân thực, chất lượng ảnh editorial cao cấp, nền sạch hơi mờ."}]'
   push:
     branches: [main]
     paths:
@@ -27,7 +22,8 @@ jobs:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
       MEDIA_OUTPUT_DIR: image-v2-output
-      MEDIA_COMMANDS_JSON: ${{ inputs.commands_json || '[{"id":"dual_portrait","command":"Tạo một ảnh chân dung thời trang chân thực của hai phụ nữ trưởng thành trẻ khoảng 22-25 tuổi đứng cạnh nhau: một cô gái Đông Á và một cô gái châu Âu. Cả hai đều trẻ trung, xinh đẹp, sắc sảo, thần thái tự tin, đường nét khuôn mặt rõ và khác biệt tự nhiên theo vùng, mắt biểu cảm, tóc đẹp, trang điểm tinh tế. Trang phục thời trang hiện đại thanh lịch, không khỏa thân. Bố cục từ eo trở lên, cả hai nhân vật hiện rõ và cân đối, ánh sáng studio điện ảnh, da và khuôn mặt chân thực, chất lượng ảnh editorial cao cấp, nền sạch hơi mờ."}]' }}
+      MEDIA_COMMANDS_JSON: >-
+        [{"id":"dual_portrait","command":"Tạo một ảnh chân dung thời trang chân thực của hai phụ nữ trưởng thành trẻ khoảng 22-25 tuổi đứng cạnh nhau, một cô gái Đông Á và một cô gái châu Âu. Cả hai đều trẻ trung, xinh đẹp, sắc sảo, thần thái tự tin, đường nét khuôn mặt rõ và khác biệt tự nhiên theo vùng, mắt biểu cảm, tóc đẹp, trang điểm tinh tế. Trang phục thời trang hiện đại thanh lịch, không khỏa thân. Bố cục từ eo trở lên, cả hai nhân vật hiện rõ và cân đối, ánh sáng studio điện ảnh, da và khuôn mặt chân thực, chất lượng ảnh editorial cao cấp, nền sạch hơi mờ."}]
 
     steps:
       - name: Checkout
