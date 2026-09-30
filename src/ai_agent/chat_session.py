@@ -1,19 +1,19 @@
 """Asynchronous AIKA chat sessions with direct skill routing."""
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
-from hashlib import sha256
 import json
 import os
-import re
 import threading
 import time
 import textwrap
-import unicodedata
 from uuid import uuid4
 
 from .core.kaggle_worker import KaggleGpuWorker
-from .core.media_v2 import ImageRequestV2, KaggleImageV2Provider
+from .executors.image import ImageExecutor
+from .router.skill_router import route_skill
+from .workers.image_manager import WarmImageWorkerManager
 
 
 AIKA_SYSTEM_PROMPT = (
@@ -23,33 +23,9 @@ AIKA_SYSTEM_PROMPT = (
 )
 
 
-def _fold_text(value: str) -> str:
-    text = unicodedata.normalize("NFD", value.casefold())
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-
-
 def classify_chat_intent(message: str) -> str:
-    """Route explicit natural-language creation commands without invoking another LLM."""
-    text = _fold_text(message.strip())
-    if not text:
-        return "chat"
-    routed = re.sub(r"^aika[\s,:;\-]+", "", text).strip()
-    question_prefixes = (
-        "giai thich", "tai sao", "vi sao", "cho toi biet", "kiem tra", "bao cao",
-        "phan tich", "danh gia", "lam sao", "nhu the nao", "co the",
-    )
-    if routed.endswith("?") or any(routed.startswith(prefix) for prefix in question_prefixes):
-        return "chat"
-    image_nouns = (
-        "anh", "hinh anh", "hinh", "image", "photo", "picture", "portrait",
-        "poster", "minh hoa", "illustration",
-    )
-    create_verbs = (
-        "tao", "ve", "lam", "generate", "create", "draw", "render", "thiet ke",
-    )
-    has_image = any(re.search(rf"\b{re.escape(noun)}\b", routed) for noun in image_nouns)
-    has_action = any(re.search(rf"\b{re.escape(verb)}\b", routed) for verb in create_verbs)
-    return "image" if has_image and has_action else "chat"
+    """Backward-compatible alias for the central skill router."""
+    return route_skill(message)
 
 
 @dataclass
@@ -80,6 +56,9 @@ class ChatSessionBroker:
         self._launching = False
         self.kernel_slug = "ai-agent-chat-session"
         self.image_kernel_slug = "ai-agent-image-v2"
+        self._image_executor = ImageExecutor(kernel_slug=self.image_kernel_slug)
+        self._warm_image = WarmImageWorkerManager()
+        self._cold_fallbacks: set[str] = set()
 
     def create_job(self, prompt: str, *, message: str = "") -> ChatJob:
         prompt = prompt.strip()
@@ -94,7 +73,7 @@ class ChatSessionBroker:
             prompt=prompt,
             message=message,
             kind=kind,
-            status="processing" if kind == "image" else "pending",
+            status="pending",
             created_at=time.time(),
         )
         with self._lock:
@@ -104,52 +83,65 @@ class ChatSessionBroker:
                 for item in oldest:
                     self._jobs.pop(item.job_id, None)
         if kind == "image":
-            threading.Thread(
-                target=self._run_image_job,
-                args=(job.job_id,),
-                name=f"aika-image-{job.job_id[:8]}",
-                daemon=True,
-            ).start()
+            if self._warm_image.ensure_started():
+                threading.Thread(
+                    target=self._watch_warm_image_job,
+                    args=(job.job_id,),
+                    name=f"aika-image-watch-{job.job_id[:8]}",
+                    daemon=True,
+                ).start()
+            else:
+                self._start_cold_fallback(job.job_id)
         else:
             self.ensure_worker()
         return job
 
+    def _start_cold_fallback(self, job_id: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status in {"done", "error"} or job_id in self._cold_fallbacks:
+                return
+            self._cold_fallbacks.add(job_id)
+            job.status = "processing"
+        threading.Thread(
+            target=self._run_image_job,
+            args=(job_id,),
+            name=f"aika-image-cold-{job_id[:8]}",
+            daemon=True,
+        ).start()
+
+    def _watch_warm_image_job(self, job_id: str) -> None:
+        deadline = time.time() + 420
+        while time.time() < deadline:
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None or job.status in {"done", "error"}:
+                    return
+            snapshot = self._warm_image.snapshot()
+            if snapshot.state == "error" or (
+                snapshot.circuit_open_until and snapshot.circuit_open_until > time.time()
+            ):
+                self._start_cold_fallback(job_id)
+                return
+            time.sleep(5)
+        self._start_cold_fallback(job_id)
+
     def _run_image_job(self, job_id: str) -> None:
         try:
-            token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
-            username = os.environ.get("KAGGLE_USERNAME", "").strip()
-            if not token:
-                raise RuntimeError("KAGGLE_API_TOKEN is required")
-            if not username:
-                raise RuntimeError("KAGGLE_USERNAME is required")
             with self._lock:
                 job = self._jobs.get(job_id)
-                if job is None:
+                if job is None or job.status == "done":
                     return
                 command = job.message or job.prompt
-            seed = int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
-            provider = KaggleImageV2Provider(
-                worker=KaggleGpuWorker(
-                    api_token=token,
-                    username=username,
-                    timeout=120,
-                    submission_retry_attempts=5,
-                    submission_retry_delay_seconds=30,
-                ),
-                kernel_slug=self.image_kernel_slug,
-                poll_interval=3,
-                max_poll_attempts=600,
-            )
-            result = provider.generate_many((ImageRequestV2(
+            result = self._image_executor.execute_cold(
+                command,
                 item_id=f"chat-{job_id[:12]}",
-                command=command,
-                seed=seed,
                 width=1024,
                 height=1024,
-            ),))[0]
+            )
             with self._lock:
                 job = self._jobs.get(job_id)
-                if job is None:
+                if job is None or job.status == "done":
                     return
                 job.status = "done"
                 job.text = "AIKA đã tạo ảnh xong."
@@ -159,12 +151,78 @@ class ChatSessionBroker:
                 job.image_mime = "image/png"
                 job.generation_prompt = result.prompt
                 job.elapsed_seconds = result.elapsed_seconds
+                job.error = ""
         except Exception as exc:
             with self._lock:
                 job = self._jobs.get(job_id)
-                if job is not None:
+                if job is not None and job.status != "done":
                     job.status = "error"
                     job.error = f"{type(exc).__name__}: {exc}"[:2000]
+        finally:
+            with self._lock:
+                self._cold_fallbacks.discard(job_id)
+
+    def pull_image_job(self) -> dict | None:
+        """Called only by the authenticated warm image worker."""
+        with self._lock:
+            for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
+                if job.kind == "image" and job.status == "pending":
+                    job.status = "processing"
+                    command = job.message or job.prompt
+                    return {
+                        "job_id": job.job_id,
+                        "command": command,
+                        "seed": ImageExecutor.seed_for(command),
+                        "width": 1024,
+                        "height": 1024,
+                    }
+        return None
+
+    def image_heartbeat(self, state: str = "ready") -> None:
+        self._warm_image.heartbeat(state)
+
+    def finish_image_job(self, payload: dict) -> None:
+        job_id = str(payload.get("job_id", "")).strip()
+        if not job_id:
+            raise ValueError("job_id is required")
+        error = str(payload.get("error", "")).strip()
+        if error:
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    raise KeyError(job_id)
+                if job.status == "done":
+                    return
+                job.status = "pending"
+                job.error = error[:2000]
+            self._start_cold_fallback(job_id)
+            return
+
+        encoded = str(payload.get("image_b64", "")).strip()
+        if not encoded:
+            raise ValueError("image_b64 is required")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise ValueError("image_b64 is invalid") from exc
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("warm image result is not PNG")
+
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if job.status == "done":
+                return
+            job.status = "done"
+            job.text = "AIKA đã tạo ảnh xong."
+            job.provider = str(payload.get("provider", "kaggle-image-warm"))
+            job.model = str(payload.get("model", ""))
+            job.image_data = data
+            job.image_mime = str(payload.get("image_mime", "image/png"))
+            job.generation_prompt = str(payload.get("generation_prompt", ""))
+            job.elapsed_seconds = float(payload.get("elapsed_seconds") or 0.0)
+            job.error = ""
 
     def ensure_worker(self) -> None:
         with self._lock:
@@ -250,6 +308,12 @@ class ChatSessionBroker:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
+            if job.kind == "image" and self._warm_image.enabled:
+                image_state = self._warm_image.snapshot().state
+                image_error = self._warm_image.last_error()
+            else:
+                image_state = job.status
+                image_error = ""
             return {
                 "job_id": job.job_id,
                 "kind": job.kind,
@@ -262,8 +326,9 @@ class ChatSessionBroker:
                 "image_url": f"/v1/chat/image?job_id={job.job_id}" if job.image_data else "",
                 "generation_prompt": job.generation_prompt,
                 "elapsed_seconds": job.elapsed_seconds,
-                "worker_state": self._worker_state if job.kind == "chat" else job.status,
-                "worker_error": self._worker_error if job.kind == "chat" else "",
+                "worker_state": self._worker_state if job.kind == "chat" else image_state,
+                "worker_error": self._worker_error if job.kind == "chat" else image_error,
+                "warm_image_enabled": self._warm_image.enabled if job.kind == "image" else False,
             }
 
     def get_image(self, job_id: str) -> tuple[bytes, str]:
@@ -371,7 +436,7 @@ class ChatSessionBroker:
                     detail = exc.read().decode("utf-8", errors="replace")
                     raise RuntimeError(f"HTTP {{exc.code}} {{path}}: {{detail[:500]}}") from exc
 
-            request("POST", "/internal/chat/heartbeat", {"state": "booting"})
+            request("POST", "/internal/chat/heartbeat", {{"state": "booting"}})
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
             tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
