@@ -12,7 +12,7 @@ from ai_agent.chat_session import CHAT_BROKER
 
 
 class ChatRequestHandler(AIRequestHandler):
-    server_version = "AIKA-Chat-API/0.2"
+    server_version = "AIKA-Chat-API/0.3"
 
     def _worker_authorized(self) -> bool:
         expected = os.environ.get("AI_AGENT_API_TOKEN", "")
@@ -35,19 +35,28 @@ class ChatRequestHandler(AIRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _empty_or_json(self, payload: dict | None) -> None:
+        if payload is None:
+            self.send_response(204)
+            self.send_header("content-length", "0")
+            self.end_headers()
+        else:
+            self._json(200, payload)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/internal/chat/pull":
             if not self._worker_authorized():
                 self._json(401, {"error": "unauthorized"})
                 return
-            job = CHAT_BROKER.pull_job()
-            if job is None:
-                self.send_response(204)
-                self.send_header("content-length", "0")
-                self.end_headers()
-            else:
-                self._json(200, job)
+            self._empty_or_json(CHAT_BROKER.pull_job())
+            return
+
+        if parsed.path == "/internal/image/pull":
+            if not self._worker_authorized():
+                self._json(401, {"error": "unauthorized"})
+                return
+            self._empty_or_json(CHAT_BROKER.pull_image_job())
             return
 
         if parsed.path == "/v1/chat/status":
@@ -100,6 +109,23 @@ class ChatRequestHandler(AIRequestHandler):
                     self._json(401, {"error": "unauthorized"})
                     return
                 CHAT_BROKER.finish_job(self._read_body())
+                self._json(200, {"status": "ok"})
+                return
+
+            if path == "/internal/image/heartbeat":
+                if not self._worker_authorized():
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                body = self._read_body()
+                CHAT_BROKER.image_heartbeat(str(body.get("state", "ready")))
+                self._json(200, {"status": "ok"})
+                return
+
+            if path == "/internal/image/result":
+                if not self._worker_authorized():
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                CHAT_BROKER.finish_image_job(self._read_body())
                 self._json(200, {"status": "ok"})
                 return
 
