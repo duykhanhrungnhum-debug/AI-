@@ -67,6 +67,8 @@ def test_v2_is_one_recaption_plus_one_unified_image_model():
     assert "Output only the final English description" in source
     assert "num_inference_steps=int(CONFIG[\"steps\"])" in source
     assert "guidance_scale=float(CONFIG[\"guidance\"])" in source
+    assert "pipe.enable_model_cpu_offload()" in source
+    assert 'execution="model_cpu_offload"' in source
 
     # Production V2 must not recreate the architecture that caused prior loops.
     banned = (
