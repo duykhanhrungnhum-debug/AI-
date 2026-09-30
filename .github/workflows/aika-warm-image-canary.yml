@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      AIKA_CANARY_URL: https://aika-chat-canary-v2-production.up.railway.app
+      AIKA_CANARY_URL: https://aika-chat-canary-v3-production.up.railway.app
       AIKA_CANARY_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
     steps:
