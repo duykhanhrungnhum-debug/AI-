@@ -1,0 +1,120 @@
+name: AIKA Command Bus
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: aika-command-bus
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    if: startsWith(github.event.issue.title, '[AIKA]') && github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AIKA_COMMAND: ${{ github.event.issue.body }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install AIKA
+        run: python -m pip install -e .
+      - name: Execute AIKA command
+        run: |
+          python - <<'PY'
+          import json, os
+          from hashlib import sha256
+          from pathlib import Path
+          from ai_agent.chat_session import classify_chat_intent
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          from ai_agent.core.media_v2 import ImageRequestV2, KaggleImageV2Provider
+
+          command = os.environ.get('AIKA_COMMAND', '').strip()
+          if not command:
+              raise SystemExit('AIKA_COMMAND is empty')
+          out = Path('aika-command-result')
+          out.mkdir(exist_ok=True)
+          intent = classify_chat_intent(command)
+          result = {'command': command, 'intent': intent}
+
+          if intent == 'image':
+              token = os.environ.get('KAGGLE_API_TOKEN', '').strip()
+              username = os.environ.get('KAGGLE_USERNAME', '').strip()
+              if not token or not username:
+                  raise SystemExit('Kaggle credentials are missing')
+              provider = KaggleImageV2Provider(
+                  worker=KaggleGpuWorker(
+                      api_token=token,
+                      username=username,
+                      timeout=120,
+                      submission_retry_attempts=5,
+                      submission_retry_delay_seconds=30,
+                  ),
+                  kernel_slug='ai-agent-image-v2',
+                  poll_interval=3,
+                  max_poll_attempts=600,
+              )
+              seed = int.from_bytes(sha256(command.encode('utf-8')).digest()[:4], 'big')
+              image = provider.generate_many((ImageRequestV2(
+                  item_id='operator-image',
+                  command=command,
+                  seed=seed,
+                  width=1024,
+                  height=1024,
+              ),))[0]
+              (out / 'image.png').write_bytes(image.data)
+              result.update({
+                  'status': 'done',
+                  'provider': 'kaggle-image-v2',
+                  'model': image.model,
+                  'elapsed_seconds': image.elapsed_seconds,
+                  'generation_prompt': image.prompt,
+                  'evidence': list(image.evidence),
+                  'image_file': 'image.png',
+              })
+          else:
+              from ai_agent.core.model_factory import build_model_provider
+              generated = build_model_provider().generate(command)
+              result.update({
+                  'status': 'done',
+                  'provider': generated.provider,
+                  'model': generated.model,
+                  'text': generated.text,
+              })
+              (out / 'response.txt').write_text(generated.text + '\n', encoding='utf-8')
+
+          (out / 'result.json').write_text(
+              json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          print('AIKA_COMMAND_OK', intent, flush=True)
+          PY
+      - name: Upload AIKA result
+        if: always()
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aika-command-${{ github.event.issue.number }}
+          path: aika-command-result/
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Report result on command issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "AIKA_COMMAND_SUCCESS\n\nArtifact: $ARTIFACT_URL"
+          else
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "AIKA_COMMAND_FAILED. Xem workflow run để lấy lỗi cụ thể."
+          fi
