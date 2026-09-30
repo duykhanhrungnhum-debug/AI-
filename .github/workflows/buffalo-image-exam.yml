@@ -47,7 +47,7 @@ jobs:
         run: |
           set +e
           START=$(date +%s)
-          python scripts/generate_premium_image_batch.py
+          python scripts/generate_style_routed_image_batch.py
           EXIT=$?
           END=$(date +%s)
           python - <<PY
