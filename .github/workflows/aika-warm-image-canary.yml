@@ -33,7 +33,7 @@ jobs:
           import urllib.request
 
           base = os.environ["AIKA_CANARY_URL"].rstrip("/")
-          token = os.environ["AIKA_CANARY_TOKEN"]
+          token = os.environ["AIKA_CANARY_TOKEN"].strip()
           out = Path("warm-canary-output")
           out.mkdir(exist_ok=True)
 
