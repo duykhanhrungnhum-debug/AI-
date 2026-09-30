@@ -25,7 +25,7 @@ jobs:
       MEDIA_OUTPUT_DIR: buffalo-exam
       MEDIA_CLIP_PRECHECK: "0"
       MEDIA_COMMANDS_JSON: >-
-        [{"id":"real","command":"Tạo ảnh đúng một con trâu nước Việt Nam thật, ảnh chụp chân thực ngoài đồng cỏ hoặc ruộng, toàn thân, ánh sáng tự nhiên, giải phẫu trâu chính xác, bốn chân và móng rõ ràng, sừng đúng cấu trúc, da và lông tự nhiên, màu sắc vừa phải, không HDR, không retouch quảng cáo."},{"id":"cute3d","command":"Tạo ảnh đúng một con trâu nước 3D cute, mascot cao cấp toàn thân, nhận diện rõ là trâu nước, tỷ lệ dễ thương nhưng giải phẫu mạch lạc, bốn chân và móng đúng cấu trúc, sừng cân đối, mắt biểu cảm, vật liệu 3D chi tiết, ánh sáng studio đẹp, nền sạch, chất lượng nhân vật hoạt hình 3D cao cấp."}]
+        [{"id":"real","command":"Tạo ảnh đúng một con trâu nước Việt Nam thật, ảnh chụp chân thực ngoài đồng cỏ hoặc ruộng, toàn thân, ánh sáng tự nhiên, giải phẫu trâu chính xác, bốn chân và móng rõ ràng, sừng đúng cấu trúc, da và lông tự nhiên, màu sắc vừa phải, không HDR, không retouch quảng cáo.","hard_gates":[{"label":"horn","query":"individual water buffalo horn","expected_count":2}]},{"id":"cute3d","command":"Tạo ảnh đúng một con trâu nước 3D cute, mascot cao cấp toàn thân, nhận diện rõ là trâu nước, tỷ lệ dễ thương nhưng giải phẫu mạch lạc, bốn chân và móng đúng cấu trúc, sừng cân đối, mắt biểu cảm, vật liệu 3D chi tiết, ánh sáng studio đẹp, nền sạch, chất lượng nhân vật hoạt hình 3D cao cấp.","hard_gates":[{"label":"horn","query":"individual water buffalo horn","expected_count":2}]}]
 
     steps:
       - name: Checkout
@@ -42,12 +42,12 @@ jobs:
       - name: Install package
         run: python -m pip install -e .
 
-      - name: Generate both buffalo images with project AI
+      - name: Generate and verify both buffalo images with project AI
         shell: bash
         run: |
           set +e
           START=$(date +%s)
-          python scripts/generate_style_routed_image_batch.py
+          python scripts/generate_production_image_batch.py
           EXIT=$?
           END=$(date +%s)
           python - <<PY
