@@ -1,7 +1,8 @@
 name: AIKA Chat Image E2E
 
-# End-to-end proof that a natural-language command entered in AIKA chat routes
-# through the existing Image V2 skill and returns a real PNG.
+# Manual end-to-end proof that a natural-language command entered in AIKA chat
+# routes through the existing Image V2 skill and returns a real PNG. Pushes only
+# cancel an older duplicate run; the GPU test itself runs on workflow_dispatch.
 on:
   push:
     branches: [main]
@@ -14,10 +15,11 @@ permissions:
 
 concurrency:
   group: kaggle-gpu-session
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   e2e:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
