@@ -229,11 +229,14 @@ for index, item in enumerate(CONFIG["items"]):
         "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "
         "important attributes, and explicit exclusions. Preserve culturally specific names and untranslated proper "
         "terms verbatim instead of substituting an item from another culture. For named garments, foods, places, or "
-        "art forms, keep the original name and optionally add a short English gloss. In particular, Vietnamese 'áo dài' "
-        "must remain 'Vietnamese áo dài' and must never be rewritten as hanbok, qipao, cheongsam, or another garment. "
-        "Do not generalize a named subject. Do not invent body parts, objects, text, logos, or requirements that the user "
-        "did not request. Output only the final English description, with no labels, JSON, explanation, scoring, or "
-        "commentary.\nUSER REQUEST: " + item["command"]
+        "art forms, keep the original name and optionally add a short English gloss. For a culturally specific named "
+        "garment, add its canonical silhouette and construction details when known confidently so the image model can "
+        "distinguish it from superficially similar clothing. In particular, Vietnamese 'áo dài' must remain 'Vietnamese "
+        "áo dài' and must be described as a fitted high-collared long-sleeved tunic with long front and back panels, "
+        "high side slits, worn over separate loose full-length trousers; it is not a one-piece dress, hanbok, qipao, or "
+        "cheongsam. Do not generalize a named subject. Do not invent body parts, objects, text, logos, or requirements "
+        "that the user did not request. Output only the final English description, with no labels, JSON, explanation, "
+        "scoring, or commentary.\nUSER REQUEST: " + item["command"]
     )
     rendered = tokenizer.apply_chat_template(
         [{"role": "user", "content": instruction}],
