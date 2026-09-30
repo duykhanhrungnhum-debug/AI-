@@ -72,10 +72,14 @@ jobs:
               "evidence": list(result.evidence),
           }
           (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
-          if "hanbok" in result.prompt.casefold():
+          folded = result.prompt.casefold()
+          if "hanbok" in folded:
               raise RuntimeError("AIKA recaption still substituted áo dài with hanbok")
-          if "áo dài" not in result.prompt.casefold() and "ao dai" not in result.prompt.casefold():
+          if "áo dài" not in folded and "ao dai" not in folded:
               raise RuntimeError("AIKA recaption did not preserve áo dài")
+          required = ("side slit", "trouser")
+          if not all(token in folded for token in required):
+              raise RuntimeError("AIKA recaption did not describe canonical áo dài structure")
           print("AIKA_AO_DAI_FIXED_OK", result.model, result.elapsed_seconds, flush=True)
           print("RECAPTION", result.prompt, flush=True)
           PY
