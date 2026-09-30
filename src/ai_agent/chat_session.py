@@ -33,6 +33,13 @@ def classify_chat_intent(message: str) -> str:
     text = _fold_text(message.strip())
     if not text:
         return "chat"
+    routed = re.sub(r"^aika[\s,:;\-]+", "", text).strip()
+    question_prefixes = (
+        "giai thich", "tai sao", "vi sao", "cho toi biet", "kiem tra", "bao cao",
+        "phan tich", "danh gia", "lam sao", "nhu the nao", "co the",
+    )
+    if routed.endswith("?") or any(routed.startswith(prefix) for prefix in question_prefixes):
+        return "chat"
     image_nouns = (
         "anh", "hinh anh", "hinh", "image", "photo", "picture", "portrait",
         "poster", "minh hoa", "illustration",
@@ -40,8 +47,8 @@ def classify_chat_intent(message: str) -> str:
     create_verbs = (
         "tao", "ve", "lam", "generate", "create", "draw", "render", "thiet ke",
     )
-    has_image = any(re.search(rf"\b{re.escape(noun)}\b", text) for noun in image_nouns)
-    has_action = any(re.search(rf"\b{re.escape(verb)}\b", text) for verb in create_verbs)
+    has_image = any(re.search(rf"\b{re.escape(noun)}\b", routed) for noun in image_nouns)
+    has_action = any(re.search(rf"\b{re.escape(verb)}\b", routed) for verb in create_verbs)
     return "image" if has_image and has_action else "chat"
 
 
