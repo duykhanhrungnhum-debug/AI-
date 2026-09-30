@@ -3,6 +3,7 @@ from pathlib import Path
 
 def test_simple_image_pipeline_contract():
     source = Path("scripts/generate_simple_image_batch.py").read_text(encoding="utf-8")
+    compile(source, "<generate_simple_image_batch.py>", "exec")
 
     assert "QUALITY_TARGET = 9.0" in source
     assert "Qwen/Qwen3-VL-8B-Instruct" in source
