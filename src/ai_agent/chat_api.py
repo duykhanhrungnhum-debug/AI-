@@ -12,7 +12,7 @@ from ai_agent.chat_session import CHAT_BROKER
 
 
 class ChatRequestHandler(AIRequestHandler):
-    server_version = "AIKA-Chat-API/0.3"
+    server_version = "AIKA-Chat-API/0.4"
 
     def _worker_authorized(self) -> bool:
         expected = os.environ.get("AI_AGENT_API_TOKEN", "")
@@ -77,15 +77,27 @@ class ChatRequestHandler(AIRequestHandler):
             if not self._authorized():
                 self._json(401, {"error": "unauthorized"})
                 return
-            job_id = parse_qs(parsed.query).get("job_id", [""])[0].strip()
+            query = parse_qs(parsed.query)
+            job_id = query.get("job_id", [""])[0].strip()
             if not job_id:
                 self._json(400, {"error": "job_id is required"})
                 return
+            raw_index = query.get("index", ["0"])[0].strip()
             try:
-                data, mime = CHAT_BROKER.get_image(job_id)
-                self._binary(200, data, mime, filename=f"AIKA-{job_id[:12]}.png")
+                index = int(raw_index)
+            except ValueError:
+                self._json(400, {"error": "index must be an integer"})
+                return
+            if index < 0:
+                self._json(400, {"error": "index must be non-negative"})
+                return
+            try:
+                data, mime = CHAT_BROKER.get_image(job_id, index=index)
+                self._binary(200, data, mime, filename=f"AIKA-{job_id[:12]}-{index + 1}.png")
             except KeyError:
                 self._json(404, {"error": "job_not_found"})
+            except IndexError:
+                self._json(404, {"error": "image_not_found"})
             except ValueError as exc:
                 self._json(409, {"error": str(exc)})
             return
