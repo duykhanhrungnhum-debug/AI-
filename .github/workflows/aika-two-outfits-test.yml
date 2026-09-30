@@ -61,7 +61,7 @@ jobs:
                   submission_retry_attempts=5,
                   submission_retry_delay_seconds=30,
               ),
-              kernel_slug="ai-agent-image-v2-two-outfits",
+              kernel_slug="ai-agent-image-v2",
               poll_interval=3,
               max_poll_attempts=600,
           )
