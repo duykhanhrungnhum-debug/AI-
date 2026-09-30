@@ -15,8 +15,8 @@ class ChatRequestHandler(AIRequestHandler):
     server_version = "AIKA-Chat-API/0.4"
 
     def _worker_authorized(self) -> bool:
-        expected = os.environ.get("AI_AGENT_API_TOKEN", "")
-        supplied = self.headers.get("authorization", "")
+        expected = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
+        supplied = self.headers.get("authorization", "").strip()
         return bool(expected) and hmac.compare_digest(supplied, f"Bearer {expected}")
 
     def _read_body(self) -> dict:
@@ -170,7 +170,7 @@ class ChatRequestHandler(AIRequestHandler):
 def main() -> None:
     host = os.environ.get("AI_AGENT_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
-    if not os.environ.get("AI_AGENT_API_TOKEN"):
+    if not os.environ.get("AI_AGENT_API_TOKEN", "").strip():
         raise SystemExit("AI_AGENT_API_TOKEN is required")
     ThreadingHTTPServer((host, port), ChatRequestHandler).serve_forever()
 
