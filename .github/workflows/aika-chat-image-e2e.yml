@@ -1,0 +1,76 @@
+name: AIKA Chat Image E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aika-chat-image-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Require Kaggle credential
+        run: test -n "$KAGGLE_API_TOKEN"
+      - name: Run real AIKA chat to image path
+        run: |
+          python - <<'PY'
+          import time
+          from pathlib import Path
+          from ai_agent.chat_session import CHAT_BROKER
+
+          command = "AIKA tạo ảnh một quả táo đỏ trên nền trắng, phong cách ảnh sản phẩm chân thực"
+          job = CHAT_BROKER.create_job(command, message=command)
+          assert job.kind == "image", job.kind
+
+          deadline = time.time() + 1500
+          state = None
+          while time.time() < deadline:
+              state = CHAT_BROKER.get_job(job.job_id)
+              print("AIKA_E2E_STATUS", state["status"], state.get("worker_state", ""), flush=True)
+              if state["status"] == "done":
+                  break
+              if state["status"] == "error":
+                  raise RuntimeError(state.get("error") or "AIKA image job failed")
+              time.sleep(5)
+          else:
+              raise TimeoutError("AIKA chat image E2E timed out")
+
+          assert state is not None
+          assert state["kind"] == "image"
+          assert state["has_image"] is True
+          assert state["image_url"].startswith("/v1/chat/image?job_id=")
+          data, mime = CHAT_BROKER.get_image(job.job_id)
+          assert mime == "image/png"
+          assert data.startswith(b"\x89PNG\r\n\x1a\n")
+          Path("aika-chat-e2e.png").write_bytes(data)
+          print("AIKA_CHAT_IMAGE_E2E_OK")
+          print("MODEL", state["model"])
+          print("GEN_SECONDS", state["elapsed_seconds"])
+          PY
+      - name: Upload E2E image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aika-chat-image-e2e
+          path: aika-chat-e2e.png
+          if-no-files-found: warn
+          retention-days: 3
