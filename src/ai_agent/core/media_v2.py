@@ -76,9 +76,14 @@ class KaggleImageV2Provider:
         if len(ids) != len(set(ids)):
             raise ValueError("image request ids must be unique")
 
+        kernel_title = (
+            "AI Agent Image V2"
+            if self.kernel_slug == "ai-agent-image-v2"
+            else f"AI Agent Image V2 {sha256(self.kernel_slug.encode('utf-8')).hexdigest()[:8]}"
+        )
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
-            title="AI Agent Image V2",
+            title=kernel_title,
             source=self._build_worker_source(requests),
             enable_internet=True,
             enable_gpu=True,
@@ -222,9 +227,13 @@ for index, item in enumerate(CONFIG["items"]):
     instruction = (
         "Rewrite the USER REQUEST as one concise, vivid English image-generation description. "
         "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "
-        "important attributes, and explicit exclusions. Do not generalize a named subject. Do not invent body parts, "
-        "objects, text, logos, or requirements that the user did not request. Output only the final English description, "
-        "with no labels, JSON, explanation, scoring, or commentary.\nUSER REQUEST: " + item["command"]
+        "important attributes, and explicit exclusions. Preserve culturally specific names and untranslated proper "
+        "terms verbatim instead of substituting an item from another culture. For named garments, foods, places, or "
+        "art forms, keep the original name and optionally add a short English gloss. In particular, Vietnamese 'áo dài' "
+        "must remain 'Vietnamese áo dài' and must never be rewritten as hanbok, qipao, cheongsam, or another garment. "
+        "Do not generalize a named subject. Do not invent body parts, objects, text, logos, or requirements that the user "
+        "did not request. Output only the final English description, with no labels, JSON, explanation, scoring, or "
+        "commentary.\nUSER REQUEST: " + item["command"]
     )
     rendered = tokenizer.apply_chat_template(
         [{"role": "user", "content": instruction}],
