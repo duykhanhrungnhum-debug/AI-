@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      AIKA_CANARY_URL: https://aika-chat-canary-production.up.railway.app
+      AIKA_CANARY_URL: https://aika-chat-canary-v2-production.up.railway.app
       AIKA_CANARY_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
     steps:
@@ -29,7 +29,6 @@ jobs:
           import os
           from pathlib import Path
           import time
-          import urllib.error
           import urllib.parse
           import urllib.request
 
@@ -123,9 +122,6 @@ jobs:
               raise RuntimeError("single-image warm jobs did not return exactly one image")
           if int(batch.get("image_count") or 0) != 2:
               raise RuntimeError(f"batch expected 2 separate images, got {batch.get('image_count')}")
-          # The second request must be a warm reuse. Keep a generous ceiling to
-          # avoid false failures from network jitter while still detecting a full
-          # 3-5 minute cold-start cycle.
           if float(second["wall_seconds"]) >= 150:
               raise RuntimeError(f"second warm job took too long: {second['wall_seconds']}s")
 
