@@ -45,7 +45,7 @@ def test_warm_worker_is_disabled_by_default(monkeypatch):
     assert manager.snapshot().state == "offline"
 
 
-def test_warm_worker_source_loads_models_once_and_polls_jobs():
+def test_warm_worker_source_serializes_qwen_and_flux_gpu_ownership():
     manager = WarmImageWorkerManager(idle_seconds=300)
     source = manager._worker_source(base_url="https://example.test", worker_token="secret")
     assert source.count("AutoTokenizer.from_pretrained") == 1
@@ -55,7 +55,11 @@ def test_warm_worker_source_loads_models_once_and_polls_jobs():
     assert '"/internal/image/result"' in source
     assert '"/internal/image/heartbeat"' in source
     assert "while time.monotonic() - idle_started" in source
-    assert "recaptioner.to(\"cuda\")" in source
-    assert "recaptioner.to(\"cpu\")" in source
+    assert 'device_map="auto"' in source
+    assert 'recaptioner.to("cuda")' not in source
+    assert 'recaptioner.to("cpu")' not in source
+    assert "del recaptioner" in source
+    assert "torch.cuda.empty_cache()" in source
     assert "pipe.enable_model_cpu_offload()" in source
+    assert source.index("del recaptioner") < source.index("image = pipe(")
     assert "except (ImportError, AttributeError):" in source
