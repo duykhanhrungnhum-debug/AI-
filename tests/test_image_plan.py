@@ -60,4 +60,4 @@ def test_v6_worker_owns_file_count_structurally():
     assert "render_one_recaption(item_command)" in source
     assert 'stage = f"busy:recaption:{item_index}/{item_total}"' in source
     assert "command explicitly requested" in source
-    assert 'User-Agent": "AIKA-Warm-Image/6.1"' in source
+    assert 'User-Agent": "AIKA-Warm-Image/6.2"' in source
