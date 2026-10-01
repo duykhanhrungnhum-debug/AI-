@@ -24,6 +24,16 @@ class WarmImageWorkerManagerV65(WarmImageWorkerManagerV6):
         "generate": 300.0,
     }
 
+    def __init__(self, *args, **kwargs) -> None:
+        # The V6 job lease (180s) can expire before the bounded 300s generate
+        # watchdog when CUDA/model-offload work starves Python heartbeats before
+        # the first denoising callback. Give the job lease a small margin beyond
+        # the stage watchdog so a genuinely stuck render is terminated by the
+        # explicit 300s watchdog, not by an unrelated lease expiry. Explicit
+        # caller overrides are still honored.
+        kwargs.setdefault("job_lease_seconds", 360)
+        super().__init__(*args, **kwargs)
+
     def _worker_source(
         self,
         *,
