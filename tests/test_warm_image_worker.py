@@ -36,7 +36,7 @@ def test_warm_worker_source_supervises_one_persistent_model_child():
     assert "aika_warm_child.py" in source
     assert "aika_warm_stage" in source
     assert "aika_warm_ready" in source
-    assert '"deps_dir": "/tmp/aika_warm_deps"' not in source
+    assert '"deps_dir": "/tmp/aika_warm_deps"' in source
     assert 'DEPS_DIR = Path(CONFIG["deps_dir"])' in source
     assert '"--target", str(DEPS_DIR)' in source
     assert 'signal("installing_dependencies")' in source
