@@ -38,9 +38,11 @@ def test_warm_worker_source_supervises_one_persistent_model_child():
     assert "aika_warm_ready" in source
     assert '"deps_dir": "/tmp/aika_warm_deps"' in source
     assert 'DEPS_DIR = Path(CONFIG["deps_dir"])' in source
+    assert '"--no-deps"' in source
     assert '"--target", str(DEPS_DIR)' in source
     assert 'signal("installing_dependencies")' in source
     assert 'heartbeat_state="installing_dependencies"' in source
+    assert 'timeout=180, label="dependency overlay"' in source
     assert 'prepare_dependencies(no_cache=False)' in source
     assert 'prepare_dependencies(no_cache=True)' in source
     assert "start_new_session=True" in source
