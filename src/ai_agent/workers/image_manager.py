@@ -129,11 +129,22 @@ class WarmImageWorkerManager:
         return True
 
     def heartbeat(self, state: str) -> None:
-        normalized = state.strip().casefold()
+        raw = state.strip()
+        normalized = raw.casefold()
+        if normalized.startswith("error:"):
+            detail = raw.split(":", 1)[1].strip() or "warm worker startup failed"
+            self.record_failure(detail)
+            with self._lock:
+                self._last_seen = time.time()
+            return
         mapping = {
             "booting": WorkerState.STARTING,
             "starting": WorkerState.STARTING,
             "loading": WorkerState.STARTING,
+            "loading_dependencies": WorkerState.STARTING,
+            "installing_dependencies": WorkerState.STARTING,
+            "dependencies_ready": WorkerState.STARTING,
+            "loading_models": WorkerState.STARTING,
             "ready": WorkerState.READY,
             "busy": WorkerState.BUSY,
             "idle": WorkerState.IDLE,
@@ -141,7 +152,7 @@ class WarmImageWorkerManager:
             "offline": WorkerState.OFFLINE,
         }
         with self._lock:
-            self._state = mapping.get(normalized, WorkerState.READY)
+            self._state = mapping.get(normalized, WorkerState.STARTING)
             self._last_seen = time.time()
             if self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}:
                 self._failures = 0
@@ -275,6 +286,18 @@ def request(method, path, payload=None):
         raise RuntimeError(f"HTTP {exc.code} {path}: {detail[:1000]}") from exc
 
 
+def signal(state):
+    request("POST", "/internal/image/heartbeat", {"state": state})
+
+
+def report_startup_error(stage, exc):
+    detail = (type(exc).__name__ + ": " + str(exc)).replace("\n", " ")[:700]
+    try:
+        signal("error:" + stage + ":" + detail)
+    except Exception:
+        pass
+
+
 def recaption_batch(command):
     delimiter = CONFIG["delimiter"]
     contract = (
@@ -323,41 +346,55 @@ def recaption_batch(command):
     return prompts
 
 
-request("POST", "/internal/image/heartbeat", {"state": "booting"})
+signal("booting")
+signal("loading_dependencies")
 try:
     import torch
     from diffusers import Flux2KleinPipeline
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except (ImportError, AttributeError):
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
-        "sentencepiece", "Pillow<13",
-    ])
-    import torch
-    from diffusers import Flux2KleinPipeline
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    signal("installing_dependencies")
+    try:
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+            "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
+            "sentencepiece", "Pillow<13",
+        ])
+        import torch
+        from diffusers import Flux2KleinPipeline
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except Exception as exc:
+        report_startup_error("dependencies", exc)
+        raise
 
+signal("dependencies_ready")
 if not torch.cuda.is_available():
-    raise RuntimeError("CUDA GPU is required")
+    exc = RuntimeError("CUDA GPU is required")
+    report_startup_error("cuda", exc)
+    raise exc
 
-request("POST", "/internal/image/heartbeat", {"state": "loading"})
-tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
-recaptioner = AutoModelForCausalLM.from_pretrained(
-    CONFIG["recaption_model"],
-    torch_dtype=torch.float16,
-    low_cpu_mem_usage=True,
-)
-recaptioner.eval()
-pipe = Flux2KleinPipeline.from_pretrained(CONFIG["image_model"], torch_dtype=torch.float16)
-pipe.enable_model_cpu_offload()
-request("POST", "/internal/image/heartbeat", {"state": "ready"})
+signal("loading_models")
+try:
+    tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
+    recaptioner = AutoModelForCausalLM.from_pretrained(
+        CONFIG["recaption_model"],
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+    )
+    recaptioner.eval()
+    pipe = Flux2KleinPipeline.from_pretrained(CONFIG["image_model"], torch_dtype=torch.float16)
+    pipe.enable_model_cpu_offload()
+except Exception as exc:
+    report_startup_error("models", exc)
+    raise
+
+signal("ready")
 
 idle_started = time.monotonic()
 while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
     job = request("GET", "/internal/image/pull")
     if not job:
-        request("POST", "/internal/image/heartbeat", {"state": "idle"})
+        signal("idle")
         time.sleep(float(CONFIG["poll_seconds"]))
         continue
 
@@ -367,7 +404,7 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
     seed = int(job["seed"])
     width = int(job.get("width", 1024))
     height = int(job.get("height", 1024))
-    request("POST", "/internal/image/heartbeat", {"state": "busy"})
+    signal("busy")
     try:
         prompts = recaption_batch(command)
         for index, prompt in enumerate(prompts):
@@ -404,8 +441,8 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
             "job_id": job_id,
             "error": f"{type(exc).__name__}: {exc}"[:2000],
         })
-    request("POST", "/internal/image/heartbeat", {"state": "ready"})
+    signal("ready")
 
-request("POST", "/internal/image/heartbeat", {"state": "shutting_down"})
+signal("shutting_down")
 '''
         return textwrap.dedent(template).replace("__CONFIG_JSON__", repr(config)).strip() + "\n"
