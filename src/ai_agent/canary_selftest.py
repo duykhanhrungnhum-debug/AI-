@@ -64,6 +64,7 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
     _emit("AIKA_WARM_LAUNCH_DIAG_BEGIN", {
         "ensure_started": started,
         "before_state": before.state,
+        "before_stage": before.stage,
         "before_launch_count": before.launch_count,
         "kernel": _kernel_status(worker),
     })
@@ -80,6 +81,7 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
         if snapshot.state in {"ready", "idle", "busy"} and snapshot.last_seen:
             _emit("AIKA_WARM_LAUNCH_DIAG_SUCCESS", {
                 "state": snapshot.state,
+                "stage": snapshot.stage,
                 "launch_count": snapshot.launch_count,
                 "last_seen": snapshot.last_seen,
             })
@@ -87,6 +89,7 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
         if time.time() >= next_report:
             _emit("AIKA_WARM_LAUNCH_DIAG_WAIT", {
                 "state": snapshot.state,
+                "stage": snapshot.stage,
                 "launch_count": snapshot.launch_count,
                 "last_seen": snapshot.last_seen,
                 "kernel": _kernel_status(worker),
@@ -95,8 +98,9 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
         time.sleep(2)
 
     raise TimeoutError(
-        "warm launch produced no ready heartbeat; kernel="
-        + json.dumps(_kernel_status(worker), ensure_ascii=False)
+        "warm launch produced no ready heartbeat; stage="
+        + CHAT_BROKER._warm_image.snapshot().stage
+        + "; kernel=" + json.dumps(_kernel_status(worker), ensure_ascii=False)
         + "; log_tail=" + _kernel_log_tail(worker)
     )
 
@@ -116,6 +120,7 @@ def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 2
         if snapshot.state in {"ready", "idle", "busy"} and snapshot.last_seen:
             _emit("AIKA_WARM_CANARY_EXISTING_REUSED", {
                 "state": snapshot.state,
+                "stage": snapshot.stage,
                 "launch_count": snapshot.launch_count,
             })
             return
@@ -126,6 +131,7 @@ def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 2
         if time.time() >= next_report:
             _emit("AIKA_WARM_CANARY_EXISTING_WAIT", {
                 "manager_state": snapshot.state,
+                "manager_stage": snapshot.stage,
                 "last_seen": snapshot.last_seen,
                 "launch_count": snapshot.launch_count,
                 "manager_error": CHAT_BROKER._warm_image.last_error(),
@@ -157,6 +163,7 @@ def _wait_job(job_id: str, *, timeout_seconds: float, worker: KaggleGpuWorker, l
                 "worker_state": state.get("worker_state"),
                 "worker_error": state.get("worker_error"),
                 "manager_state": snapshot.state,
+                "manager_stage": snapshot.stage,
                 "manager_error": CHAT_BROKER._warm_image.last_error(),
                 "launch_count": snapshot.launch_count,
                 "last_seen_age": round(time.time() - snapshot.last_seen, 1) if snapshot.last_seen else None,
@@ -165,8 +172,8 @@ def _wait_job(job_id: str, *, timeout_seconds: float, worker: KaggleGpuWorker, l
             next_report = time.time() + 30
         time.sleep(2)
     raise TimeoutError(
-        f"job {job_id} exceeded {timeout_seconds:.0f}s; kernel={_kernel_status(worker)}; "
-        f"log_tail={_kernel_log_tail(worker)}"
+        f"job {job_id} exceeded {timeout_seconds:.0f}s; stage={CHAT_BROKER._warm_image.snapshot().stage}; "
+        f"kernel={_kernel_status(worker)}; log_tail={_kernel_log_tail(worker)}"
     )
 
 
