@@ -1,8 +1,8 @@
 """Canary-only AIKA chat API entrypoint for Warm Image Worker validation.
 
-Production keeps the normal API entrypoint. The canary uses a separate Kaggle
-kernel slug so soak/regression runs can never compete with the production warm
-worker session.
+Production keeps the normal API entrypoint. The canary uses a fixed, separate
+Kaggle kernel slug so soak/regression runs can never compete with the production
+warm worker session.
 """
 from __future__ import annotations
 
@@ -13,9 +13,8 @@ from ai_agent.chat_session import CHAT_BROKER
 from ai_agent.workers.image_manager_v65 import WarmImageWorkerManagerV65
 
 
-CANARY_KERNEL_SLUG = os.environ.get(
-    "AIKA_WARM_KERNEL_SLUG", "ai-agent-image-warm-canary"
-).strip() or "ai-agent-image-warm-canary"
+# Canary isolation must not be overridable by Railway/shared variables.
+CANARY_KERNEL_SLUG = "ai-agent-image-warm-canary"
 
 # Replace only the warm image lifecycle. All routing, job storage, auth, chat,
 # translation, TTS and other skills remain unchanged.
