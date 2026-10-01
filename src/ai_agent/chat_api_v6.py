@@ -34,7 +34,18 @@ def _install_canary_fail_fast() -> None:
         return
 
     def fail_fast(job_id: str, *, reason: str = "") -> None:
-        detail = (reason or CHAT_BROKER._warm_image.last_error() or "warm canary failure").strip()
+        # A warm worker reports its exact exception into job.error immediately
+        # before the normal broker asks for cold fallback. Preserve that error
+        # instead of replacing it with a generic canary failure.
+        with CHAT_BROKER._lock:
+            job = CHAT_BROKER._jobs.get(job_id)
+            worker_error = (job.error if job is not None else "").strip()
+        detail = (
+            reason
+            or CHAT_BROKER._warm_image.last_error()
+            or worker_error
+            or "warm canary failure"
+        ).strip()
         CHAT_BROKER._warm_image.invalidate_job(job_id, detail)
         with CHAT_BROKER._lock:
             job = CHAT_BROKER._jobs.get(job_id)
