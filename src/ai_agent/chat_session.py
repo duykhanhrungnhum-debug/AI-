@@ -112,7 +112,9 @@ class ChatSessionBroker:
         job.image_elapsed_seconds.clear()
         job.expected_images = 0
 
-    def _start_cold_fallback(self, job_id: str) -> None:
+    def _start_cold_fallback(self, job_id: str, *, reason: str = "") -> None:
+        if reason:
+            self._warm_image.invalidate_job(job_id, reason)
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None or job.status in {"done", "error"} or job_id in self._cold_fallbacks:
@@ -128,20 +130,45 @@ class ChatSessionBroker:
         ).start()
 
     def _watch_warm_image_job(self, job_id: str) -> None:
-        deadline = time.time() + 420
-        while time.time() < deadline:
+        """Watch leases, not elapsed generation time, and fall back only on failure."""
+        hard_timeout = float(os.environ.get("AIKA_WARM_IMAGE_JOB_TIMEOUT", "900"))
+        hard_deadline = time.time() + max(300.0, hard_timeout)
+        while time.time() < hard_deadline:
             with self._lock:
                 job = self._jobs.get(job_id)
                 if job is None or job.status in {"done", "error"}:
                     return
+                status = job.status
+
+            if status == "processing":
+                if self._warm_image.job_lease_alive(job_id):
+                    time.sleep(5)
+                    continue
+                self._start_cold_fallback(
+                    job_id,
+                    reason="warm job lease expired while processing",
+                )
+                return
+
             snapshot = self._warm_image.snapshot()
             if snapshot.state == "error" or (
                 snapshot.circuit_open_until and snapshot.circuit_open_until > time.time()
             ):
                 self._start_cold_fallback(job_id)
                 return
+
+            # A pending job may have been queued while the sole warm worker is
+            # busy with an earlier job. ensure_started() is lease-aware and must
+            # never launch a second worker while the current session/job lease lives.
+            if not self._warm_image.ensure_started():
+                self._start_cold_fallback(job_id)
+                return
             time.sleep(5)
-        self._start_cold_fallback(job_id)
+
+        self._start_cold_fallback(
+            job_id,
+            reason=f"warm image job exceeded hard timeout {hard_timeout:.0f}s",
+        )
 
     def _run_image_job(self, job_id: str) -> None:
         try:
@@ -191,29 +218,58 @@ class ChatSessionBroker:
             with self._lock:
                 self._cold_fallbacks.discard(job_id)
 
-    def pull_image_job(self) -> dict | None:
-        """Called only by the authenticated warm image worker."""
+    def pull_image_job(self, session_id: str) -> dict | None:
+        """Lease exactly one pending image job to the authenticated warm session."""
+        session_id = session_id.strip()
+        if not session_id:
+            raise PermissionError("worker session id is required")
         with self._lock:
-            for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
-                if job.kind == "image" and job.status == "pending":
-                    job.status = "processing"
-                    command = job.message or job.prompt
-                    return {
-                        "job_id": job.job_id,
-                        "command": command,
-                        "seed": ImageExecutor.seed_for(command),
-                        "width": 1024,
-                        "height": 1024,
-                    }
+            candidates = [
+                job.job_id
+                for job in sorted(self._jobs.values(), key=lambda j: j.created_at)
+                if job.kind == "image" and job.status == "pending"
+            ]
+
+        for job_id in candidates:
+            if not self._warm_image.claim_job(session_id, job_id):
+                continue
+            with self._lock:
+                job = self._jobs.get(job_id)
+                if job is None or job.status != "pending":
+                    self._warm_image.release_job(session_id, job_id)
+                    continue
+                job.status = "processing"
+                command = job.message or job.prompt
+                return {
+                    "job_id": job.job_id,
+                    "command": command,
+                    "seed": ImageExecutor.seed_for(command),
+                    "width": 1024,
+                    "height": 1024,
+                }
         return None
 
-    def image_heartbeat(self, state: str = "ready") -> None:
-        self._warm_image.heartbeat(state)
+    def image_heartbeat(
+        self,
+        session_id: str,
+        state: str = "ready",
+        *,
+        current_job_id: str = "",
+    ) -> None:
+        if not self._warm_image.heartbeat(
+            session_id,
+            state,
+            current_job_id=current_job_id,
+        ):
+            raise PermissionError("stale warm worker session")
 
-    def finish_image_job(self, payload: dict) -> None:
+    def finish_image_job(self, payload: dict, *, session_id: str) -> None:
         job_id = str(payload.get("job_id", "")).strip()
         if not job_id:
             raise ValueError("job_id is required")
+        if not self._warm_image.validate_job_session(session_id, job_id):
+            raise PermissionError("stale warm worker or expired job lease")
+
         error = str(payload.get("error", "")).strip()
         if error:
             with self._lock:
@@ -224,6 +280,7 @@ class ChatSessionBroker:
                     return
                 job.status = "pending"
                 job.error = error[:2000]
+            self._warm_image.release_job(session_id, job_id)
             self._start_cold_fallback(job_id)
             return
 
@@ -242,6 +299,7 @@ class ChatSessionBroker:
         if total <= 0 or total > 8 or index < 0 or index >= total:
             raise ValueError("invalid warm image index/total")
 
+        complete = False
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
@@ -275,6 +333,9 @@ class ChatSessionBroker:
                     if total == 1
                     else f"AIKA đã tạo xong {total} ảnh riêng."
                 )
+                complete = True
+        if complete:
+            self._warm_image.release_job(session_id, job_id)
 
     def ensure_worker(self) -> None:
         with self._lock:
@@ -361,9 +422,11 @@ class ChatSessionBroker:
             if job is None:
                 raise KeyError(job_id)
             if job.kind == "image" and self._warm_image.enabled:
-                image_state = self._warm_image.snapshot().state
+                image_snapshot = self._warm_image.snapshot()
+                image_state = image_snapshot.state
                 image_error = self._warm_image.last_error()
             else:
+                image_snapshot = None
                 image_state = job.status
                 image_error = ""
             complete_images = len(job.image_datas) if job.status == "done" and job.image_datas else (1 if job.status == "done" and job.image_data else 0)
@@ -389,6 +452,8 @@ class ChatSessionBroker:
                 "worker_state": self._worker_state if job.kind == "chat" else image_state,
                 "worker_error": self._worker_error if job.kind == "chat" else image_error,
                 "warm_image_enabled": self._warm_image.enabled if job.kind == "image" else False,
+                "worker_session_id": image_snapshot.session_id if image_snapshot else "",
+                "worker_current_job_id": image_snapshot.current_job_id if image_snapshot else "",
             }
 
     def get_image(self, job_id: str, *, index: int = 0) -> tuple[bytes, str]:
