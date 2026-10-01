@@ -289,7 +289,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/2.1",
+            "User-Agent": "AIKA-Warm-Image/2.2",
         },
     )
     try:
@@ -514,7 +514,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Supervisor/2.1",
+            "User-Agent": "AIKA-Warm-Supervisor/2.2",
         },
     )
     try:
@@ -587,7 +587,7 @@ def prepare_dependencies(*, no_cache=False):
     shutil.rmtree(DEPS_DIR, ignore_errors=True)
     DEPS_DIR.mkdir(parents=True, exist_ok=True)
     command = [
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--no-deps",
         "--target", str(DEPS_DIR),
     ]
     if no_cache:
@@ -596,7 +596,7 @@ def prepare_dependencies(*, no_cache=False):
         "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
         "sentencepiece", "Pillow<13",
     ])
-    hard_run(command, timeout=300, label="dependency overlay", heartbeat_state="installing_dependencies")
+    hard_run(command, timeout=180, label="dependency overlay", heartbeat_state="installing_dependencies")
     signal("dependencies_ready")
 
 
