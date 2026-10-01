@@ -193,9 +193,6 @@ BASE_CONTRACT = (
 
 
 def acquire_qwen_gpu():
-    # FLUX uses Diffusers model_cpu_offload. Before Qwen moves to CUDA, force all
-    # FLUX components back to host RAM. Qwen weights are already resident in RAM,
-    # so there is no per-job from_pretrained/download/model construction.
     if not hasattr(pipe, "maybe_free_model_hooks"):
         raise RuntimeError("diffusers pipeline lacks maybe_free_model_hooks")
     pipe.maybe_free_model_hooks()
@@ -311,6 +308,7 @@ try:
             qwen_on_gpu = True
 
             explicit_items = split_explicit_items(command)
+            expected_count = requested_count(command)
             if explicit_items:
                 prompts = []
                 item_total = len(explicit_items)
@@ -320,6 +318,9 @@ try:
                     signal(stage, job_id)
                     prompts.append(render_one_recaption(item_command))
                     signal(stage, job_id)
+            elif expected_count is None or expected_count == 1:
+                prompts = [render_one_recaption(command)]
+                signal("busy:recaption", job_id)
             else:
                 prompts = render_batch_recaption(command)
                 signal("busy:recaption", job_id)
