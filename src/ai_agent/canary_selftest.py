@@ -3,6 +3,10 @@
 Enabled only when AIKA_WARM_CANARY_SELFTEST=true. This is never part of the
 normal user request path and exists only to prove warm reuse + multi-image batch
 on a real deployed canary service.
+
+Canary policy is deliberately fail-fast: a warm-worker error must terminate the
+canary immediately. Cold fallback is disabled inside this self-test so a failed
+warm experiment cannot silently spend more GPU time on the verified cold path.
 """
 from __future__ import annotations
 
@@ -57,6 +61,39 @@ def _kernel_log_tail(worker: KaggleGpuWorker, limit: int = 5000) -> str:
         return f"LOG_READ_FAILED {type(exc).__name__}: {exc}"[:1200]
 
 
+def _warm_failure() -> str:
+    snapshot = CHAT_BROKER._warm_image.snapshot()
+    if snapshot.state != "error":
+        return ""
+    return CHAT_BROKER._warm_image.last_error() or f"warm manager entered error at stage {snapshot.stage}"
+
+
+def _install_no_cold_fallback_guard():
+    """Disable cold fallback only for the isolated canary run.
+
+    The production broker keeps its normal warm->cold fallback behavior. During
+    a warm canary, however, falling back would hide the warm failure and spend a
+    second GPU session. Instead mark the canary job failed immediately.
+    """
+    original = CHAT_BROKER._start_cold_fallback
+
+    def fail_canary_job(job_id: str, *, reason: str = "") -> None:
+        error = reason or _warm_failure() or "warm canary failed; cold fallback disabled"
+        with CHAT_BROKER._lock:
+            job = CHAT_BROKER._jobs.get(job_id)
+            if job is None or job.status == "done":
+                return
+            job.status = "error"
+            job.error = error[:2000]
+        _emit("AIKA_WARM_CANARY_FALLBACK_BLOCKED", {
+            "job_id": job_id,
+            "error": error[:1200],
+        })
+
+    CHAT_BROKER._start_cold_fallback = fail_canary_job
+    return original
+
+
 def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float = 420) -> None:
     """Verify only worker submission/heartbeat; never create an image job."""
     before = CHAT_BROKER._warm_image.snapshot()
@@ -76,8 +113,8 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
     while time.time() < deadline:
         snapshot = CHAT_BROKER._warm_image.snapshot()
         error = CHAT_BROKER._warm_image.last_error()
-        if error:
-            raise RuntimeError("warm launch failed: " + error)
+        if snapshot.state == "error" or error:
+            raise RuntimeError("warm launch failed: " + (error or snapshot.stage))
         if snapshot.state in {"ready", "idle", "busy"} and snapshot.last_seen:
             _emit("AIKA_WARM_LAUNCH_DIAG_SUCCESS", {
                 "state": snapshot.state,
@@ -117,6 +154,8 @@ def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 2
     next_report = started
     while time.time() - started < timeout_seconds:
         snapshot = CHAT_BROKER._warm_image.snapshot()
+        if snapshot.state == "error":
+            raise RuntimeError("warm manager failed while waiting for existing kernel: " + (_warm_failure() or snapshot.stage))
         if snapshot.state in {"ready", "idle", "busy"} and snapshot.last_seen:
             _emit("AIKA_WARM_CANARY_EXISTING_REUSED", {
                 "state": snapshot.state,
@@ -151,13 +190,25 @@ def _wait_job(job_id: str, *, timeout_seconds: float, worker: KaggleGpuWorker, l
     deadline = time.time() + timeout_seconds
     next_report = time.time() + 30
     while time.time() < deadline:
+        snapshot = CHAT_BROKER._warm_image.snapshot()
+        manager_error = _warm_failure()
+        if snapshot.state == "error":
+            raise RuntimeError(
+                f"warm manager failed during {label}: {manager_error or snapshot.stage}"
+            )
+
         state = CHAT_BROKER.get_job(job_id)
+        if state.get("worker_state") == "error":
+            raise RuntimeError(
+                state.get("worker_error")
+                or manager_error
+                or f"warm worker entered error during {label}"
+            )
         if state["status"] == "done":
             return state
         if state["status"] == "error":
             raise RuntimeError(state.get("error") or state.get("worker_error") or "job failed")
         if time.time() >= next_report:
-            snapshot = CHAT_BROKER._warm_image.snapshot()
             _emit("AIKA_WARM_CANARY_JOB_WAIT", {
                 "label": label,
                 "job_status": state.get("status"),
@@ -216,6 +267,7 @@ def run_warm_canary_selftest() -> None:
         return
 
     time.sleep(3)
+    original_cold_fallback = _install_no_cold_fallback_guard()
     try:
         if not CHAT_BROKER._warm_image.enabled:
             raise RuntimeError("AIKA_IMAGE_WARM_WORKER is not enabled on canary")
@@ -224,6 +276,7 @@ def run_warm_canary_selftest() -> None:
         _emit("AIKA_WARM_CANARY_BEGIN", {
             "warm_enabled": True,
             "diagnostic_only": _flag("AIKA_WARM_CANARY_DIAGNOSTIC_ONLY"),
+            "cold_fallback_allowed": False,
             "kernel": _kernel_status(worker),
         })
 
@@ -305,3 +358,5 @@ def run_warm_canary_selftest() -> None:
         }
         _emit("AIKA_WARM_CANARY_FAILURE", report)
         traceback.print_exc()
+    finally:
+        CHAT_BROKER._start_cold_fallback = original_cold_fallback
