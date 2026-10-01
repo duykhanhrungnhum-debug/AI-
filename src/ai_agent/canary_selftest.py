@@ -78,7 +78,12 @@ def _install_no_cold_fallback_guard():
     original = CHAT_BROKER._start_cold_fallback
 
     def fail_canary_job(job_id: str, *, reason: str = "") -> None:
-        error = reason or _warm_failure() or "warm canary failed; cold fallback disabled"
+        with CHAT_BROKER._lock:
+            job = CHAT_BROKER._jobs.get(job_id)
+            if job is None or job.status == "done":
+                return
+            worker_error = (job.error or "").strip()
+        error = reason or worker_error or _warm_failure() or "warm canary failed; cold fallback disabled"
         with CHAT_BROKER._lock:
             job = CHAT_BROKER._jobs.get(job_id)
             if job is None or job.status == "done":
