@@ -104,9 +104,6 @@ class WarmImageWorkerManager:
             self._last_error = (
                 f"warm worker startup exceeded {self.startup_timeout_seconds} seconds"
             )
-            # Do not immediately create another GPU session while the previous
-            # Kaggle kernel may still be unwinding and cannot be queried due to
-            # account-level kernels.get restrictions.
             self._circuit_open_until = now + self.circuit_cooldown_seconds
             self._launching = False
             self._startup_started_at = 0.0
@@ -143,7 +140,6 @@ class WarmImageWorkerManager:
             )
 
     def ensure_started(self) -> bool:
-        """Start/reuse the warm worker. Returns False when warm mode is unavailable."""
         if not self.enabled:
             return False
         now = time.time()
@@ -179,10 +175,6 @@ class WarmImageWorkerManager:
                 self._stage = normalized[:2000]
             return
         mapping = {
-            "dependencies_ready": WorkerState.STARTING,
-            "recaption_model_loading": WorkerState.STARTING,
-            "recaption_model_ready": WorkerState.STARTING,
-            "image_model_loading": WorkerState.STARTING,
             "ready": WorkerState.READY,
             "busy": WorkerState.BUSY,
             "idle": WorkerState.IDLE,
@@ -292,9 +284,9 @@ import urllib.request
 CONFIG = json.loads(__CONFIG_JSON__)
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
-# Keep dependency bootstrap behavior identical to verified Cold Image V2: no
-# outbound heartbeat/network request occurs before torch/diffusers/transformers
-# are successfully imported (or repaired once through pip).
+# Cold-equivalent startup: absolutely no outbound callback before dependencies
+# and both models are fully loaded. Kaggle/Hugging Face initialization must stay
+# network-silent with respect to the Railway callback channel.
 try:
     import torch
     from diffusers import Flux2KleinPipeline
@@ -309,6 +301,23 @@ except (ImportError, AttributeError):
     from diffusers import Flux2KleinPipeline
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA GPU is required")
+
+tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
+recaptioner = AutoModelForCausalLM.from_pretrained(
+    CONFIG["recaption_model"],
+    torch_dtype=torch.float16,
+    low_cpu_mem_usage=True,
+)
+recaptioner.eval()
+
+pipe = Flux2KleinPipeline.from_pretrained(
+    CONFIG["image_model"],
+    torch_dtype=torch.float16,
+)
+pipe.enable_model_cpu_offload()
+
 
 def request(method, path, payload=None, *, timeout=60):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
@@ -320,7 +329,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/3.2",
+            "User-Agent": "AIKA-Warm-Image/3.3",
         },
     )
     try:
@@ -343,11 +352,6 @@ def signal(state):
             if attempt < 2:
                 time.sleep(1)
     return False
-
-
-def report_error(stage, exc):
-    detail = (type(exc).__name__ + ": " + str(exc)).replace("\n", " ")[:700]
-    signal("error:" + stage + ":" + detail)
 
 
 def render_recaption(command):
@@ -397,33 +401,6 @@ def render_recaption(command):
         raise RuntimeError("recaption exceeded max_images")
     return prompts
 
-
-if not torch.cuda.is_available():
-    exc = RuntimeError("CUDA GPU is required")
-    report_error("cuda", exc)
-    raise exc
-signal("dependencies_ready")
-
-try:
-    signal("recaption_model_loading")
-    tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
-    recaptioner = AutoModelForCausalLM.from_pretrained(
-        CONFIG["recaption_model"],
-        torch_dtype=torch.float16,
-        low_cpu_mem_usage=True,
-    )
-    recaptioner.eval()
-    signal("recaption_model_ready")
-
-    signal("image_model_loading")
-    pipe = Flux2KleinPipeline.from_pretrained(
-        CONFIG["image_model"],
-        torch_dtype=torch.float16,
-    )
-    pipe.enable_model_cpu_offload()
-except Exception as exc:
-    report_error("models", exc)
-    raise
 
 signal("ready")
 idle_started = time.monotonic()
