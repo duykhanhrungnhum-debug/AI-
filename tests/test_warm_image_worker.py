@@ -25,6 +25,11 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert 'request("GET", "/internal/image/pull")' in source
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
+    assert 'signal("loading_dependencies")' in source
+    assert 'signal("installing_dependencies")' in source
+    assert 'signal("dependencies_ready")' in source
+    assert 'signal("loading_models")' in source
+    assert 'signal("error:" + stage + ":" + detail)' in source
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
@@ -33,6 +38,17 @@ def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
     submit_pos = source.index("worker.submit_script(")
     count_pos = source.index("self._launch_count += 1")
     assert submit_pos < count_pos
+
+
+def test_startup_error_heartbeat_sets_manager_error(monkeypatch):
+    monkeypatch.setenv("AIKA_IMAGE_WARM_WORKER", "true")
+    manager = WarmImageWorkerManager()
+    manager.heartbeat("error:models:RuntimeError: model load failed")
+    snapshot = manager.snapshot()
+    assert snapshot.state == "error"
+    assert snapshot.failures == 1
+    assert snapshot.last_seen > 0
+    assert manager.last_error() == "models:RuntimeError: model load failed"
 
 
 def test_canary_flag_is_explicit(monkeypatch):
