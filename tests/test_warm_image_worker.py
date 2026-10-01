@@ -1,17 +1,8 @@
-import ast
-import base64
 import inspect
-import re
+import time
 
 from ai_agent.canary_selftest import _flag
-from ai_agent.workers.image_manager import WarmImageWorkerManager
-
-
-def _child_source(source: str) -> str:
-    match = re.search(r"CHILD_SOURCE = base64\.b64decode\((.+?)\)\.decode\(\"utf-8\"\)", source)
-    assert match is not None
-    encoded = ast.literal_eval(match.group(1))
-    return base64.b64decode(encoded).decode("utf-8")
+from ai_agent.workers.image_manager import WarmImageWorkerManager, WorkerState
 
 
 def test_warm_worker_is_off_by_default_and_tracks_launches(monkeypatch):
@@ -22,50 +13,35 @@ def test_warm_worker_is_off_by_default_and_tracks_launches(monkeypatch):
     assert snapshot.launch_count == 0
     assert snapshot.state == "offline"
     assert snapshot.stage == "offline"
+    assert snapshot.startup_started_at == 0.0
 
 
-def test_warm_worker_source_supervises_one_persistent_model_child():
+def test_warm_worker_source_matches_verified_cold_bootstrap_and_reuses_models():
     manager = WarmImageWorkerManager(idle_seconds=300)
     source = manager._worker_source(
         base_url="https://example.invalid",
         worker_token="test-token",
     )
-    child = _child_source(source)
-    assert child.count("Flux2KleinPipeline.from_pretrained") == 1
-    assert child.count("AutoModelForCausalLM.from_pretrained") == 1
-    assert "aika_warm_child.py" in source
-    assert "aika_warm_stage" in source
-    assert "aika_warm_ready" in source
-    assert '"deps_dir": "/tmp/aika_warm_deps"' in source
-    assert 'DEPS_DIR = Path(CONFIG["deps_dir"])' in source
-    assert '"--no-deps"' in source
-    assert '"--target", str(DEPS_DIR)' in source
-    assert 'signal("installing_dependencies")' in source
-    assert 'heartbeat_state="installing_dependencies"' in source
-    assert 'timeout=180, label="dependency overlay"' in source
-    assert 'prepare_dependencies(no_cache=False)' in source
-    assert 'prepare_dependencies(no_cache=True)' in source
-    assert "start_new_session=True" in source
-    assert "os.killpg(proc.pid, signal_module.SIGKILL)" in source
-    assert 'signal("supervisor_watch:" + current_stage)' in source
-    assert 'for attempt in range(2):' in source
-    assert 'stage timeout: {current_stage}' in source
-    assert 'if stage == "loading_models":' in source
-    assert 'return 360' in source
-    assert 'sys.path.insert(0, CONFIG["deps_dir"])' in child
-    assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in child
-    assert 'request("GET", "/internal/image/pull", timeout=30)' in child
-    assert '"image_total": len(prompts)' in child
-    assert '"image_index": index' in child
-    assert 'timeout=180' in child
-    assert 'signal("importing_torch")' in child
-    assert 'signal("torch_ready")' in child
-    assert 'signal("importing_diffusers")' in child
-    assert 'signal("diffusers_ready")' in child
-    assert 'signal("importing_transformers")' in child
-    assert 'signal("transformers_ready")' in child
-    assert 'signal("loading_models")' in child
-    assert 'signal("ready")' in child
+    assert source.count("Flux2KleinPipeline.from_pretrained") == 1
+    assert source.count("AutoModelForCausalLM.from_pretrained") == 1
+    assert source.count("AutoTokenizer.from_pretrained") == 1
+    assert "except (ImportError, AttributeError):" in source
+    assert 'sys.executable, "-m", "pip", "install", "--quiet", "--upgrade"' in source
+    assert '"diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors"' in source
+    assert 'pipe.enable_model_cpu_offload()' in source
+    assert 'recaptioner.to("cuda")' in source
+    assert 'recaptioner.to("cpu")' in source
+    assert 'request("GET", "/internal/image/pull", timeout=30)' in source
+    assert '"image_total": len(prompts)' in source
+    assert '"image_index": index' in source
+    assert 'timeout=180' in source
+    assert 'signal("booting")' in source
+    assert 'signal("dependencies_ready")' in source
+    assert 'signal("recaption_model_loading")' in source
+    assert 'signal("recaption_model_ready")' in source
+    assert 'signal("image_model_loading")' in source
+    assert 'signal("ready")' in source
+    assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in source
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
@@ -74,6 +50,36 @@ def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
     submit_pos = source.index("worker.submit_script(")
     count_pos = source.index("self._launch_count += 1")
     assert submit_pos < count_pos
+
+
+def test_stale_startup_becomes_error_and_opens_circuit(monkeypatch):
+    monkeypatch.setenv("AIKA_IMAGE_WARM_WORKER", "true")
+    manager = WarmImageWorkerManager(startup_timeout_seconds=10, circuit_cooldown_seconds=60)
+    with manager._lock:
+        manager._state = WorkerState.STARTING
+        manager._stage = "booting"
+        manager._startup_started_at = time.time() - 11
+    snapshot = manager.snapshot()
+    assert snapshot.state == "error"
+    assert snapshot.stage == "startup_timeout"
+    assert snapshot.failures == 1
+    assert snapshot.circuit_open_until > time.time()
+    assert snapshot.startup_started_at == 0.0
+    assert "exceeded 10 seconds" in manager.last_error()
+    assert manager.ensure_started() is False
+
+
+def test_ready_heartbeat_clears_startup_clock(monkeypatch):
+    monkeypatch.setenv("AIKA_IMAGE_WARM_WORKER", "true")
+    manager = WarmImageWorkerManager()
+    with manager._lock:
+        manager._state = WorkerState.STARTING
+        manager._startup_started_at = time.time()
+    manager.heartbeat("ready")
+    snapshot = manager.snapshot()
+    assert snapshot.state == "ready"
+    assert snapshot.startup_started_at == 0.0
+    assert snapshot.failures == 0
 
 
 def test_startup_error_heartbeat_sets_manager_error(monkeypatch):
