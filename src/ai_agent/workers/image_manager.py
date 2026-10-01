@@ -144,10 +144,6 @@ class WarmImageWorkerManager:
             return
         mapping = {
             "booting": WorkerState.STARTING,
-            "probing_dependencies": WorkerState.STARTING,
-            "dependency_probe_ready": WorkerState.STARTING,
-            "dependency_probe_failed": WorkerState.STARTING,
-            "dependency_probe_timeout": WorkerState.STARTING,
             "installing_dependencies": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
             "importing_torch": WorkerState.STARTING,
@@ -265,7 +261,6 @@ import base64
 from io import BytesIO
 import gc
 import json
-import os
 import signal as signal_module
 import subprocess
 import sys
@@ -316,38 +311,19 @@ def report_startup_error(stage, exc):
     signal("error:" + stage + ":" + detail)
 
 
-def dependency_probe():
-    signal("probing_dependencies")
-    probe = (
-        "import torch; "
-        "from diffusers import Flux2KleinPipeline; "
-        "from transformers import AutoModelForCausalLM, AutoTokenizer"
-    )
-    process = subprocess.Popen(
-        [sys.executable, "-c", probe],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    deadline = time.monotonic() + 60
-    while process.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.5)
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal_module.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        signal("dependency_probe_timeout")
-        return False
-    if process.returncode != 0:
-        signal("dependency_probe_failed")
-        return False
-    signal("dependency_probe_ready")
-    return True
+def _run_with_alarm(seconds, label, func):
+    previous = signal_module.getsignal(signal_module.SIGALRM)
+
+    def handler(signum, frame):
+        raise TimeoutError(f"{label} exceeded {seconds} seconds")
+
+    signal_module.signal(signal_module.SIGALRM, handler)
+    signal_module.setitimer(signal_module.ITIMER_REAL, float(seconds))
+    try:
+        return func()
+    finally:
+        signal_module.setitimer(signal_module.ITIMER_REAL, 0)
+        signal_module.signal(signal_module.SIGALRM, previous)
 
 
 def install_dependencies():
@@ -362,15 +338,24 @@ def install_dependencies():
 
 def import_dependencies():
     signal("importing_torch")
-    import torch as torch_module
+    def load_torch():
+        import torch
+        return torch
+    torch_module = _run_with_alarm(120, "torch import", load_torch)
     signal("torch_ready")
 
     signal("importing_diffusers")
-    from diffusers import Flux2KleinPipeline as flux_pipeline
+    def load_diffusers():
+        from diffusers import Flux2KleinPipeline
+        return Flux2KleinPipeline
+    flux_pipeline = _run_with_alarm(180, "diffusers import", load_diffusers)
     signal("diffusers_ready")
 
     signal("importing_transformers")
-    from transformers import AutoModelForCausalLM as causal_lm, AutoTokenizer as auto_tokenizer
+    def load_transformers():
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        return AutoModelForCausalLM, AutoTokenizer
+    causal_lm, auto_tokenizer = _run_with_alarm(120, "transformers import", load_transformers)
     signal("transformers_ready")
     return torch_module, flux_pipeline, causal_lm, auto_tokenizer
 
@@ -425,9 +410,11 @@ def recaption_batch(command):
 
 signal("booting")
 try:
-    if not dependency_probe():
+    try:
+        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
+    except (ImportError, AttributeError):
         install_dependencies()
-    torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
+        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
 except Exception as exc:
     report_startup_error("dependencies", exc)
     raise
