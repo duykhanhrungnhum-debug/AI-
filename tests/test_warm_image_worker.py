@@ -36,6 +36,14 @@ def test_warm_worker_source_matches_verified_cold_bootstrap_and_reuses_models():
     assert '"image_index": index' in source
     assert 'timeout=180' in source
     assert 'signal("booting")' in source
+    assert 'signal("importing_torch")' in source
+    assert 'signal("torch_ready")' in source
+    assert 'signal("importing_diffusers")' in source
+    assert 'signal("diffusers_ready")' in source
+    assert 'signal("importing_transformers")' in source
+    assert 'signal("transformers_ready")' in source
+    assert 'signal("installing_dependencies")' in source
+    assert 'signal("dependencies_installed")' in source
     assert 'signal("dependencies_ready")' in source
     assert 'signal("recaption_model_loading")' in source
     assert 'signal("recaption_model_ready")' in source
