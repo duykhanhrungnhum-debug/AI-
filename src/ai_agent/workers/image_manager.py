@@ -144,6 +144,10 @@ class WarmImageWorkerManager:
             return
         mapping = {
             "booting": WorkerState.STARTING,
+            "probing_dependencies": WorkerState.STARTING,
+            "dependency_probe_ready": WorkerState.STARTING,
+            "dependency_probe_failed": WorkerState.STARTING,
+            "dependency_probe_timeout": WorkerState.STARTING,
             "installing_dependencies": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
             "importing_torch": WorkerState.STARTING,
@@ -302,9 +306,6 @@ def signal(state):
         except Exception:
             if attempt < 2:
                 time.sleep(1)
-    # Heartbeats are observability, not the work itself. A transient callback
-    # outage must not kill a healthy model/bootstrap process; the canary or
-    # manager watchdog will catch a permanently unreachable worker.
     return False
 
 
@@ -313,13 +314,39 @@ def report_startup_error(stage, exc):
     signal("error:" + stage + ":" + detail)
 
 
+def dependency_probe():
+    signal("probing_dependencies")
+    probe = (
+        "import torch; "
+        "from diffusers import Flux2KleinPipeline; "
+        "from transformers import AutoModelForCausalLM, AutoTokenizer"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        signal("dependency_probe_timeout")
+        return False
+    if completed.returncode != 0:
+        signal("dependency_probe_failed")
+        return False
+    signal("dependency_probe_ready")
+    return True
+
+
 def install_dependencies():
     signal("installing_dependencies")
-    subprocess.check_call([
+    subprocess.run([
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
         "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
         "sentencepiece", "Pillow<13",
-    ])
+    ], check=True, timeout=300)
     signal("dependencies_ready")
 
 
@@ -388,14 +415,12 @@ def recaption_batch(command):
 
 signal("booting")
 try:
-    # Match the already-verified cold Image V2 bootstrap: use Kaggle's current
-    # compatible stack first and install only when an import contract is truly
-    # missing. This avoids a network-heavy pip upgrade on every warm session.
-    try:
-        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
-    except (ImportError, AttributeError):
+    # Bound dependency imports so a broken/lazy preinstalled package can never
+    # hang the warm worker indefinitely. Only repair the stack when the probe
+    # fails or exceeds its timeout.
+    if not dependency_probe():
         install_dependencies()
-        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
+    torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
 except Exception as exc:
     report_startup_error("dependencies", exc)
     raise
