@@ -57,7 +57,7 @@ def _kernel_log_tail(worker: KaggleGpuWorker, limit: int = 5000) -> str:
         return f"LOG_READ_FAILED {type(exc).__name__}: {exc}"[:1200]
 
 
-def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float = 180) -> None:
+def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float = 420) -> None:
     """Verify only worker submission/heartbeat; never create an image job."""
     before = CHAT_BROKER._warm_image.snapshot()
     started = CHAT_BROKER._warm_image.ensure_started()
