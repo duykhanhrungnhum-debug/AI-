@@ -28,6 +28,9 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
     assert 'timeout=180' in source
+    assert 'def import_dependencies():' in source
+    assert 'except (ImportError, AttributeError):' in source
+    assert 'install_dependencies()' in source
     assert 'signal("installing_dependencies")' in source
     assert 'signal("dependencies_ready")' in source
     assert 'signal("importing_torch")' in source
@@ -38,7 +41,7 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert 'signal("transformers_ready")' in source
     assert 'signal("loading_models")' in source
     assert 'signal("error:" + stage + ":" + detail)' in source
-    assert 'dependency bootstrap exceeded 360 seconds' in source
+    assert 'return False' in source
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
