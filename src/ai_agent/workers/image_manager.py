@@ -41,6 +41,7 @@ class WorkerSnapshot:
     failures: int
     circuit_open_until: float
     kernel_slug: str
+    launch_count: int
 
 
 class WarmImageWorkerManager:
@@ -75,6 +76,7 @@ class WarmImageWorkerManager:
         self._circuit_open_until = 0.0
         self._launching = False
         self._last_error = ""
+        self._launch_count = 0
 
     @property
     def enabled(self) -> bool:
@@ -91,6 +93,7 @@ class WarmImageWorkerManager:
                 failures=self._failures,
                 circuit_open_until=self._circuit_open_until,
                 kernel_slug=self.kernel_slug,
+                launch_count=self._launch_count,
             )
 
     def last_error(self) -> str:
@@ -196,6 +199,8 @@ class WarmImageWorkerManager:
             except Exception:
                 pass
 
+            with self._lock:
+                self._launch_count += 1
             worker.submit_script(
                 slug=self.kernel_slug,
                 title="AIKA Warm Image Worker",
