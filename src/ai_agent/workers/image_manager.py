@@ -325,10 +325,10 @@ def dependency_probe():
         completed = subprocess.run(
             [sys.executable, "-c", probe],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
+            stderr=subprocess.DEVNULL,
             timeout=60,
             check=False,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired:
         signal("dependency_probe_timeout")
@@ -415,9 +415,6 @@ def recaption_batch(command):
 
 signal("booting")
 try:
-    # Bound dependency imports so a broken/lazy preinstalled package can never
-    # hang the warm worker indefinitely. Only repair the stack when the probe
-    # fails or exceeds its timeout.
     if not dependency_probe():
         install_dependencies()
     torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
