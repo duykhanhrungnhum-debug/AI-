@@ -14,7 +14,7 @@ def test_warm_worker_is_off_by_default_and_tracks_launches(monkeypatch):
     assert snapshot.stage == "offline"
 
 
-def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
+def test_warm_worker_source_supervises_one_persistent_model_child():
     manager = WarmImageWorkerManager(idle_seconds=300)
     source = manager._worker_source(
         base_url="https://example.invalid",
@@ -22,22 +22,22 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     )
     assert source.count("Flux2KleinPipeline.from_pretrained") == 1
     assert source.count("AutoModelForCausalLM.from_pretrained") == 1
+    assert "aika_warm_child.py" in source
+    assert "aika_warm_stage" in source
+    assert "aika_warm_ready" in source
+    assert "start_new_session=True" in source
+    assert "os.killpg(proc.pid, signal_module.SIGKILL)" in source
+    assert 'signal("repairing_dependencies")' in source
+    assert 'timeout=300, label="dependency repair"' in source
+    assert 'for attempt in range(2):' in source
+    assert 'stage timeout: {current_stage}' in source
+    assert 'if stage == "loading_models":' in source
+    assert 'return 360' in source
     assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in source
     assert 'request("GET", "/internal/image/pull", timeout=30)' in source
-    assert 'request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)' in source
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
     assert 'timeout=180' in source
-    assert 'def _run_with_alarm(seconds, label, func):' in source
-    assert 'signal_module.setitimer(signal_module.ITIMER_REAL, float(seconds))' in source
-    assert '_run_with_alarm(120, "torch import", load_torch)' in source
-    assert '_run_with_alarm(180, "diffusers import", load_diffusers)' in source
-    assert '_run_with_alarm(120, "transformers import", load_transformers)' in source
-    assert 'install_dependencies()' in source
-    assert 'timeout=300' in source
-    assert 'def import_dependencies():' in source
-    assert 'signal("installing_dependencies")' in source
-    assert 'signal("dependencies_ready")' in source
     assert 'signal("importing_torch")' in source
     assert 'signal("torch_ready")' in source
     assert 'signal("importing_diffusers")' in source
@@ -45,7 +45,7 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert 'signal("importing_transformers")' in source
     assert 'signal("transformers_ready")' in source
     assert 'signal("loading_models")' in source
-    assert 'signal("error:" + stage + ":" + detail)' in source
+    assert 'signal("ready")' in source
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
