@@ -36,14 +36,21 @@ def test_warm_worker_source_supervises_one_persistent_model_child():
     assert "aika_warm_child.py" in source
     assert "aika_warm_stage" in source
     assert "aika_warm_ready" in source
+    assert '"deps_dir": "/tmp/aika_warm_deps"' not in source
+    assert 'DEPS_DIR = Path(CONFIG["deps_dir"])' in source
+    assert '"--target", str(DEPS_DIR)' in source
+    assert 'signal("installing_dependencies")' in source
+    assert 'heartbeat_state="installing_dependencies"' in source
+    assert 'prepare_dependencies(no_cache=False)' in source
+    assert 'prepare_dependencies(no_cache=True)' in source
     assert "start_new_session=True" in source
     assert "os.killpg(proc.pid, signal_module.SIGKILL)" in source
-    assert 'signal("repairing_dependencies")' in source
-    assert 'timeout=300, label="dependency repair"' in source
+    assert 'signal("supervisor_watch:" + current_stage)' in source
     assert 'for attempt in range(2):' in source
     assert 'stage timeout: {current_stage}' in source
     assert 'if stage == "loading_models":' in source
     assert 'return 360' in source
+    assert 'sys.path.insert(0, CONFIG["deps_dir"])' in child
     assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in child
     assert 'request("GET", "/internal/image/pull", timeout=30)' in child
     assert '"image_total": len(prompts)' in child
