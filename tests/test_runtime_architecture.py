@@ -1,20 +1,9 @@
-import ast
-import base64
-import re
-
 import pytest
 
 from ai_agent.command import CommandEnvelope
 from ai_agent.jobs import JobManager, JobStatus
 from ai_agent.router import route_skill
 from ai_agent.workers.image_manager import WarmImageWorkerManager
-
-
-def _warm_child_source(source: str) -> str:
-    match = re.search(r"CHILD_SOURCE = base64\.b64decode\((.+?)\)\.decode\(\"utf-8\"\)", source)
-    assert match is not None
-    encoded = ast.literal_eval(match.group(1))
-    return base64.b64decode(encoded).decode("utf-8")
 
 
 def test_command_envelope_is_transport_neutral():
@@ -59,14 +48,14 @@ def test_warm_worker_is_disabled_by_default(monkeypatch):
 def test_warm_worker_source_loads_models_once_and_polls_jobs():
     manager = WarmImageWorkerManager(idle_seconds=300)
     source = manager._worker_source(base_url="https://example.test", worker_token="secret")
-    child = _warm_child_source(source)
-    assert child.count("AutoTokenizer.from_pretrained") == 1
-    assert child.count("AutoModelForCausalLM.from_pretrained") == 1
-    assert child.count("Flux2KleinPipeline.from_pretrained") == 1
-    assert '"/internal/image/pull"' in child
-    assert '"/internal/image/result"' in child
-    assert '"/internal/image/heartbeat"' in child
-    assert "while time.monotonic() - idle_started" in child
-    assert "recaptioner.to(\"cuda\")" in child
-    assert "recaptioner.to(\"cpu\")" in child
-    assert "pipe.enable_model_cpu_offload()" in child
+    assert source.count("AutoTokenizer.from_pretrained") == 1
+    assert source.count("AutoModelForCausalLM.from_pretrained") == 1
+    assert source.count("Flux2KleinPipeline.from_pretrained") == 1
+    assert '"/internal/image/pull"' in source
+    assert '"/internal/image/result"' in source
+    assert '"/internal/image/heartbeat"' in source
+    assert "while time.monotonic() - idle_started" in source
+    assert "recaptioner.to(\"cuda\")" in source
+    assert "recaptioner.to(\"cpu\")" in source
+    assert "pipe.enable_model_cpu_offload()" in source
+    assert "except (ImportError, AttributeError):" in source
