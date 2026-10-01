@@ -4,7 +4,7 @@ from ai_agent.workers.image_manager import WorkerState
 from ai_agent.workers.image_manager_v6 import WarmImageWorkerManagerV6
 
 
-def test_v6_source_hands_gpu_between_flux_and_qwen():
+def test_v6_source_keeps_both_models_loaded_once_and_hands_gpu_between_them():
     manager = WarmImageWorkerManagerV6(idle_seconds=300)
     source = manager._worker_source(
         base_url="https://example.invalid",
@@ -16,31 +16,43 @@ def test_v6_source_hands_gpu_between_flux_and_qwen():
     assert source.count("Flux2KleinPipeline.from_pretrained") == 1
     assert "pipe.enable_model_cpu_offload()" in source
     assert "pipe.maybe_free_model_hooks()" in source
-    assert "def prepare_qwen_gpu():" in source
-    assert 'torch_dtype=torch.float16' in source
-    assert 'device_map="auto"' in source
-    assert 'recaptioner.to("cuda")' not in source
+    assert "def acquire_qwen_gpu():" in source
+    assert "def release_qwen_gpu():" in source
+    assert 'recaptioner.to("cuda")' in source
+    assert 'recaptioner.to("cpu")' in source
+    assert 'device_map="auto"' not in source
     assert 'return_tensors="pt").to(recaptioner.device)' in source
-    assert "def release_qwen_gpu(recaptioner):" in source
-    assert "del recaptioner" in source
     assert "torch.cuda.empty_cache()" in source
-    assert 'User-Agent": "AIKA-Warm-Image/6.3"' in source
+    assert 'User-Agent": "AIKA-Warm-Image/6.4"' in source
     assert 'max_new_tokens=int(CONFIG["recaption_max_new_tokens"])' in source
     assert '"recaption_max_new_tokens": 160' in source
 
 
-def test_v6_qwen_is_not_persistently_loaded_before_flux():
+def test_v6_qwen_and_flux_are_both_loaded_before_worker_registers_ready():
     manager = WarmImageWorkerManagerV6()
     source = manager._worker_source(
         base_url="https://example.invalid",
         worker_token="token",
         session_id="session-v6",
     )
+    qwen_load = source.index("recaptioner = AutoModelForCausalLM.from_pretrained")
     flux_load = source.index("pipe = Flux2KleinPipeline.from_pretrained")
-    qwen_loader = source.index("def prepare_qwen_gpu():")
-    qwen_model_load = source.index("recaptioner = AutoModelForCausalLM.from_pretrained", qwen_loader)
-    assert flux_load < qwen_loader < qwen_model_load
-    assert source.index("release_qwen_gpu(recaptioner)") < source.index("for index, prompt in enumerate(prompts):")
+    ready = source.index('set_state("ready", "")')
+    assert qwen_load < flux_load < ready
+    assert source.count("recaptioner = AutoModelForCausalLM.from_pretrained") == 1
+
+
+def test_v6_gpu_handoff_occurs_before_recaption_and_before_flux_generation():
+    manager = WarmImageWorkerManagerV6()
+    source = manager._worker_source(
+        base_url="https://example.invalid",
+        worker_token="token",
+        session_id="session-v6",
+    )
+    acquire_call = source.index("acquire_qwen_gpu()", source.index("job_id = str(job"))
+    release_call = source.index("release_qwen_gpu()", acquire_call)
+    generate_loop = source.index("for index, prompt in enumerate(prompts):", release_call)
+    assert acquire_call < release_call < generate_loop
 
 
 def test_v6_source_reports_explicit_stages():
