@@ -443,8 +443,10 @@ import urllib.request
 CONFIG = json.loads(__CONFIG_JSON__)
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
-# Keep startup identical to the verified cold Image V2 path. No callback is sent
-# until both models are completely loaded.
+# Bootstrap only the warm FLUX pipeline. Qwen is loaded per job from the local
+# Hugging Face cache, used as the sole active GPU owner for recaption, then fully
+# released before FLUX inference. This preserves the verified Qwen->FLUX order
+# without keeping two competing GPU model lifecycles alive at once.
 try:
     import torch
     from diffusers import Flux2KleinPipeline
@@ -461,14 +463,6 @@ except (ImportError, AttributeError):
 
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA GPU is required")
-
-tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
-recaptioner = AutoModelForCausalLM.from_pretrained(
-    CONFIG["recaption_model"],
-    torch_dtype=torch.float16,
-    low_cpu_mem_usage=True,
-)
-recaptioner.eval()
 
 pipe = Flux2KleinPipeline.from_pretrained(
     CONFIG["image_model"],
@@ -488,7 +482,7 @@ def request(method, path, payload=None, *, timeout=60):
             "X-AIKA-Worker-Session": CONFIG["session_id"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/4.1",
+            "User-Agent": "AIKA-Warm-Image/5.0",
         },
     )
     try:
@@ -558,29 +552,49 @@ def render_recaption(command):
         "JSON, explanation, scoring, or commentary. Never exceed " + str(CONFIG["max_images"]) + " descriptions.\n"
         "USER REQUEST: " + command
     )
-    recaptioner.to("cuda")
-    rendered = tokenizer.apply_chat_template(
-        [{"role": "user", "content": instruction}],
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
-    inputs = tokenizer([rendered], return_tensors="pt").to("cuda")
-    with torch.inference_mode():
-        generated = recaptioner.generate(
-            **inputs,
-            max_new_tokens=640,
-            do_sample=False,
-            use_cache=True,
-            repetition_penalty=1.03,
+    tokenizer = None
+    recaptioner = None
+    inputs = None
+    generated = None
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
+        recaptioner = AutoModelForCausalLM.from_pretrained(
+            CONFIG["recaption_model"],
+            torch_dtype=torch.float16,
+            device_map="auto",
+            low_cpu_mem_usage=True,
         )
-    planned = tokenizer.batch_decode(
-        generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True
-    )[0].strip().strip('"')
-    del generated, inputs
-    recaptioner.to("cpu")
-    gc.collect()
-    torch.cuda.empty_cache()
+        recaptioner.eval()
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": instruction}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = tokenizer([rendered], return_tensors="pt").to(recaptioner.device)
+        with torch.inference_mode():
+            generated = recaptioner.generate(
+                **inputs,
+                max_new_tokens=640,
+                do_sample=False,
+                use_cache=True,
+                repetition_penalty=1.03,
+            )
+        planned = tokenizer.batch_decode(
+            generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True
+        )[0].strip().strip('"')
+    finally:
+        if generated is not None:
+            del generated
+        if inputs is not None:
+            del inputs
+        if recaptioner is not None:
+            del recaptioner
+        if tokenizer is not None:
+            del tokenizer
+        gc.collect()
+        torch.cuda.empty_cache()
+
     prompts = [part.strip().strip('"') for part in planned.split(delimiter) if part.strip()]
     if not prompts:
         raise RuntimeError("recaption returned no image descriptions")
@@ -623,8 +637,6 @@ try:
         set_state("busy", job_id)
         signal("busy", job_id)
         try:
-            # Main-thread progress signals protect the lease even when a long
-            # PyTorch/CUDA call temporarily prevents the heartbeat thread from running.
             signal("busy", job_id)
             prompts = render_recaption(command)
             signal("busy", job_id)
@@ -657,7 +669,7 @@ try:
                 signal("busy", job_id)
         except Exception as exc:
             try:
-                recaptioner.to("cpu")
+                gc.collect()
                 torch.cuda.empty_cache()
             except Exception:
                 pass
