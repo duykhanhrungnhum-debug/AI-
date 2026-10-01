@@ -57,6 +57,50 @@ def _kernel_log_tail(worker: KaggleGpuWorker, limit: int = 5000) -> str:
         return f"LOG_READ_FAILED {type(exc).__name__}: {exc}"[:1200]
 
 
+def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float = 180) -> None:
+    """Verify only worker submission/heartbeat; never create an image job."""
+    before = CHAT_BROKER._warm_image.snapshot()
+    started = CHAT_BROKER._warm_image.ensure_started()
+    _emit("AIKA_WARM_LAUNCH_DIAG_BEGIN", {
+        "ensure_started": started,
+        "before_state": before.state,
+        "before_launch_count": before.launch_count,
+        "kernel": _kernel_status(worker),
+    })
+    if not started:
+        raise RuntimeError("warm manager refused to start")
+
+    deadline = time.time() + timeout_seconds
+    next_report = 0.0
+    while time.time() < deadline:
+        snapshot = CHAT_BROKER._warm_image.snapshot()
+        error = CHAT_BROKER._warm_image.last_error()
+        if error:
+            raise RuntimeError("warm launch failed: " + error)
+        if snapshot.state in {"ready", "idle", "busy"} and snapshot.last_seen:
+            _emit("AIKA_WARM_LAUNCH_DIAG_SUCCESS", {
+                "state": snapshot.state,
+                "launch_count": snapshot.launch_count,
+                "last_seen": snapshot.last_seen,
+            })
+            return
+        if time.time() >= next_report:
+            _emit("AIKA_WARM_LAUNCH_DIAG_WAIT", {
+                "state": snapshot.state,
+                "launch_count": snapshot.launch_count,
+                "last_seen": snapshot.last_seen,
+                "kernel": _kernel_status(worker),
+            })
+            next_report = time.time() + 15
+        time.sleep(2)
+
+    raise TimeoutError(
+        "warm launch produced no ready heartbeat; kernel="
+        + json.dumps(_kernel_status(worker), ensure_ascii=False)
+        + "; log_tail=" + _kernel_log_tail(worker)
+    )
+
+
 def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 240) -> None:
     """Avoid blindly submitting another warm kernel while an old one is alive."""
     status = _kernel_status(worker)
@@ -84,6 +128,7 @@ def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 2
                 "manager_state": snapshot.state,
                 "last_seen": snapshot.last_seen,
                 "launch_count": snapshot.launch_count,
+                "manager_error": CHAT_BROKER._warm_image.last_error(),
                 "kernel": status,
             })
             next_report = time.time() + 30
@@ -110,7 +155,9 @@ def _wait_job(job_id: str, *, timeout_seconds: float, worker: KaggleGpuWorker, l
                 "label": label,
                 "job_status": state.get("status"),
                 "worker_state": state.get("worker_state"),
+                "worker_error": state.get("worker_error"),
                 "manager_state": snapshot.state,
+                "manager_error": CHAT_BROKER._warm_image.last_error(),
                 "launch_count": snapshot.launch_count,
                 "last_seen_age": round(time.time() - snapshot.last_seen, 1) if snapshot.last_seen else None,
                 "kernel": _kernel_status(worker),
@@ -155,10 +202,15 @@ def run_warm_canary_selftest() -> None:
         worker = _diagnostic_worker()
         _emit("AIKA_WARM_CANARY_BEGIN", {
             "warm_enabled": True,
+            "diagnostic_only": _flag("AIKA_WARM_CANARY_DIAGNOSTIC_ONLY"),
             "kernel": _kernel_status(worker),
         })
-        _wait_existing_kernel(worker)
 
+        if _flag("AIKA_WARM_CANARY_DIAGNOSTIC_ONLY"):
+            _launch_only_diagnostic(worker)
+            return
+
+        _wait_existing_kernel(worker)
         before = CHAT_BROKER._warm_image.snapshot()
         first = _run_image(
             "first",
