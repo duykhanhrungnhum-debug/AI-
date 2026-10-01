@@ -43,22 +43,9 @@ except (ImportError, AttributeError):
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA GPU is required")
 
-# Bound CPU scheduling and output length so recaption has a predictable ceiling.
-# Qwen stays CPU-resident; FLUX is the only CUDA owner.
-torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
-try:
-    torch.set_num_interop_threads(1)
-except RuntimeError:
-    pass
-
+# Tokenizer is CPU-only and cheap to keep resident. FLUX remains warm in host RAM
+# through model_cpu_offload. Qwen is loaded on GPU only while recaptioning a job.
 tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
-recaptioner = AutoModelForCausalLM.from_pretrained(
-    CONFIG["recaption_model"],
-    torch_dtype=torch.float32,
-    low_cpu_mem_usage=True,
-)
-recaptioner.eval()
-
 pipe = Flux2KleinPipeline.from_pretrained(
     CONFIG["image_model"],
     torch_dtype=torch.float16,
@@ -77,7 +64,7 @@ def request(method, path, payload=None, *, timeout=60):
             "X-AIKA-Worker-Session": CONFIG["session_id"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/6.2",
+            "User-Agent": "AIKA-Warm-Image/6.3",
         },
     )
     try:
@@ -198,14 +185,39 @@ BASE_CONTRACT = (
 )
 
 
-def qwen_generate(instruction):
+def prepare_qwen_gpu():
+    # Diffusers documents maybe_free_model_hooks() as offloading all pipeline
+    # components and restoring model_cpu_offload hooks. That makes Qwen the sole
+    # CUDA owner during recaption without reloading FLUX weights from disk.
+    if not hasattr(pipe, "maybe_free_model_hooks"):
+        raise RuntimeError("diffusers pipeline lacks maybe_free_model_hooks")
+    pipe.maybe_free_model_hooks()
+    gc.collect()
+    torch.cuda.empty_cache()
+    recaptioner = AutoModelForCausalLM.from_pretrained(
+        CONFIG["recaption_model"],
+        torch_dtype=torch.float16,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+    )
+    recaptioner.eval()
+    return recaptioner
+
+
+def release_qwen_gpu(recaptioner):
+    del recaptioner
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def qwen_generate(recaptioner, instruction):
     rendered = tokenizer.apply_chat_template(
         [{"role": "user", "content": instruction}],
         tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
     )
-    inputs = tokenizer([rendered], return_tensors="pt")
+    inputs = tokenizer([rendered], return_tensors="pt").to(recaptioner.device)
     with torch.inference_mode():
         generated = recaptioner.generate(
             **inputs,
@@ -220,24 +232,23 @@ def qwen_generate(instruction):
         generated[:, inputs.input_ids.shape[1]:], skip_special_tokens=True
     )[0].strip().strip('"')
     del generated, inputs
-    gc.collect()
     return text
 
 
-def render_one_recaption(command):
+def render_one_recaption(recaptioner, command):
     instruction = (
         "Rewrite the USER REQUEST as exactly one faithful, concise English image-generation description. "
         + BASE_CONTRACT
         + "Keep it under 120 words. Output only that one description. Do not number it, label it, explain it, or output JSON.\n"
         + "USER REQUEST: " + command
     )
-    text = qwen_generate(instruction).strip().strip('"')
+    text = qwen_generate(recaptioner, instruction).strip().strip('"')
     if len(text) < 12:
         raise RuntimeError("recaption returned an empty/invalid description")
     return text
 
 
-def render_batch_recaption(command):
+def render_batch_recaption(recaptioner, command):
     delimiter = CONFIG["delimiter"]
     instruction = (
         "Convert the USER REQUEST into concise English image-generation descriptions. " + BASE_CONTRACT +
@@ -248,7 +259,7 @@ def render_batch_recaption(command):
         "Do not output JSON, explanation, scoring, or commentary. Never exceed " + str(CONFIG["max_images"]) + " descriptions.\n"
         "USER REQUEST: " + command
     )
-    planned = qwen_generate(instruction)
+    planned = qwen_generate(recaptioner, instruction)
     prompts = [part.strip().strip('"') for part in planned.split(delimiter) if part.strip()]
     if not prompts:
         raise RuntimeError("recaption returned no image descriptions")
@@ -292,7 +303,12 @@ try:
         width = int(job.get("width", 1024))
         height = int(job.get("height", 1024))
 
+        recaptioner = None
         try:
+            set_state("busy:recaption", job_id)
+            signal("busy:recaption", job_id)
+            recaptioner = prepare_qwen_gpu()
+
             explicit_items = split_explicit_items(command)
             if explicit_items:
                 prompts = []
@@ -301,13 +317,14 @@ try:
                     stage = f"busy:recaption:{item_index}/{item_total}"
                     set_state(stage, job_id)
                     signal(stage, job_id)
-                    prompts.append(render_one_recaption(item_command))
+                    prompts.append(render_one_recaption(recaptioner, item_command))
                     signal(stage, job_id)
             else:
-                set_state("busy:recaption", job_id)
+                prompts = render_batch_recaption(recaptioner, command)
                 signal("busy:recaption", job_id)
-                prompts = render_batch_recaption(command)
-                signal("busy:recaption", job_id)
+
+            release_qwen_gpu(recaptioner)
+            recaptioner = None
 
             total = len(prompts)
             for index, prompt in enumerate(prompts):
@@ -341,6 +358,11 @@ try:
                     "generation_prompt": prompt,
                     "elapsed_seconds": round(time.perf_counter() - item_started, 3),
                 }, timeout=90)
+            # Return every FLUX component to host RAM while idle so the next job
+            # can hand CUDA to Qwen immediately.
+            pipe.maybe_free_model_hooks()
+            gc.collect()
+            torch.cuda.empty_cache()
         except Exception as exc:
             try:
                 request("POST", "/internal/image/result", {
@@ -350,6 +372,8 @@ try:
             except Exception:
                 pass
         finally:
+            if recaptioner is not None:
+                release_qwen_gpu(recaptioner)
             set_state("ready", "")
             signal("ready", "")
 finally:
