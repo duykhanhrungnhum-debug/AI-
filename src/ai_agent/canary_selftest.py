@@ -84,6 +84,7 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
                 "stage": snapshot.stage,
                 "launch_count": snapshot.launch_count,
                 "last_seen": snapshot.last_seen,
+                "session_id": snapshot.session_id,
             })
             return
         if time.time() >= next_report:
@@ -106,7 +107,6 @@ def _launch_only_diagnostic(worker: KaggleGpuWorker, *, timeout_seconds: float =
 
 
 def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 240) -> None:
-    """Avoid blindly submitting another warm kernel while an old one is alive."""
     status = _kernel_status(worker)
     if status.get("terminal") is not False:
         _emit("AIKA_WARM_CANARY_KERNEL_PRECHECK", status)
@@ -122,6 +122,7 @@ def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 2
                 "state": snapshot.state,
                 "stage": snapshot.stage,
                 "launch_count": snapshot.launch_count,
+                "session_id": snapshot.session_id,
             })
             return
         status = _kernel_status(worker)
@@ -166,6 +167,9 @@ def _wait_job(job_id: str, *, timeout_seconds: float, worker: KaggleGpuWorker, l
                 "manager_stage": snapshot.stage,
                 "manager_error": CHAT_BROKER._warm_image.last_error(),
                 "launch_count": snapshot.launch_count,
+                "session_id": snapshot.session_id,
+                "current_job_id": snapshot.current_job_id,
+                "lease_remaining": round(max(0.0, snapshot.job_lease_expires_at - time.time()), 1),
                 "last_seen_age": round(time.time() - snapshot.last_seen, 1) if snapshot.last_seen else None,
                 "kernel": _kernel_status(worker),
             })
@@ -191,10 +195,20 @@ def _run_image(label: str, message: str, *, timeout_seconds: float, worker: Kagg
         "image_count": state.get("image_count"),
         "generation_seconds": state.get("elapsed_seconds"),
         "worker_state": state.get("worker_state"),
+        "worker_session_id": state.get("worker_session_id"),
         "warm_image_enabled": state.get("warm_image_enabled"),
     }
     _emit("AIKA_WARM_CANARY_JOB_DONE", result)
     return result
+
+
+def _require_warm(result: dict) -> None:
+    if result["provider"] != "kaggle-image-warm":
+        raise RuntimeError(
+            f"{result['label']} used {result['provider']!r}, expected kaggle-image-warm; stop canary before more GPU work"
+        )
+    if result["warm_image_enabled"] is not True:
+        raise RuntimeError(f"{result['label']} did not report warm_image_enabled=true")
 
 
 def run_warm_canary_selftest() -> None:
@@ -225,6 +239,7 @@ def run_warm_canary_selftest() -> None:
             timeout_seconds=720,
             worker=worker,
         )
+        _require_warm(first)
         after_first = CHAT_BROKER._warm_image.snapshot()
 
         second = _run_image(
@@ -233,7 +248,17 @@ def run_warm_canary_selftest() -> None:
             timeout_seconds=240,
             worker=worker,
         )
+        _require_warm(second)
         after_second = CHAT_BROKER._warm_image.snapshot()
+
+        if after_second.launch_count != after_first.launch_count:
+            raise RuntimeError(
+                f"second job relaunched warm worker: {after_first.launch_count} -> {after_second.launch_count}"
+            )
+        if second.get("worker_session_id") != first.get("worker_session_id"):
+            raise RuntimeError("second job did not reuse the first worker session")
+        if float(second["wall_seconds"]) >= 150:
+            raise RuntimeError(f"second warm job took too long: {second['wall_seconds']}s")
 
         batch = _run_image(
             "batch",
@@ -242,13 +267,8 @@ def run_warm_canary_selftest() -> None:
             timeout_seconds=300,
             worker=worker,
         )
+        _require_warm(batch)
         after_batch = CHAT_BROKER._warm_image.snapshot()
-
-        for result in (first, second, batch):
-            if result["provider"] != "kaggle-image-warm":
-                raise RuntimeError(f"{result['label']} used {result['provider']!r}, expected kaggle-image-warm")
-            if result["warm_image_enabled"] is not True:
-                raise RuntimeError(f"{result['label']} did not report warm_image_enabled=true")
 
         if int(first.get("image_count") or 0) != 1:
             raise RuntimeError(f"first expected 1 image, got {first.get('image_count')}")
@@ -259,19 +279,16 @@ def run_warm_canary_selftest() -> None:
 
         if after_first.launch_count <= before.launch_count:
             raise RuntimeError("first job did not launch the warm worker")
-        if after_second.launch_count != after_first.launch_count:
-            raise RuntimeError(
-                f"second job relaunched warm worker: {after_first.launch_count} -> {after_second.launch_count}"
-            )
         if after_batch.launch_count != after_first.launch_count:
             raise RuntimeError(
                 f"batch job relaunched warm worker: {after_first.launch_count} -> {after_batch.launch_count}"
             )
-        if float(second["wall_seconds"]) >= 150:
-            raise RuntimeError(f"second warm job took too long: {second['wall_seconds']}s")
+        if batch.get("worker_session_id") != first.get("worker_session_id"):
+            raise RuntimeError("batch job did not reuse the first worker session")
 
         report = {
             "status": "success",
+            "session_id": first.get("worker_session_id"),
             "launch_count_before": before.launch_count,
             "launch_count_after_first": after_first.launch_count,
             "launch_count_after_second": after_second.launch_count,
