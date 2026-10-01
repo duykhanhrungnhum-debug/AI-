@@ -1,3 +1,5 @@
+import inspect
+
 from ai_agent.canary_selftest import _flag
 from ai_agent.workers.image_manager import WarmImageWorkerManager
 
@@ -23,6 +25,14 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert 'request("GET", "/internal/image/pull")' in source
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
+
+
+def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
+    source = inspect.getsource(WarmImageWorkerManager._launch)
+    assert 'launch_title = f"AIKA Warm Image Worker {time.time_ns()}"' in source
+    submit_pos = source.index("worker.submit_script(")
+    count_pos = source.index("self._launch_count += 1")
+    assert submit_pos < count_pos
 
 
 def test_canary_flag_is_explicit(monkeypatch):
