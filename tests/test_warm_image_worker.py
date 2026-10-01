@@ -29,9 +29,11 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert '"image_index": index' in source
     assert 'timeout=180' in source
     assert 'def dependency_probe():' in source
-    assert 'timeout=60' in source
+    assert 'deadline = time.monotonic() + 60' in source
     assert 'stderr=subprocess.DEVNULL' in source
     assert 'start_new_session=True' in source
+    assert 'os.killpg(process.pid, signal_module.SIGKILL)' in source
+    assert 'process.wait(timeout=5)' in source
     assert 'signal("dependency_probe_timeout")' in source
     assert 'signal("dependency_probe_failed")' in source
     assert 'signal("dependency_probe_ready")' in source
