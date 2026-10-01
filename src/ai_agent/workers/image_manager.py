@@ -180,6 +180,14 @@ class WarmImageWorkerManager:
             return
         mapping = {
             "booting": WorkerState.STARTING,
+            "importing_torch": WorkerState.STARTING,
+            "torch_ready": WorkerState.STARTING,
+            "importing_diffusers": WorkerState.STARTING,
+            "diffusers_ready": WorkerState.STARTING,
+            "importing_transformers": WorkerState.STARTING,
+            "transformers_ready": WorkerState.STARTING,
+            "installing_dependencies": WorkerState.STARTING,
+            "dependencies_installed": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
             "recaption_model_loading": WorkerState.STARTING,
             "recaption_model_ready": WorkerState.STARTING,
@@ -304,7 +312,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/3.0",
+            "User-Agent": "AIKA-Warm-Image/3.1",
         },
     )
     try:
@@ -385,18 +393,32 @@ def render_recaption(command):
 # Use the exact dependency bootstrap contract already verified by cold Image V2.
 signal("booting")
 try:
+    signal("importing_torch")
     import torch
+    signal("torch_ready")
+    signal("importing_diffusers")
     from diffusers import Flux2KleinPipeline
+    signal("diffusers_ready")
+    signal("importing_transformers")
     from transformers import AutoModelForCausalLM, AutoTokenizer
+    signal("transformers_ready")
 except (ImportError, AttributeError):
+    signal("installing_dependencies")
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
         "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
         "sentencepiece", "Pillow<13",
     ])
+    signal("dependencies_installed")
+    signal("importing_torch")
     import torch
+    signal("torch_ready")
+    signal("importing_diffusers")
     from diffusers import Flux2KleinPipeline
+    signal("diffusers_ready")
+    signal("importing_transformers")
     from transformers import AutoModelForCausalLM, AutoTokenizer
+    signal("transformers_ready")
 
 if not torch.cuda.is_available():
     exc = RuntimeError("CUDA GPU is required")
