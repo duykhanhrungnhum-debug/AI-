@@ -13,12 +13,15 @@ from ai_agent.chat_session import CHAT_BROKER
 
 
 class ChatRequestHandler(AIRequestHandler):
-    server_version = "AIKA-Chat-API/0.4"
+    server_version = "AIKA-Chat-API/0.5"
 
     def _worker_authorized(self) -> bool:
         expected = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
         supplied = self.headers.get("authorization", "").strip()
         return bool(expected) and hmac.compare_digest(supplied, f"Bearer {expected}")
+
+    def _worker_session_id(self) -> str:
+        return self.headers.get("x-aika-worker-session", "").strip()
 
     def _read_body(self) -> dict:
         length = int(self.headers.get("content-length", "0"))
@@ -57,7 +60,10 @@ class ChatRequestHandler(AIRequestHandler):
             if not self._worker_authorized():
                 self._json(401, {"error": "unauthorized"})
                 return
-            self._empty_or_json(CHAT_BROKER.pull_image_job())
+            try:
+                self._empty_or_json(CHAT_BROKER.pull_image_job(self._worker_session_id()))
+            except PermissionError as exc:
+                self._json(409, {"error": "stale_worker_session", "detail": str(exc)})
             return
 
         if parsed.path == "/v1/chat/status":
@@ -130,7 +136,11 @@ class ChatRequestHandler(AIRequestHandler):
                     self._json(401, {"error": "unauthorized"})
                     return
                 body = self._read_body()
-                CHAT_BROKER.image_heartbeat(str(body.get("state", "ready")))
+                CHAT_BROKER.image_heartbeat(
+                    self._worker_session_id(),
+                    str(body.get("state", "ready")),
+                    current_job_id=str(body.get("current_job_id", "")),
+                )
                 self._json(200, {"status": "ok"})
                 return
 
@@ -138,7 +148,10 @@ class ChatRequestHandler(AIRequestHandler):
                 if not self._worker_authorized():
                     self._json(401, {"error": "unauthorized"})
                     return
-                CHAT_BROKER.finish_image_job(self._read_body())
+                CHAT_BROKER.finish_image_job(
+                    self._read_body(),
+                    session_id=self._worker_session_id(),
+                )
                 self._json(200, {"status": "ok"})
                 return
 
@@ -160,6 +173,8 @@ class ChatRequestHandler(AIRequestHandler):
                 return
 
             super().do_POST()
+        except PermissionError as exc:
+            self._json(409, {"error": "stale_worker_session", "detail": str(exc)})
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
         except KeyError:
