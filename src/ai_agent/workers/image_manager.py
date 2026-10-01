@@ -113,7 +113,6 @@ class WarmImageWorkerManager:
             )
 
     def ensure_started(self) -> bool:
-        """Start/reuse the warm worker. Returns False when warm mode is unavailable."""
         if not self.enabled:
             return False
         now = time.time()
@@ -146,10 +145,9 @@ class WarmImageWorkerManager:
         mapping = {
             "booting": WorkerState.STARTING,
             "supervisor_starting": WorkerState.STARTING,
-            "child_booting": WorkerState.STARTING,
-            "repairing_dependencies": WorkerState.STARTING,
             "installing_dependencies": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
+            "child_booting": WorkerState.STARTING,
             "importing_torch": WorkerState.STARTING,
             "torch_ready": WorkerState.STARTING,
             "importing_diffusers": WorkerState.STARTING,
@@ -257,6 +255,7 @@ class WarmImageWorkerManager:
             "poll_seconds": 3,
             "max_images": self.max_images_per_job,
             "delimiter": IMAGE_BATCH_DELIMITER,
+            "deps_dir": "/tmp/aika_warm_deps",
         }
         config_json = json.dumps(config, ensure_ascii=False)
 
@@ -268,11 +267,13 @@ from io import BytesIO
 import gc
 import json
 from pathlib import Path
+import sys
 import time
 import urllib.error
 import urllib.request
 
 CONFIG = json.loads(__CONFIG_JSON__)
+sys.path.insert(0, CONFIG["deps_dir"])
 STAGE_FILE = Path("/tmp/aika_warm_stage")
 READY_FILE = Path("/tmp/aika_warm_ready")
 ERROR_FILE = Path("/tmp/aika_warm_error")
@@ -288,7 +289,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/2.0",
+            "User-Agent": "AIKA-Warm-Image/2.1",
         },
     )
     try:
@@ -485,6 +486,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import shutil
 import signal as signal_module
 import subprocess
 import sys
@@ -499,6 +501,7 @@ READY_FILE = Path("/tmp/aika_warm_ready")
 ERROR_FILE = Path("/tmp/aika_warm_error")
 STAGE_FILE = Path("/tmp/aika_warm_stage")
 LOG_FILE = Path("/tmp/aika_warm_child.log")
+DEPS_DIR = Path(CONFIG["deps_dir"])
 
 
 def request(method, path, payload=None, *, timeout=60):
@@ -511,7 +514,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Supervisor/2.0",
+            "User-Agent": "AIKA-Warm-Supervisor/2.1",
         },
     )
     try:
@@ -557,7 +560,7 @@ def kill_group(proc):
         pass
 
 
-def hard_run(command, *, timeout, label):
+def hard_run(command, *, timeout, label, heartbeat_state):
     proc = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -565,22 +568,35 @@ def hard_run(command, *, timeout, label):
         start_new_session=True,
     )
     deadline = time.monotonic() + float(timeout)
+    next_heartbeat = 0.0
     while proc.poll() is None:
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             kill_group(proc)
             raise TimeoutError(f"{label} exceeded {timeout} seconds")
+        if now >= next_heartbeat:
+            signal(heartbeat_state)
+            next_heartbeat = now + 15
         time.sleep(1)
     if proc.returncode != 0:
         raise RuntimeError(f"{label} exited with code {proc.returncode}")
 
 
-def install_dependencies():
-    signal("repairing_dependencies")
-    hard_run([
+def prepare_dependencies(*, no_cache=False):
+    signal("installing_dependencies")
+    shutil.rmtree(DEPS_DIR, ignore_errors=True)
+    DEPS_DIR.mkdir(parents=True, exist_ok=True)
+    command = [
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        "--target", str(DEPS_DIR),
+    ]
+    if no_cache:
+        command.append("--no-cache-dir")
+    command.extend([
         "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
         "sentencepiece", "Pillow<13",
-    ], timeout=300, label="dependency repair")
+    ])
+    hard_run(command, timeout=300, label="dependency overlay", heartbeat_state="installing_dependencies")
     signal("dependencies_ready")
 
 
@@ -592,9 +608,7 @@ def stage_name():
 
 
 def stage_budget(stage):
-    if stage in {"child_booting", "importing_torch"}:
-        return 120
-    if stage in {"importing_diffusers", "importing_transformers"}:
+    if stage in {"child_booting", "importing_torch", "importing_diffusers", "importing_transformers"}:
         return 120
     if stage == "loading_models":
         return 360
@@ -621,6 +635,7 @@ def start_child():
 def wait_ready(proc):
     current_stage = "child_booting"
     stage_started = time.monotonic()
+    next_heartbeat = 0.0
     while True:
         if READY_FILE.exists():
             return True, "ready"
@@ -640,8 +655,12 @@ def wait_ready(proc):
         if observed != current_stage:
             current_stage = observed
             stage_started = time.monotonic()
+        now = time.monotonic()
+        if now >= next_heartbeat:
+            signal("supervisor_watch:" + current_stage)
+            next_heartbeat = now + 15
         budget = stage_budget(current_stage)
-        if time.monotonic() - stage_started > budget:
+        if now - stage_started > budget:
             kill_group(proc)
             return False, f"stage timeout: {current_stage} exceeded {budget}s"
         time.sleep(2)
@@ -649,6 +668,7 @@ def wait_ready(proc):
 
 signal("supervisor_starting")
 CHILD_PATH.write_text(CHILD_SOURCE, encoding="utf-8")
+prepare_dependencies(no_cache=False)
 last_error = ""
 child = None
 handle = None
@@ -664,11 +684,7 @@ for attempt in range(2):
     except Exception:
         pass
     if attempt == 0:
-        try:
-            install_dependencies()
-        except Exception as exc:
-            report_error("dependencies", f"{type(exc).__name__}: {exc}")
-            raise
+        prepare_dependencies(no_cache=True)
 else:
     report_error("child", last_error or "warm child failed to become ready")
     raise RuntimeError(last_error or "warm child failed to become ready")
