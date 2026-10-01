@@ -179,15 +179,6 @@ class WarmImageWorkerManager:
                 self._stage = normalized[:2000]
             return
         mapping = {
-            "booting": WorkerState.STARTING,
-            "importing_torch": WorkerState.STARTING,
-            "torch_ready": WorkerState.STARTING,
-            "importing_diffusers": WorkerState.STARTING,
-            "diffusers_ready": WorkerState.STARTING,
-            "importing_transformers": WorkerState.STARTING,
-            "transformers_ready": WorkerState.STARTING,
-            "installing_dependencies": WorkerState.STARTING,
-            "dependencies_installed": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
             "recaption_model_loading": WorkerState.STARTING,
             "recaption_model_ready": WorkerState.STARTING,
@@ -301,6 +292,23 @@ import urllib.request
 CONFIG = json.loads(__CONFIG_JSON__)
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
+# Keep dependency bootstrap behavior identical to verified Cold Image V2: no
+# outbound heartbeat/network request occurs before torch/diffusers/transformers
+# are successfully imported (or repaired once through pip).
+try:
+    import torch
+    from diffusers import Flux2KleinPipeline
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except (ImportError, AttributeError):
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
+        "sentencepiece", "Pillow<13",
+    ])
+    import torch
+    from diffusers import Flux2KleinPipeline
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
 
 def request(method, path, payload=None, *, timeout=60):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
@@ -312,7 +320,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/3.1",
+            "User-Agent": "AIKA-Warm-Image/3.2",
         },
     )
     try:
@@ -389,36 +397,6 @@ def render_recaption(command):
         raise RuntimeError("recaption exceeded max_images")
     return prompts
 
-
-# Use the exact dependency bootstrap contract already verified by cold Image V2.
-signal("booting")
-try:
-    signal("importing_torch")
-    import torch
-    signal("torch_ready")
-    signal("importing_diffusers")
-    from diffusers import Flux2KleinPipeline
-    signal("diffusers_ready")
-    signal("importing_transformers")
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    signal("transformers_ready")
-except (ImportError, AttributeError):
-    signal("installing_dependencies")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
-        "sentencepiece", "Pillow<13",
-    ])
-    signal("dependencies_installed")
-    signal("importing_torch")
-    import torch
-    signal("torch_ready")
-    signal("importing_diffusers")
-    from diffusers import Flux2KleinPipeline
-    signal("diffusers_ready")
-    signal("importing_transformers")
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    signal("transformers_ready")
 
 if not torch.cuda.is_available():
     exc = RuntimeError("CUDA GPU is required")
