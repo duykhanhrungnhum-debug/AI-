@@ -79,6 +79,9 @@ class WarmImageWorkerManagerV6(WarmImageWorkerManager):
         raw = (state or "ready").strip().casefold()
         if raw.startswith("busy:"):
             stage = raw.split(":", 1)[1].strip() or "busy"
+            with self._lock:
+                previous_stage = self._stage
+                previous_started_at = self._stage_started_at
             accepted = super().heartbeat(
                 session_id,
                 "busy",
@@ -90,7 +93,11 @@ class WarmImageWorkerManagerV6(WarmImageWorkerManager):
             with self._lock:
                 if session_id != self._session_id:
                     return False
-                self._set_stage_locked(stage, now)
+                if stage == previous_stage and previous_started_at:
+                    self._stage = stage
+                    self._stage_started_at = previous_started_at
+                else:
+                    self._set_stage_locked(stage, now)
             return True
 
         accepted = super().heartbeat(
