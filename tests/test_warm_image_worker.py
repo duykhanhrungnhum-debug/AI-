@@ -28,9 +28,15 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
     assert 'timeout=180' in source
-    assert 'def import_dependencies():' in source
-    assert 'except (ImportError, AttributeError):' in source
+    assert 'def dependency_probe():' in source
+    assert 'timeout=60' in source
+    assert 'signal("dependency_probe_timeout")' in source
+    assert 'signal("dependency_probe_failed")' in source
+    assert 'signal("dependency_probe_ready")' in source
+    assert 'if not dependency_probe():' in source
     assert 'install_dependencies()' in source
+    assert 'timeout=300' in source
+    assert 'def import_dependencies():' in source
     assert 'signal("installing_dependencies")' in source
     assert 'signal("dependencies_ready")' in source
     assert 'signal("importing_torch")' in source
