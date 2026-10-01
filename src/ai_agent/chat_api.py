@@ -10,13 +10,13 @@ from urllib.parse import parse_qs, urlparse
 
 from ai_agent.api import AIRequestHandler
 from ai_agent.chat_session import CHAT_BROKER
-from ai_agent.workers.image_manager_v6 import WarmImageWorkerManagerV6
+from ai_agent.workers.image_manager_v65 import WarmImageWorkerManagerV65
 
 
-# Use the canary-verified warm lifecycle in the normal API. The manager remains
+# Use the soak-verified warm lifecycle in the normal API. The manager remains
 # disabled unless AIKA_IMAGE_WARM_WORKER=true, so code rollout and feature
 # activation stay independent. Cold Image V2 remains the broker fallback.
-CHAT_BROKER._warm_image = WarmImageWorkerManagerV6()
+CHAT_BROKER._warm_image = WarmImageWorkerManagerV65()
 
 
 class ChatRequestHandler(AIRequestHandler):
