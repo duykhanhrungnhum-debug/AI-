@@ -23,9 +23,11 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert source.count("Flux2KleinPipeline.from_pretrained") == 1
     assert source.count("AutoModelForCausalLM.from_pretrained") == 1
     assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in source
-    assert 'request("GET", "/internal/image/pull")' in source
+    assert 'request("GET", "/internal/image/pull", timeout=30)' in source
+    assert 'request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)' in source
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
+    assert 'timeout=180' in source
     assert 'signal("installing_dependencies")' in source
     assert 'signal("dependencies_ready")' in source
     assert 'signal("importing_torch")' in source
