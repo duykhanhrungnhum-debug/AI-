@@ -5,14 +5,13 @@ Image V2 provider remains the fallback until the warm path is promoted.
 """
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from enum import Enum
 import json
 import os
-import textwrap
 import threading
 import time
+import textwrap
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_v2 import (
@@ -44,6 +43,7 @@ class WorkerSnapshot:
     circuit_open_until: float
     kernel_slug: str
     launch_count: int
+    startup_started_at: float
 
 
 class WarmImageWorkerManager:
@@ -55,6 +55,7 @@ class WarmImageWorkerManager:
         kernel_slug: str = "ai-agent-image-warm",
         idle_seconds: int = 300,
         heartbeat_ttl: int = 60,
+        startup_timeout_seconds: int = 420,
         circuit_failure_threshold: int = 3,
         circuit_cooldown_seconds: int = 300,
         max_images_per_job: int = 6,
@@ -63,11 +64,14 @@ class WarmImageWorkerManager:
             raise ValueError("idle_seconds must be positive")
         if heartbeat_ttl <= 0:
             raise ValueError("heartbeat_ttl must be positive")
+        if startup_timeout_seconds <= 0:
+            raise ValueError("startup_timeout_seconds must be positive")
         if max_images_per_job <= 0 or max_images_per_job > 8:
             raise ValueError("max_images_per_job must be between 1 and 8")
         self.kernel_slug = kernel_slug
         self.idle_seconds = idle_seconds
         self.heartbeat_ttl = heartbeat_ttl
+        self.startup_timeout_seconds = startup_timeout_seconds
         self.circuit_failure_threshold = circuit_failure_threshold
         self.circuit_cooldown_seconds = circuit_cooldown_seconds
         self.max_images_per_job = max_images_per_job
@@ -75,6 +79,7 @@ class WarmImageWorkerManager:
         self._state = WorkerState.OFFLINE
         self._stage = WorkerState.OFFLINE.value
         self._last_seen = 0.0
+        self._startup_started_at = 0.0
         self._failures = 0
         self._circuit_open_until = 0.0
         self._launching = False
@@ -87,8 +92,29 @@ class WarmImageWorkerManager:
             "1", "true", "yes", "on"
         }
 
+    def _expire_stale_startup_locked(self, now: float) -> None:
+        if (
+            self._state is WorkerState.STARTING
+            and self._startup_started_at > 0
+            and now - self._startup_started_at >= self.startup_timeout_seconds
+        ):
+            self._failures += 1
+            self._state = WorkerState.ERROR
+            self._stage = "startup_timeout"
+            self._last_error = (
+                f"warm worker startup exceeded {self.startup_timeout_seconds} seconds"
+            )
+            # Do not immediately create another GPU session while the previous
+            # Kaggle kernel may still be unwinding and cannot be queried due to
+            # account-level kernels.get restrictions.
+            self._circuit_open_until = now + self.circuit_cooldown_seconds
+            self._launching = False
+            self._startup_started_at = 0.0
+
     def snapshot(self) -> WorkerSnapshot:
+        now = time.time()
         with self._lock:
+            self._expire_stale_startup_locked(now)
             return WorkerSnapshot(
                 enabled=self.enabled,
                 state=self._state.value,
@@ -98,37 +124,47 @@ class WarmImageWorkerManager:
                 circuit_open_until=self._circuit_open_until,
                 kernel_slug=self.kernel_slug,
                 launch_count=self._launch_count,
+                startup_started_at=self._startup_started_at,
             )
 
     def last_error(self) -> str:
         with self._lock:
+            self._expire_stale_startup_locked(time.time())
             return self._last_error
 
     def is_healthy(self) -> bool:
+        now = time.time()
         with self._lock:
+            self._expire_stale_startup_locked(now)
             return (
                 self.enabled
                 and self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}
-                and time.time() - self._last_seen < self.heartbeat_ttl
+                and now - self._last_seen < self.heartbeat_ttl
             )
 
     def ensure_started(self) -> bool:
+        """Start/reuse the warm worker. Returns False when warm mode is unavailable."""
         if not self.enabled:
             return False
         now = time.time()
         with self._lock:
+            self._expire_stale_startup_locked(now)
             if self._circuit_open_until > now:
                 return False
-            alive = (
-                self._state in {WorkerState.STARTING, WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}
-                and (self._state == WorkerState.STARTING or now - self._last_seen < self.heartbeat_ttl)
-            )
-            if alive or self._launching:
+            if self._state is WorkerState.STARTING:
+                return True
+            if (
+                self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}
+                and now - self._last_seen < self.heartbeat_ttl
+            ):
+                return True
+            if self._launching:
                 return True
             self._launching = True
             self._state = WorkerState.STARTING
             self._stage = WorkerState.STARTING.value
             self._last_error = ""
+            self._startup_started_at = now
         threading.Thread(target=self._launch, name="aika-image-warm-launch", daemon=True).start()
         return True
 
@@ -144,31 +180,29 @@ class WarmImageWorkerManager:
             return
         mapping = {
             "booting": WorkerState.STARTING,
-            "supervisor_starting": WorkerState.STARTING,
-            "installing_dependencies": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
-            "child_booting": WorkerState.STARTING,
-            "importing_torch": WorkerState.STARTING,
-            "torch_ready": WorkerState.STARTING,
-            "importing_diffusers": WorkerState.STARTING,
-            "diffusers_ready": WorkerState.STARTING,
-            "importing_transformers": WorkerState.STARTING,
-            "transformers_ready": WorkerState.STARTING,
-            "loading_models": WorkerState.STARTING,
+            "recaption_model_loading": WorkerState.STARTING,
+            "recaption_model_ready": WorkerState.STARTING,
+            "image_model_loading": WorkerState.STARTING,
             "ready": WorkerState.READY,
             "busy": WorkerState.BUSY,
             "idle": WorkerState.IDLE,
             "shutting_down": WorkerState.SHUTTING_DOWN,
             "offline": WorkerState.OFFLINE,
         }
+        now = time.time()
         with self._lock:
-            self._state = mapping.get(normalized, WorkerState.STARTING)
+            state_value = mapping.get(normalized, WorkerState.STARTING)
+            self._state = state_value
             self._stage = normalized or WorkerState.STARTING.value
-            self._last_seen = time.time()
-            if self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}:
+            self._last_seen = now
+            if state_value in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}:
+                self._startup_started_at = 0.0
                 self._failures = 0
                 self._circuit_open_until = 0.0
                 self._last_error = ""
+            elif state_value in {WorkerState.OFFLINE, WorkerState.SHUTTING_DOWN}:
+                self._startup_started_at = 0.0
 
     def record_failure(self, error: str) -> None:
         with self._lock:
@@ -176,6 +210,7 @@ class WarmImageWorkerManager:
             self._state = WorkerState.ERROR
             self._stage = WorkerState.ERROR.value
             self._last_error = error[:2000]
+            self._startup_started_at = 0.0
             if self._failures >= self.circuit_failure_threshold:
                 self._circuit_open_until = time.time() + self.circuit_cooldown_seconds
 
@@ -184,6 +219,7 @@ class WarmImageWorkerManager:
             self._state = WorkerState.OFFLINE
             self._stage = WorkerState.OFFLINE.value
             self._last_seen = time.time()
+            self._startup_started_at = 0.0
 
     def _launch(self) -> None:
         try:
@@ -207,22 +243,6 @@ class WarmImageWorkerManager:
                 submission_retry_attempts=3,
                 submission_retry_delay_seconds=20,
             )
-            launch_started = time.time()
-            try:
-                status = worker.status(self.kernel_slug)
-                if not status.terminal:
-                    deadline = time.time() + 45
-                    while time.time() < deadline:
-                        with self._lock:
-                            if self._last_seen >= launch_started:
-                                return
-                        time.sleep(5)
-                        status = worker.status(self.kernel_slug)
-                        if status.terminal:
-                            break
-            except Exception:
-                pass
-
             launch_title = f"AIKA Warm Image Worker {time.time_ns()}"
             worker.submit_script(
                 slug=self.kernel_slug,
@@ -244,7 +264,7 @@ class WarmImageWorkerManager:
                 self._launching = False
 
     def _worker_source(self, *, base_url: str, worker_token: str) -> str:
-        config = {
+        config = json.dumps({
             "base_url": base_url.rstrip("/"),
             "worker_token": worker_token,
             "image_model": IMAGE_MODEL,
@@ -255,28 +275,23 @@ class WarmImageWorkerManager:
             "poll_seconds": 3,
             "max_images": self.max_images_per_job,
             "delimiter": IMAGE_BATCH_DELIMITER,
-            "deps_dir": "/tmp/aika_warm_deps",
-        }
-        config_json = json.dumps(config, ensure_ascii=False)
-
-        child_template = r'''
+        }, ensure_ascii=False)
+        template = r'''
 from __future__ import annotations
 
 import base64
 from io import BytesIO
 import gc
 import json
-from pathlib import Path
+import os
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 
 CONFIG = json.loads(__CONFIG_JSON__)
-sys.path.insert(0, CONFIG["deps_dir"])
-STAGE_FILE = Path("/tmp/aika_warm_stage")
-READY_FILE = Path("/tmp/aika_warm_ready")
-ERROR_FILE = Path("/tmp/aika_warm_error")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 
 def request(method, path, payload=None, *, timeout=60):
@@ -289,7 +304,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/2.2",
+            "User-Agent": "AIKA-Warm-Image/3.0",
         },
     )
     try:
@@ -304,10 +319,6 @@ def request(method, path, payload=None, *, timeout=60):
 
 
 def signal(state):
-    try:
-        STAGE_FILE.write_text(state, encoding="utf-8")
-    except Exception:
-        pass
     for attempt in range(3):
         try:
             request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
@@ -318,16 +329,12 @@ def signal(state):
     return False
 
 
-def startup_error(stage, exc):
+def report_error(stage, exc):
     detail = (type(exc).__name__ + ": " + str(exc)).replace("\n", " ")[:700]
-    try:
-        ERROR_FILE.write_text(stage + ":" + detail, encoding="utf-8")
-    except Exception:
-        pass
     signal("error:" + stage + ":" + detail)
 
 
-def recaption_batch(command):
+def render_recaption(command):
     delimiter = CONFIG["delimiter"]
     contract = (
         "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "
@@ -375,24 +382,30 @@ def recaption_batch(command):
     return prompts
 
 
-signal("child_booting")
+# Use the exact dependency bootstrap contract already verified by cold Image V2.
+signal("booting")
 try:
-    signal("importing_torch")
     import torch
-    signal("torch_ready")
-
-    signal("importing_diffusers")
     from diffusers import Flux2KleinPipeline
-    signal("diffusers_ready")
-
-    signal("importing_transformers")
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    signal("transformers_ready")
+except (ImportError, AttributeError):
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
+        "sentencepiece", "Pillow<13",
+    ])
+    import torch
+    from diffusers import Flux2KleinPipeline
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA GPU is required")
+if not torch.cuda.is_available():
+    exc = RuntimeError("CUDA GPU is required")
+    report_error("cuda", exc)
+    raise exc
+signal("dependencies_ready")
 
-    signal("loading_models")
+try:
+    signal("recaption_model_loading")
     tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
     recaptioner = AutoModelForCausalLM.from_pretrained(
         CONFIG["recaption_model"],
@@ -400,16 +413,21 @@ try:
         low_cpu_mem_usage=True,
     )
     recaptioner.eval()
-    pipe = Flux2KleinPipeline.from_pretrained(CONFIG["image_model"], torch_dtype=torch.float16)
+    signal("recaption_model_ready")
+
+    signal("image_model_loading")
+    pipe = Flux2KleinPipeline.from_pretrained(
+        CONFIG["image_model"],
+        torch_dtype=torch.float16,
+    )
     pipe.enable_model_cpu_offload()
 except Exception as exc:
-    startup_error("startup", exc)
+    report_error("models", exc)
     raise
 
-READY_FILE.write_text("ready", encoding="utf-8")
 signal("ready")
-
 idle_started = time.monotonic()
+last_idle_signal = 0.0
 while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
     try:
         job = request("GET", "/internal/image/pull", timeout=30)
@@ -417,11 +435,15 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
         time.sleep(float(CONFIG["poll_seconds"]))
         continue
     if not job:
-        signal("idle")
+        now = time.monotonic()
+        if now - last_idle_signal >= 15:
+            signal("idle")
+            last_idle_signal = now
         time.sleep(float(CONFIG["poll_seconds"]))
         continue
 
     idle_started = time.monotonic()
+    last_idle_signal = 0.0
     job_id = str(job["job_id"])
     command = str(job["command"])
     seed = int(job["seed"])
@@ -429,7 +451,7 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
     height = int(job.get("height", 1024))
     signal("busy")
     try:
-        prompts = recaption_batch(command)
+        prompts = render_recaption(command)
         for index, prompt in enumerate(prompts):
             item_started = time.perf_counter()
             generator = torch.Generator(device="cpu").manual_seed((seed + index) % (2 ** 32))
@@ -471,244 +493,4 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
 
 signal("shutting_down")
 '''
-        child_source = (
-            textwrap.dedent(child_template)
-            .replace("__CONFIG_JSON__", repr(config_json))
-            .strip()
-            + "\n"
-        )
-        child_b64 = base64.b64encode(child_source.encode("utf-8")).decode("ascii")
-
-        supervisor_template = r'''
-from __future__ import annotations
-
-import base64
-import json
-import os
-from pathlib import Path
-import shutil
-import signal as signal_module
-import subprocess
-import sys
-import time
-import urllib.error
-import urllib.request
-
-CONFIG = json.loads(__CONFIG_JSON__)
-CHILD_SOURCE = base64.b64decode(__CHILD_B64__).decode("utf-8")
-CHILD_PATH = Path("/tmp/aika_warm_child.py")
-READY_FILE = Path("/tmp/aika_warm_ready")
-ERROR_FILE = Path("/tmp/aika_warm_error")
-STAGE_FILE = Path("/tmp/aika_warm_stage")
-LOG_FILE = Path("/tmp/aika_warm_child.log")
-DEPS_DIR = Path(CONFIG["deps_dir"])
-
-
-def request(method, path, payload=None, *, timeout=60):
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(
-        CONFIG["base_url"] + path,
-        data=body,
-        method=method,
-        headers={
-            "Authorization": "Bearer " + CONFIG["worker_token"],
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Supervisor/2.2",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read()
-            return json.loads(raw.decode("utf-8")) if raw else None
-    except urllib.error.HTTPError as exc:
-        if exc.code == 204:
-            return None
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code} {path}: {detail[:1000]}") from exc
-
-
-def signal(state):
-    for attempt in range(3):
-        try:
-            request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
-            return True
-        except Exception:
-            if attempt < 2:
-                time.sleep(1)
-    return False
-
-
-def report_error(stage, detail):
-    clean = str(detail).replace("\n", " ")[:700]
-    signal("error:" + stage + ":" + clean)
-
-
-def kill_group(proc):
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal_module.SIGKILL)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    try:
-        proc.wait(timeout=10)
-    except Exception:
-        pass
-
-
-def hard_run(command, *, timeout, label, heartbeat_state):
-    proc = subprocess.Popen(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    deadline = time.monotonic() + float(timeout)
-    next_heartbeat = 0.0
-    while proc.poll() is None:
-        now = time.monotonic()
-        if now >= deadline:
-            kill_group(proc)
-            raise TimeoutError(f"{label} exceeded {timeout} seconds")
-        if now >= next_heartbeat:
-            signal(heartbeat_state)
-            next_heartbeat = now + 15
-        time.sleep(1)
-    if proc.returncode != 0:
-        raise RuntimeError(f"{label} exited with code {proc.returncode}")
-
-
-def prepare_dependencies(*, no_cache=False):
-    signal("installing_dependencies")
-    shutil.rmtree(DEPS_DIR, ignore_errors=True)
-    DEPS_DIR.mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--no-deps",
-        "--target", str(DEPS_DIR),
-    ]
-    if no_cache:
-        command.append("--no-cache-dir")
-    command.extend([
-        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
-        "sentencepiece", "Pillow<13",
-    ])
-    hard_run(command, timeout=180, label="dependency overlay", heartbeat_state="installing_dependencies")
-    signal("dependencies_ready")
-
-
-def stage_name():
-    try:
-        return STAGE_FILE.read_text(encoding="utf-8").strip() or "child_booting"
-    except Exception:
-        return "child_booting"
-
-
-def stage_budget(stage):
-    if stage in {"child_booting", "importing_torch", "importing_diffusers", "importing_transformers"}:
-        return 120
-    if stage == "loading_models":
-        return 360
-    return 420
-
-
-def start_child():
-    for path in (READY_FILE, ERROR_FILE, STAGE_FILE):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-    LOG_FILE.write_text("", encoding="utf-8")
-    log_handle = LOG_FILE.open("ab", buffering=0)
-    proc = subprocess.Popen(
-        [sys.executable, str(CHILD_PATH)],
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    return proc, log_handle
-
-
-def wait_ready(proc):
-    current_stage = "child_booting"
-    stage_started = time.monotonic()
-    next_heartbeat = 0.0
-    while True:
-        if READY_FILE.exists():
-            return True, "ready"
-        if ERROR_FILE.exists():
-            try:
-                return False, ERROR_FILE.read_text(encoding="utf-8")[-1500:]
-            except Exception:
-                return False, "child startup error"
-        if proc.poll() is not None:
-            try:
-                tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
-            except Exception:
-                tail = ""
-            return False, f"child exited {proc.returncode}: {tail}"
-
-        observed = stage_name()
-        if observed != current_stage:
-            current_stage = observed
-            stage_started = time.monotonic()
-        now = time.monotonic()
-        if now >= next_heartbeat:
-            signal("supervisor_watch:" + current_stage)
-            next_heartbeat = now + 15
-        budget = stage_budget(current_stage)
-        if now - stage_started > budget:
-            kill_group(proc)
-            return False, f"stage timeout: {current_stage} exceeded {budget}s"
-        time.sleep(2)
-
-
-signal("supervisor_starting")
-CHILD_PATH.write_text(CHILD_SOURCE, encoding="utf-8")
-prepare_dependencies(no_cache=False)
-last_error = ""
-child = None
-handle = None
-for attempt in range(2):
-    child, handle = start_child()
-    ok, detail = wait_ready(child)
-    if ok:
-        break
-    last_error = detail
-    kill_group(child)
-    try:
-        handle.close()
-    except Exception:
-        pass
-    if attempt == 0:
-        prepare_dependencies(no_cache=True)
-else:
-    report_error("child", last_error or "warm child failed to become ready")
-    raise RuntimeError(last_error or "warm child failed to become ready")
-
-try:
-    while child.poll() is None:
-        time.sleep(5)
-    if child.returncode != 0:
-        try:
-            tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
-        except Exception:
-            tail = ""
-        report_error("runtime", f"child exited {child.returncode}: {tail}")
-        raise RuntimeError(f"warm child exited {child.returncode}")
-finally:
-    try:
-        handle.close()
-    except Exception:
-        pass
-'''
-        return (
-            textwrap.dedent(supervisor_template)
-            .replace("__CONFIG_JSON__", repr(config_json))
-            .replace("__CHILD_B64__", repr(child_b64))
-            .strip()
-            + "\n"
-        )
+        return textwrap.dedent(template).replace("__CONFIG_JSON__", repr(config)).strip() + "\n"
