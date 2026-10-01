@@ -265,6 +265,8 @@ import base64
 from io import BytesIO
 import gc
 import json
+import os
+import signal as signal_module
 import subprocess
 import sys
 import time
@@ -321,19 +323,27 @@ def dependency_probe():
         "from diffusers import Flux2KleinPipeline; "
         "from transformers import AutoModelForCausalLM, AutoTokenizer"
     )
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-c", probe],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=60,
-            check=False,
-            start_new_session=True,
-        )
-    except subprocess.TimeoutExpired:
+    process = subprocess.Popen(
+        [sys.executable, "-c", probe],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 60
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal_module.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         signal("dependency_probe_timeout")
         return False
-    if completed.returncode != 0:
+    if process.returncode != 0:
         signal("dependency_probe_failed")
         return False
     signal("dependency_probe_ready")
