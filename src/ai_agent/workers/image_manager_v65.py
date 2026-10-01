@@ -14,6 +14,16 @@ from .image_manager_v6 import WarmImageWorkerManagerV6
 class WarmImageWorkerManagerV65(WarmImageWorkerManagerV6):
     """V6 manager with denoise-step heartbeats embedded in the worker source."""
 
+    # FLUX can spend materially longer than V6's original 120s generate window
+    # preparing/offloading models before the first denoising callback is able to
+    # fire. Keep that pre-denoise window bounded, but allow enough time for a
+    # healthy render to reach step heartbeats. 300s remains well below the
+    # project's hard 10-minute no-stall ceiling.
+    STAGE_TIMEOUTS = {
+        **WarmImageWorkerManagerV6.STAGE_TIMEOUTS,
+        "generate": 300.0,
+    }
+
     def _worker_source(
         self,
         *,
