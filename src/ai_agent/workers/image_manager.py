@@ -273,7 +273,7 @@ import urllib.request
 CONFIG = json.loads(__CONFIG_JSON__)
 
 
-def request(method, path, payload=None):
+def request(method, path, payload=None, *, timeout=60):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(
         CONFIG["base_url"] + path,
@@ -287,7 +287,7 @@ def request(method, path, payload=None):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=180) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read()
             return json.loads(raw.decode("utf-8")) if raw else None
     except urllib.error.HTTPError as exc:
@@ -298,7 +298,16 @@ def request(method, path, payload=None):
 
 
 def signal(state):
-    request("POST", "/internal/image/heartbeat", {"state": state})
+    last_error = None
+    for attempt in range(3):
+        try:
+            request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1)
+    raise RuntimeError(f"heartbeat callback failed for {state}: {last_error}") from last_error
 
 
 def report_startup_error(stage, exc):
@@ -424,7 +433,7 @@ signal("ready")
 
 idle_started = time.monotonic()
 while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
-    job = request("GET", "/internal/image/pull")
+    job = request("GET", "/internal/image/pull", timeout=30)
     if not job:
         signal("idle")
         time.sleep(float(CONFIG["poll_seconds"]))
@@ -462,7 +471,7 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
                 "image_b64": base64.b64encode(buffer.getvalue()).decode("ascii"),
                 "generation_prompt": prompt,
                 "elapsed_seconds": round(time.perf_counter() - item_started, 3),
-            })
+            }, timeout=180)
     except Exception as exc:
         try:
             recaptioner.to("cpu")
@@ -472,7 +481,7 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
         request("POST", "/internal/image/result", {
             "job_id": job_id,
             "error": f"{type(exc).__name__}: {exc}"[:2000],
-        })
+        }, timeout=60)
     signal("ready")
 
 signal("shutting_down")
