@@ -2,6 +2,15 @@
 
 The warm path is additive and gated by AIKA_IMAGE_WARM_WORKER. The verified cold
 Image V2 provider remains the fallback until the warm path is promoted.
+
+Lifecycle invariant:
+- one active worker session at a time;
+- worker liveness is represented by a renewable session lease;
+- a running image job is represented by a renewable job lease;
+- a BUSY worker is never relaunched merely because generation takes longer than
+  the normal heartbeat TTL;
+- stale workers cannot pull jobs or submit results after their lease/session was
+  revoked.
 """
 from __future__ import annotations
 
@@ -12,6 +21,7 @@ import os
 import threading
 import time
 import textwrap
+from uuid import uuid4
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_v2 import (
@@ -44,10 +54,14 @@ class WorkerSnapshot:
     kernel_slug: str
     launch_count: int
     startup_started_at: float
+    session_id: str
+    lease_expires_at: float
+    current_job_id: str
+    job_lease_expires_at: float
 
 
 class WarmImageWorkerManager:
-    """Launch one reusable Kaggle image worker and monitor its heartbeat."""
+    """Own the single warm image worker session and its renewable leases."""
 
     def __init__(
         self,
@@ -56,6 +70,8 @@ class WarmImageWorkerManager:
         idle_seconds: int = 300,
         heartbeat_ttl: int = 60,
         startup_timeout_seconds: int = 420,
+        worker_lease_seconds: int = 45,
+        job_lease_seconds: int = 45,
         circuit_failure_threshold: int = 3,
         circuit_cooldown_seconds: int = 300,
         max_images_per_job: int = 6,
@@ -66,12 +82,18 @@ class WarmImageWorkerManager:
             raise ValueError("heartbeat_ttl must be positive")
         if startup_timeout_seconds <= 0:
             raise ValueError("startup_timeout_seconds must be positive")
+        if worker_lease_seconds < 20:
+            raise ValueError("worker_lease_seconds must be at least 20")
+        if job_lease_seconds < 20:
+            raise ValueError("job_lease_seconds must be at least 20")
         if max_images_per_job <= 0 or max_images_per_job > 8:
             raise ValueError("max_images_per_job must be between 1 and 8")
         self.kernel_slug = kernel_slug
         self.idle_seconds = idle_seconds
-        self.heartbeat_ttl = heartbeat_ttl
+        self.heartbeat_ttl = heartbeat_ttl  # retained for status compatibility only
         self.startup_timeout_seconds = startup_timeout_seconds
+        self.worker_lease_seconds = worker_lease_seconds
+        self.job_lease_seconds = job_lease_seconds
         self.circuit_failure_threshold = circuit_failure_threshold
         self.circuit_cooldown_seconds = circuit_cooldown_seconds
         self.max_images_per_job = max_images_per_job
@@ -85,6 +107,10 @@ class WarmImageWorkerManager:
         self._launching = False
         self._last_error = ""
         self._launch_count = 0
+        self._session_id = ""
+        self._lease_expires_at = 0.0
+        self._current_job_id = ""
+        self._job_lease_expires_at = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -92,26 +118,73 @@ class WarmImageWorkerManager:
             "1", "true", "yes", "on"
         }
 
-    def _expire_stale_startup_locked(self, now: float) -> None:
+    def _session_live_locked(self, now: float) -> bool:
+        if not self._session_id:
+            return False
+        if self._state is WorkerState.STARTING:
+            return (
+                self._startup_started_at > 0
+                and now - self._startup_started_at < self.startup_timeout_seconds
+            )
+        if self._state in {WorkerState.ERROR, WorkerState.OFFLINE, WorkerState.SHUTTING_DOWN}:
+            return False
+        # During BUSY, either the worker lease or the job lease is sufficient to
+        # keep the session authoritative. Both are renewed by the independent
+        # worker heartbeat thread.
+        return self._lease_expires_at > now or (
+            bool(self._current_job_id) and self._job_lease_expires_at > now
+        )
+
+    def _clear_session_locked(self) -> None:
+        self._session_id = ""
+        self._lease_expires_at = 0.0
+        self._current_job_id = ""
+        self._job_lease_expires_at = 0.0
+        self._startup_started_at = 0.0
+        self._launching = False
+
+    def _record_failure_locked(self, error: str, *, stage: str = "error") -> None:
+        self._failures += 1
+        self._state = WorkerState.ERROR
+        self._stage = stage
+        self._last_error = error[:2000]
+        self._clear_session_locked()
+        if self._failures >= self.circuit_failure_threshold:
+            self._circuit_open_until = time.time() + self.circuit_cooldown_seconds
+
+    def _expire_stale_locked(self, now: float) -> None:
         if (
             self._state is WorkerState.STARTING
             and self._startup_started_at > 0
             and now - self._startup_started_at >= self.startup_timeout_seconds
         ):
-            self._failures += 1
-            self._state = WorkerState.ERROR
-            self._stage = "startup_timeout"
-            self._last_error = (
-                f"warm worker startup exceeded {self.startup_timeout_seconds} seconds"
+            self._record_failure_locked(
+                f"warm worker startup exceeded {self.startup_timeout_seconds} seconds",
+                stage="startup_timeout",
             )
-            self._circuit_open_until = now + self.circuit_cooldown_seconds
-            self._launching = False
-            self._startup_started_at = 0.0
+            # Do not immediately create another GPU session while the previous
+            # Kaggle kernel may still be unwinding.
+            self._circuit_open_until = max(
+                self._circuit_open_until, now + self.circuit_cooldown_seconds
+            )
+            return
+
+        if self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}:
+            worker_expired = bool(self._session_id) and self._lease_expires_at <= now
+            job_expired = (
+                not self._current_job_id or self._job_lease_expires_at <= now
+            )
+            if worker_expired and job_expired:
+                stale_job = self._current_job_id
+                detail = "warm worker lease expired"
+                if stale_job:
+                    detail += f" while processing {stale_job}"
+                self._record_failure_locked(detail, stage="lease_expired")
 
     def snapshot(self) -> WorkerSnapshot:
         now = time.time()
         with self._lock:
-            self._expire_stale_startup_locked(now)
+            self._expire_stale_locked(now)
             return WorkerSnapshot(
                 enabled=self.enabled,
                 state=self._state.value,
@@ -122,97 +195,184 @@ class WarmImageWorkerManager:
                 kernel_slug=self.kernel_slug,
                 launch_count=self._launch_count,
                 startup_started_at=self._startup_started_at,
+                session_id=self._session_id,
+                lease_expires_at=self._lease_expires_at,
+                current_job_id=self._current_job_id,
+                job_lease_expires_at=self._job_lease_expires_at,
             )
 
     def last_error(self) -> str:
         with self._lock:
-            self._expire_stale_startup_locked(time.time())
+            self._expire_stale_locked(time.time())
             return self._last_error
 
     def is_healthy(self) -> bool:
         now = time.time()
         with self._lock:
-            self._expire_stale_startup_locked(now)
-            return (
-                self.enabled
-                and self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}
-                and now - self._last_seen < self.heartbeat_ttl
-            )
+            self._expire_stale_locked(now)
+            return self.enabled and self._session_live_locked(now)
 
     def ensure_started(self) -> bool:
+        """Ensure one authoritative warm session exists; never double-launch it."""
         if not self.enabled:
             return False
         now = time.time()
         with self._lock:
-            self._expire_stale_startup_locked(now)
+            self._expire_stale_locked(now)
             if self._circuit_open_until > now:
                 return False
-            if self._state is WorkerState.STARTING:
+            if self._session_live_locked(now) or self._launching:
                 return True
-            if (
-                self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}
-                and now - self._last_seen < self.heartbeat_ttl
-            ):
-                return True
-            if self._launching:
-                return True
+            session_id = uuid4().hex
+            self._session_id = session_id
             self._launching = True
             self._state = WorkerState.STARTING
             self._stage = WorkerState.STARTING.value
             self._last_error = ""
             self._startup_started_at = now
-        threading.Thread(target=self._launch, name="aika-image-warm-launch", daemon=True).start()
+            self._lease_expires_at = 0.0
+            self._current_job_id = ""
+            self._job_lease_expires_at = 0.0
+        threading.Thread(
+            target=self._launch,
+            args=(session_id,),
+            name="aika-image-warm-launch",
+            daemon=True,
+        ).start()
         return True
 
-    def heartbeat(self, state: str) -> None:
+    def heartbeat(self, session_id: str, state: str, *, current_job_id: str = "") -> bool:
+        """Renew the authoritative worker and (when BUSY) job leases."""
+        session_id = session_id.strip()
+        if not session_id:
+            raise ValueError("worker session id is required")
         raw = state.strip()
-        normalized = raw.casefold()
-        if normalized.startswith("error:"):
-            detail = raw.split(":", 1)[1].strip() or "warm worker startup failed"
-            self.record_failure(detail)
-            with self._lock:
-                self._last_seen = time.time()
-                self._stage = normalized[:2000]
-            return
-        mapping = {
-            "ready": WorkerState.READY,
-            "busy": WorkerState.BUSY,
-            "idle": WorkerState.IDLE,
-            "shutting_down": WorkerState.SHUTTING_DOWN,
-            "offline": WorkerState.OFFLINE,
-        }
+        normalized = raw.casefold() or "ready"
         now = time.time()
         with self._lock:
+            self._expire_stale_locked(now)
+            # A Railway restart may lose only in-memory state while the authenticated
+            # Kaggle worker remains alive. Adopt the first valid alive heartbeat.
+            if not self._session_id and normalized in {"ready", "busy", "idle"}:
+                self._session_id = session_id
+                self._startup_started_at = 0.0
+                self._last_error = ""
+            if session_id != self._session_id:
+                return False
+            if normalized.startswith("error:"):
+                detail = raw.split(":", 1)[1].strip() or "warm worker failed"
+                self._last_seen = now
+                self._record_failure_locked(detail, stage=normalized[:2000])
+                return True
+
+            mapping = {
+                "ready": WorkerState.READY,
+                "busy": WorkerState.BUSY,
+                "idle": WorkerState.IDLE,
+                "shutting_down": WorkerState.SHUTTING_DOWN,
+                "offline": WorkerState.OFFLINE,
+            }
             state_value = mapping.get(normalized, WorkerState.STARTING)
             self._state = state_value
-            self._stage = normalized or WorkerState.STARTING.value
+            self._stage = normalized
             self._last_seen = now
+
             if state_value in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}:
+                self._lease_expires_at = now + self.worker_lease_seconds
                 self._startup_started_at = 0.0
                 self._failures = 0
                 self._circuit_open_until = 0.0
                 self._last_error = ""
+                if state_value is WorkerState.BUSY and current_job_id:
+                    if self._current_job_id in {"", current_job_id}:
+                        self._current_job_id = current_job_id
+                        self._job_lease_expires_at = now + self.job_lease_seconds
+                    else:
+                        return False
             elif state_value in {WorkerState.OFFLINE, WorkerState.SHUTTING_DOWN}:
-                self._startup_started_at = 0.0
+                self._lease_expires_at = 0.0
+                if not self._current_job_id:
+                    self._clear_session_locked()
+            return True
+
+    def claim_job(self, session_id: str, job_id: str) -> bool:
+        """Atomically lease the next job to the authoritative session."""
+        now = time.time()
+        session_id = session_id.strip()
+        job_id = job_id.strip()
+        with self._lock:
+            self._expire_stale_locked(now)
+            if not session_id or session_id != self._session_id:
+                return False
+            if not self._session_live_locked(now):
+                return False
+            if self._current_job_id and self._current_job_id != job_id:
+                if self._job_lease_expires_at > now:
+                    return False
+                self._current_job_id = ""
+                self._job_lease_expires_at = 0.0
+            self._current_job_id = job_id
+            self._job_lease_expires_at = now + self.job_lease_seconds
+            self._lease_expires_at = max(
+                self._lease_expires_at, now + self.worker_lease_seconds
+            )
+            self._state = WorkerState.BUSY
+            self._stage = WorkerState.BUSY.value
+            return True
+
+    def validate_job_session(self, session_id: str, job_id: str) -> bool:
+        now = time.time()
+        with self._lock:
+            self._expire_stale_locked(now)
+            return (
+                bool(session_id)
+                and session_id == self._session_id
+                and job_id == self._current_job_id
+                and self._job_lease_expires_at > now
+            )
+
+    def job_lease_alive(self, job_id: str) -> bool:
+        now = time.time()
+        with self._lock:
+            self._expire_stale_locked(now)
+            return (
+                job_id == self._current_job_id
+                and self._job_lease_expires_at > now
+                and bool(self._session_id)
+            )
+
+    def release_job(self, session_id: str, job_id: str) -> bool:
+        now = time.time()
+        with self._lock:
+            if session_id != self._session_id or job_id != self._current_job_id:
+                return False
+            self._current_job_id = ""
+            self._job_lease_expires_at = 0.0
+            self._state = WorkerState.READY
+            self._stage = WorkerState.READY.value
+            self._last_seen = now
+            self._lease_expires_at = now + self.worker_lease_seconds
+            return True
+
+    def invalidate_job(self, job_id: str, reason: str) -> None:
+        """Revoke the whole worker session so a stale result cannot win a race."""
+        with self._lock:
+            if self._current_job_id and self._current_job_id != job_id:
+                return
+            self._record_failure_locked(reason, stage="job_lease_failed")
 
     def record_failure(self, error: str) -> None:
         with self._lock:
-            self._failures += 1
-            self._state = WorkerState.ERROR
-            self._stage = WorkerState.ERROR.value
-            self._last_error = error[:2000]
-            self._startup_started_at = 0.0
-            if self._failures >= self.circuit_failure_threshold:
-                self._circuit_open_until = time.time() + self.circuit_cooldown_seconds
+            self._record_failure_locked(error)
 
     def mark_offline(self) -> None:
         with self._lock:
             self._state = WorkerState.OFFLINE
             self._stage = WorkerState.OFFLINE.value
             self._last_seen = time.time()
-            self._startup_started_at = 0.0
+            self._clear_session_locked()
 
-    def _launch(self) -> None:
+    def _launch(self, session_id: str) -> None:
         try:
             token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
             username = os.environ.get("KAGGLE_USERNAME", "").strip()
@@ -241,29 +401,36 @@ class WarmImageWorkerManager:
                 source=self._worker_source(
                     base_url="https://" + public_domain,
                     worker_token=worker_token,
+                    session_id=session_id,
                 ),
                 enable_internet=True,
                 enable_gpu=True,
                 is_private=True,
             )
             with self._lock:
-                self._launch_count += 1
+                if self._session_id == session_id:
+                    self._launch_count += 1
         except Exception as exc:
-            self.record_failure(f"{type(exc).__name__}: {exc}")
+            with self._lock:
+                if self._session_id == session_id:
+                    self._record_failure_locked(f"{type(exc).__name__}: {exc}")
         finally:
             with self._lock:
-                self._launching = False
+                if self._session_id == session_id:
+                    self._launching = False
 
-    def _worker_source(self, *, base_url: str, worker_token: str) -> str:
+    def _worker_source(self, *, base_url: str, worker_token: str, session_id: str = "test-session") -> str:
         config = json.dumps({
             "base_url": base_url.rstrip("/"),
             "worker_token": worker_token,
+            "session_id": session_id,
             "image_model": IMAGE_MODEL,
             "recaption_model": RECAPTION_MODEL,
             "steps": IMAGE_STEPS,
             "guidance": IMAGE_GUIDANCE,
             "idle_seconds": self.idle_seconds,
             "poll_seconds": 3,
+            "heartbeat_seconds": 10,
             "max_images": self.max_images_per_job,
             "delimiter": IMAGE_BATCH_DELIMITER,
         }, ensure_ascii=False)
@@ -277,6 +444,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -284,9 +452,8 @@ import urllib.request
 CONFIG = json.loads(__CONFIG_JSON__)
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
-# Cold-equivalent startup: absolutely no outbound callback before dependencies
-# and both models are fully loaded. Kaggle/Hugging Face initialization must stay
-# network-silent with respect to the Railway callback channel.
+# Keep startup identical to the verified cold Image V2 path. No callback is sent
+# until both models are completely loaded.
 try:
     import torch
     from diffusers import Flux2KleinPipeline
@@ -327,9 +494,10 @@ def request(method, path, payload=None, *, timeout=60):
         method=method,
         headers={
             "Authorization": "Bearer " + CONFIG["worker_token"],
+            "X-AIKA-Worker-Session": CONFIG["session_id"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/3.3",
+            "User-Agent": "AIKA-Warm-Image/4.0",
         },
     )
     try:
@@ -343,15 +511,43 @@ def request(method, path, payload=None, *, timeout=60):
         raise RuntimeError(f"HTTP {exc.code} {path}: {detail[:1000]}") from exc
 
 
-def signal(state):
+state_lock = threading.Lock()
+worker_state = "ready"
+current_job_id = ""
+stop_heartbeat = threading.Event()
+
+
+def set_state(state, job_id=""):
+    global worker_state, current_job_id
+    with state_lock:
+        worker_state = state
+        current_job_id = job_id
+
+
+def current_state():
+    with state_lock:
+        return worker_state, current_job_id
+
+
+def signal(state=None, job_id=None):
+    if state is None or job_id is None:
+        live_state, live_job = current_state()
+        state = live_state if state is None else state
+        job_id = live_job if job_id is None else job_id
+    payload = {"state": state, "current_job_id": job_id}
     for attempt in range(3):
         try:
-            request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
+            request("POST", "/internal/image/heartbeat", payload, timeout=5)
             return True
         except Exception:
             if attempt < 2:
                 time.sleep(1)
     return False
+
+
+def heartbeat_loop():
+    while not stop_heartbeat.wait(float(CONFIG["heartbeat_seconds"])):
+        signal()
 
 
 def render_recaption(command):
@@ -402,72 +598,87 @@ def render_recaption(command):
     return prompts
 
 
-signal("ready")
+# Establish the authoritative worker session only after startup is fully complete.
+set_state("ready", "")
+if not signal("ready", ""):
+    raise RuntimeError("could not register warm worker session")
+heartbeat_thread = threading.Thread(target=heartbeat_loop, name="aika-warm-heartbeat", daemon=True)
+heartbeat_thread.start()
+
 idle_started = time.monotonic()
 last_idle_signal = 0.0
-while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
-    try:
-        job = request("GET", "/internal/image/pull", timeout=30)
-    except Exception:
-        time.sleep(float(CONFIG["poll_seconds"]))
-        continue
-    if not job:
-        now = time.monotonic()
-        if now - last_idle_signal >= 15:
-            signal("idle")
-            last_idle_signal = now
-        time.sleep(float(CONFIG["poll_seconds"]))
-        continue
-
-    idle_started = time.monotonic()
-    last_idle_signal = 0.0
-    job_id = str(job["job_id"])
-    command = str(job["command"])
-    seed = int(job["seed"])
-    width = int(job.get("width", 1024))
-    height = int(job.get("height", 1024))
-    signal("busy")
-    try:
-        prompts = render_recaption(command)
-        for index, prompt in enumerate(prompts):
-            item_started = time.perf_counter()
-            generator = torch.Generator(device="cpu").manual_seed((seed + index) % (2 ** 32))
-            image = pipe(
-                prompt=prompt,
-                height=height,
-                width=width,
-                guidance_scale=float(CONFIG["guidance"]),
-                num_inference_steps=int(CONFIG["steps"]),
-                generator=generator,
-            ).images[0]
-            buffer = BytesIO()
-            image.save(buffer, format="PNG")
-            request("POST", "/internal/image/result", {
-                "job_id": job_id,
-                "provider": "kaggle-image-warm",
-                "model": CONFIG["image_model"],
-                "image_index": index,
-                "image_total": len(prompts),
-                "image_mime": "image/png",
-                "image_b64": base64.b64encode(buffer.getvalue()).decode("ascii"),
-                "generation_prompt": prompt,
-                "elapsed_seconds": round(time.perf_counter() - item_started, 3),
-            }, timeout=180)
-    except Exception as exc:
+try:
+    while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
         try:
-            recaptioner.to("cpu")
-            torch.cuda.empty_cache()
+            job = request("GET", "/internal/image/pull", timeout=30)
         except Exception:
-            pass
-        try:
-            request("POST", "/internal/image/result", {
-                "job_id": job_id,
-                "error": f"{type(exc).__name__}: {exc}"[:2000],
-            }, timeout=60)
-        except Exception:
-            pass
-    signal("ready")
+            time.sleep(float(CONFIG["poll_seconds"]))
+            continue
+        if not job:
+            now = time.monotonic()
+            if now - last_idle_signal >= 15:
+                set_state("idle", "")
+                signal("idle", "")
+                last_idle_signal = now
+            time.sleep(float(CONFIG["poll_seconds"]))
+            continue
 
-signal("shutting_down")
+        idle_started = time.monotonic()
+        last_idle_signal = 0.0
+        job_id = str(job["job_id"])
+        command = str(job["command"])
+        seed = int(job["seed"])
+        width = int(job.get("width", 1024))
+        height = int(job.get("height", 1024))
+        set_state("busy", job_id)
+        signal("busy", job_id)
+        try:
+            prompts = render_recaption(command)
+            for index, prompt in enumerate(prompts):
+                item_started = time.perf_counter()
+                generator = torch.Generator(device="cpu").manual_seed((seed + index) % (2 ** 32))
+                image = pipe(
+                    prompt=prompt,
+                    height=height,
+                    width=width,
+                    guidance_scale=float(CONFIG["guidance"]),
+                    num_inference_steps=int(CONFIG["steps"]),
+                    generator=generator,
+                ).images[0]
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                request("POST", "/internal/image/result", {
+                    "job_id": job_id,
+                    "provider": "kaggle-image-warm",
+                    "model": CONFIG["image_model"],
+                    "image_index": index,
+                    "image_total": len(prompts),
+                    "image_mime": "image/png",
+                    "image_b64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+                    "generation_prompt": prompt,
+                    "elapsed_seconds": round(time.perf_counter() - item_started, 3),
+                }, timeout=180)
+        except Exception as exc:
+            try:
+                recaptioner.to("cpu")
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                request("POST", "/internal/image/result", {
+                    "job_id": job_id,
+                    "error": f"{type(exc).__name__}: {exc}"[:2000],
+                }, timeout=60)
+            except Exception:
+                pass
+        finally:
+            set_state("ready", "")
+            signal("ready", "")
+finally:
+    set_state("shutting_down", "")
+    signal("shutting_down", "")
+    stop_heartbeat.set()
+    heartbeat_thread.join(timeout=2)
+    signal("offline", "")
 '''
         return textwrap.dedent(template).replace("__CONFIG_JSON__", repr(config)).strip() + "\n"
