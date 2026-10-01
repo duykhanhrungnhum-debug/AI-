@@ -1,4 +1,4 @@
-"""Canary-only AIKA chat API entrypoint for Warm Image Worker v6.
+"""Canary-only AIKA chat API entrypoint for Warm Image Worker validation.
 
 Production keeps the normal API entrypoint. The canary uses a separate Kaggle
 kernel slug so soak/regression runs can never compete with the production warm
@@ -10,7 +10,7 @@ import os
 import threading
 
 from ai_agent.chat_session import CHAT_BROKER
-from ai_agent.workers.image_manager_v6 import WarmImageWorkerManagerV6
+from ai_agent.workers.image_manager_v65 import WarmImageWorkerManagerV65
 
 
 CANARY_KERNEL_SLUG = os.environ.get(
@@ -19,7 +19,7 @@ CANARY_KERNEL_SLUG = os.environ.get(
 
 # Replace only the warm image lifecycle. All routing, job storage, auth, chat,
 # translation, TTS and other skills remain unchanged.
-CHAT_BROKER._warm_image = WarmImageWorkerManagerV6(kernel_slug=CANARY_KERNEL_SLUG)
+CHAT_BROKER._warm_image = WarmImageWorkerManagerV65(kernel_slug=CANARY_KERNEL_SLUG)
 
 
 def _canary_selftest_enabled() -> bool:
