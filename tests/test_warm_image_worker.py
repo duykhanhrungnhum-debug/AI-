@@ -28,16 +28,11 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
     assert 'timeout=180' in source
-    assert 'def dependency_probe():' in source
-    assert 'deadline = time.monotonic() + 60' in source
-    assert 'stderr=subprocess.DEVNULL' in source
-    assert 'start_new_session=True' in source
-    assert 'os.killpg(process.pid, signal_module.SIGKILL)' in source
-    assert 'process.wait(timeout=5)' in source
-    assert 'signal("dependency_probe_timeout")' in source
-    assert 'signal("dependency_probe_failed")' in source
-    assert 'signal("dependency_probe_ready")' in source
-    assert 'if not dependency_probe():' in source
+    assert 'def _run_with_alarm(seconds, label, func):' in source
+    assert 'signal_module.setitimer(signal_module.ITIMER_REAL, float(seconds))' in source
+    assert '_run_with_alarm(120, "torch import", load_torch)' in source
+    assert '_run_with_alarm(180, "diffusers import", load_diffusers)' in source
+    assert '_run_with_alarm(120, "transformers import", load_transformers)' in source
     assert 'install_dependencies()' in source
     assert 'timeout=300' in source
     assert 'def import_dependencies():' in source
@@ -51,7 +46,6 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert 'signal("transformers_ready")' in source
     assert 'signal("loading_models")' in source
     assert 'signal("error:" + stage + ":" + detail)' in source
-    assert 'return False' in source
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
