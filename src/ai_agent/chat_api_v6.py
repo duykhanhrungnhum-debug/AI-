@@ -10,14 +10,14 @@ import os
 import threading
 
 from ai_agent.chat_session import CHAT_BROKER
+from ai_agent.chat_api import main as _main
 from ai_agent.workers.image_manager_v65 import WarmImageWorkerManagerV65
 
 
-# Canary isolation must not be overridable by Railway/shared variables.
+# Import production wiring first, then replace only the warm lifecycle. This
+# ordering is intentional: chat_api configures the production V6 manager at
+# import time, so the canary override must happen afterwards and remain final.
 CANARY_KERNEL_SLUG = "ai-agent-image-warm-canary"
-
-# Replace only the warm image lifecycle. All routing, job storage, auth, chat,
-# translation, TTS and other skills remain unchanged.
 CHAT_BROKER._warm_image = WarmImageWorkerManagerV65(kernel_slug=CANARY_KERNEL_SLUG)
 
 
@@ -61,8 +61,6 @@ def _install_canary_fail_fast() -> None:
 
 
 _install_canary_fail_fast()
-
-from ai_agent.chat_api import main as _main  # noqa: E402
 
 
 def main() -> None:
