@@ -19,7 +19,11 @@ def test_v6_source_keeps_qwen_on_cpu_and_flux_as_only_gpu_owner():
     assert 'recaptioner.to("cuda")' not in source
     assert 'return_tensors="pt")' in source
     assert "pipe.enable_model_cpu_offload()" in source
-    assert 'User-Agent": "AIKA-Warm-Image/6.1"' in source
+    assert 'User-Agent": "AIKA-Warm-Image/6.2"' in source
+    assert "torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))" in source
+    assert "torch.set_num_interop_threads(1)" in source
+    assert 'max_new_tokens=int(CONFIG["recaption_max_new_tokens"])' in source
+    assert '"recaption_max_new_tokens": 160' in source
 
 
 def test_v6_source_reports_explicit_stages():
