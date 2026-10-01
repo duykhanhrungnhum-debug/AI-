@@ -19,7 +19,7 @@ def test_v6_source_keeps_qwen_on_cpu_and_flux_as_only_gpu_owner():
     assert 'recaptioner.to("cuda")' not in source
     assert 'return_tensors="pt")' in source
     assert "pipe.enable_model_cpu_offload()" in source
-    assert 'User-Agent": "AIKA-Warm-Image/6.0"' in source
+    assert 'User-Agent": "AIKA-Warm-Image/6.1"' in source
 
 
 def test_v6_source_reports_explicit_stages():
@@ -30,6 +30,7 @@ def test_v6_source_reports_explicit_stages():
         session_id="session-v6",
     )
     assert 'set_state("busy:recaption", job_id)' in source
+    assert 'stage = f"busy:recaption:{item_index}/{item_total}"' in source
     assert 'stage = f"busy:generate:{index + 1}/{total}"' in source
     assert 'stage = f"busy:upload:{index + 1}/{total}"' in source
     assert 'request("POST", "/internal/image/result"' in source
