@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 from http.server import ThreadingHTTPServer
+import threading
 from urllib.parse import parse_qs, urlparse
 
 from ai_agent.api import AIRequestHandler
@@ -172,7 +173,17 @@ def main() -> None:
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
     if not os.environ.get("AI_AGENT_API_TOKEN", "").strip():
         raise SystemExit("AI_AGENT_API_TOKEN is required")
-    ThreadingHTTPServer((host, port), ChatRequestHandler).serve_forever()
+
+    server = ThreadingHTTPServer((host, port), ChatRequestHandler)
+    if os.environ.get("AIKA_WARM_CANARY_SELFTEST", "").strip().casefold() in {"1", "true", "yes", "on"}:
+        from ai_agent.canary_selftest import run_warm_canary_selftest
+
+        threading.Thread(
+            target=run_warm_canary_selftest,
+            name="aika-warm-canary-selftest",
+            daemon=True,
+        ).start()
+    server.serve_forever()
 
 
 if __name__ == "__main__":
