@@ -1,20 +1,25 @@
 """Canary-only AIKA chat API entrypoint for Warm Image Worker v6.
 
-Production keeps the existing entrypoint until v6 passes real reuse + batch E2E.
-The canary must fail immediately when Warm fails; it must never hide a Warm
-regression behind the production Cold Image V2 fallback.
+Production keeps the normal API entrypoint. The canary uses a separate Kaggle
+kernel slug so soak/regression runs can never compete with the production warm
+worker session.
 """
 from __future__ import annotations
 
 import os
+import threading
 
 from ai_agent.chat_session import CHAT_BROKER
 from ai_agent.workers.image_manager_v6 import WarmImageWorkerManagerV6
 
 
+CANARY_KERNEL_SLUG = os.environ.get(
+    "AIKA_WARM_KERNEL_SLUG", "ai-agent-image-warm-canary"
+).strip() or "ai-agent-image-warm-canary"
+
 # Replace only the warm image lifecycle. All routing, job storage, auth, chat,
 # translation, TTS and other skills remain unchanged.
-CHAT_BROKER._warm_image = WarmImageWorkerManagerV6()
+CHAT_BROKER._warm_image = WarmImageWorkerManagerV6(kernel_slug=CANARY_KERNEL_SLUG)
 
 
 def _canary_selftest_enabled() -> bool:
@@ -23,20 +28,19 @@ def _canary_selftest_enabled() -> bool:
     }
 
 
-def _install_canary_fail_fast() -> None:
-    """Disable cold fallback only for the isolated Warm canary self-test.
+def _soak_enabled() -> bool:
+    try:
+        return int(os.environ.get("AIKA_WARM_SOAK_COUNT", "0")) > 0
+    except ValueError:
+        return False
 
-    Production keeps the normal fallback path. In canary mode, any Warm
-    timeout/failure must surface immediately so the test cannot spend another
-    several minutes running Cold Image V2 after Warm is already known-bad.
-    """
-    if not _canary_selftest_enabled():
+
+def _install_canary_fail_fast() -> None:
+    """Disable cold fallback for isolated canary validation."""
+    if not (_canary_selftest_enabled() or _soak_enabled()):
         return
 
     def fail_fast(job_id: str, *, reason: str = "") -> None:
-        # A warm worker writes its concrete exception to job.error immediately
-        # before the broker asks for fallback. That is more specific than a
-        # manager-level generic/circuit error, so preserve it first.
         with CHAT_BROKER._lock:
             job = CHAT_BROKER._jobs.get(job_id)
             worker_error = (job.error if job is not None else "").strip()
@@ -63,6 +67,14 @@ from ai_agent.chat_api import main as _main  # noqa: E402
 
 
 def main() -> None:
+    if _soak_enabled():
+        from ai_agent.canary_soak import run_warm_soak
+
+        threading.Thread(
+            target=run_warm_soak,
+            name="aika-warm-soak",
+            daemon=True,
+        ).start()
     _main()
 
 
