@@ -199,11 +199,12 @@ class WarmImageWorkerManager:
             except Exception:
                 pass
 
-            with self._lock:
-                self._launch_count += 1
+            # Kaggle notebook titles are unique account-wide. Keep the logical
+            # kernel slug stable but make each launch title collision-safe.
+            launch_title = f"AIKA Warm Image Worker {time.time_ns()}"
             worker.submit_script(
                 slug=self.kernel_slug,
-                title="AIKA Warm Image Worker",
+                title=launch_title,
                 source=self._worker_source(
                     base_url="https://" + public_domain,
                     worker_token=worker_token,
@@ -212,6 +213,9 @@ class WarmImageWorkerManager:
                 enable_gpu=True,
                 is_private=True,
             )
+            # Only successful submissions count as worker launches.
+            with self._lock:
+                self._launch_count += 1
         except Exception as exc:
             self.record_failure(f"{type(exc).__name__}: {exc}")
         finally:
