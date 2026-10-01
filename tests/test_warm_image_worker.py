@@ -11,6 +11,7 @@ def test_warm_worker_is_off_by_default_and_tracks_launches(monkeypatch):
     assert snapshot.enabled is False
     assert snapshot.launch_count == 0
     assert snapshot.state == "offline"
+    assert snapshot.stage == "offline"
 
 
 def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
@@ -25,11 +26,17 @@ def test_warm_worker_source_loads_models_once_and_processes_many_jobs():
     assert 'request("GET", "/internal/image/pull")' in source
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
-    assert 'signal("loading_dependencies")' in source
     assert 'signal("installing_dependencies")' in source
     assert 'signal("dependencies_ready")' in source
+    assert 'signal("importing_torch")' in source
+    assert 'signal("torch_ready")' in source
+    assert 'signal("importing_diffusers")' in source
+    assert 'signal("diffusers_ready")' in source
+    assert 'signal("importing_transformers")' in source
+    assert 'signal("transformers_ready")' in source
     assert 'signal("loading_models")' in source
     assert 'signal("error:" + stage + ":" + detail)' in source
+    assert 'dependency bootstrap exceeded 360 seconds' in source
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
@@ -46,6 +53,7 @@ def test_startup_error_heartbeat_sets_manager_error(monkeypatch):
     manager.heartbeat("error:models:RuntimeError: model load failed")
     snapshot = manager.snapshot()
     assert snapshot.state == "error"
+    assert snapshot.stage.startswith("error:models:")
     assert snapshot.failures == 1
     assert snapshot.last_seen > 0
     assert manager.last_error() == "models:RuntimeError: model load failed"
