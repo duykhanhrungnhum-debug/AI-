@@ -71,7 +71,7 @@ class WarmImageWorkerManager:
         heartbeat_ttl: int = 60,
         startup_timeout_seconds: int = 420,
         worker_lease_seconds: int = 45,
-        job_lease_seconds: int = 45,
+        job_lease_seconds: int = 180,
         circuit_failure_threshold: int = 3,
         circuit_cooldown_seconds: int = 300,
         max_images_per_job: int = 6,
@@ -84,8 +84,8 @@ class WarmImageWorkerManager:
             raise ValueError("startup_timeout_seconds must be positive")
         if worker_lease_seconds < 20:
             raise ValueError("worker_lease_seconds must be at least 20")
-        if job_lease_seconds < 20:
-            raise ValueError("job_lease_seconds must be at least 20")
+        if job_lease_seconds < 60:
+            raise ValueError("job_lease_seconds must be at least 60")
         if max_images_per_job <= 0 or max_images_per_job > 8:
             raise ValueError("max_images_per_job must be between 1 and 8")
         self.kernel_slug = kernel_slug
@@ -128,9 +128,6 @@ class WarmImageWorkerManager:
             )
         if self._state in {WorkerState.ERROR, WorkerState.OFFLINE, WorkerState.SHUTTING_DOWN}:
             return False
-        # During BUSY, either the worker lease or the job lease is sufficient to
-        # keep the session authoritative. Both are renewed by the independent
-        # worker heartbeat thread.
         return self._lease_expires_at > now or (
             bool(self._current_job_id) and self._job_lease_expires_at > now
         )
@@ -162,8 +159,6 @@ class WarmImageWorkerManager:
                 f"warm worker startup exceeded {self.startup_timeout_seconds} seconds",
                 stage="startup_timeout",
             )
-            # Do not immediately create another GPU session while the previous
-            # Kaggle kernel may still be unwinding.
             self._circuit_open_until = max(
                 self._circuit_open_until, now + self.circuit_cooldown_seconds
             )
@@ -213,7 +208,6 @@ class WarmImageWorkerManager:
             return self.enabled and self._session_live_locked(now)
 
     def ensure_started(self) -> bool:
-        """Ensure one authoritative warm session exists; never double-launch it."""
         if not self.enabled:
             return False
         now = time.time()
@@ -242,7 +236,6 @@ class WarmImageWorkerManager:
         return True
 
     def heartbeat(self, session_id: str, state: str, *, current_job_id: str = "") -> bool:
-        """Renew the authoritative worker and (when BUSY) job leases."""
         session_id = session_id.strip()
         if not session_id:
             raise ValueError("worker session id is required")
@@ -251,8 +244,6 @@ class WarmImageWorkerManager:
         now = time.time()
         with self._lock:
             self._expire_stale_locked(now)
-            # A Railway restart may lose only in-memory state while the authenticated
-            # Kaggle worker remains alive. Adopt the first valid alive heartbeat.
             if not self._session_id and normalized in {"ready", "busy", "idle"}:
                 self._session_id = session_id
                 self._startup_started_at = 0.0
@@ -296,7 +287,6 @@ class WarmImageWorkerManager:
             return True
 
     def claim_job(self, session_id: str, job_id: str) -> bool:
-        """Atomically lease the next job to the authoritative session."""
         now = time.time()
         session_id = session_id.strip()
         job_id = job_id.strip()
@@ -355,8 +345,9 @@ class WarmImageWorkerManager:
             return True
 
     def invalidate_job(self, job_id: str, reason: str) -> None:
-        """Revoke the whole worker session so a stale result cannot win a race."""
         with self._lock:
+            if self._state is WorkerState.ERROR and not self._session_id:
+                return
             if self._current_job_id and self._current_job_id != job_id:
                 return
             self._record_failure_locked(reason, stage="job_lease_failed")
@@ -497,7 +488,7 @@ def request(method, path, payload=None, *, timeout=60):
             "X-AIKA-Worker-Session": CONFIG["session_id"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/4.0",
+            "User-Agent": "AIKA-Warm-Image/4.1",
         },
     )
     try:
@@ -598,7 +589,6 @@ def render_recaption(command):
     return prompts
 
 
-# Establish the authoritative worker session only after startup is fully complete.
 set_state("ready", "")
 if not signal("ready", ""):
     raise RuntimeError("could not register warm worker session")
@@ -633,8 +623,13 @@ try:
         set_state("busy", job_id)
         signal("busy", job_id)
         try:
+            # Main-thread progress signals protect the lease even when a long
+            # PyTorch/CUDA call temporarily prevents the heartbeat thread from running.
+            signal("busy", job_id)
             prompts = render_recaption(command)
+            signal("busy", job_id)
             for index, prompt in enumerate(prompts):
+                signal("busy", job_id)
                 item_started = time.perf_counter()
                 generator = torch.Generator(device="cpu").manual_seed((seed + index) % (2 ** 32))
                 image = pipe(
@@ -645,6 +640,7 @@ try:
                     num_inference_steps=int(CONFIG["steps"]),
                     generator=generator,
                 ).images[0]
+                signal("busy", job_id)
                 buffer = BytesIO()
                 image.save(buffer, format="PNG")
                 request("POST", "/internal/image/result", {
@@ -658,6 +654,7 @@ try:
                     "generation_prompt": prompt,
                     "elapsed_seconds": round(time.perf_counter() - item_started, 3),
                 }, timeout=180)
+                signal("busy", job_id)
         except Exception as exc:
             try:
                 recaptioner.to("cpu")
