@@ -48,12 +48,18 @@ def test_warm_worker_source_matches_verified_cold_bootstrap_and_has_independent_
     assert "def heartbeat_loop():" in source
     assert "threading.Thread(target=heartbeat_loop" in source
     assert 'set_state("busy", job_id)' in source
-    assert 'signal("busy", job_id)' in source
+    assert source.count('signal("busy", job_id)') >= 6
     assert 'set_state("ready", "")' in source
     assert 'request("GET", "/internal/image/pull", timeout=30)' in source
     assert '"image_total": len(prompts)' in source
     assert '"image_index": index' in source
     assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in source
+
+
+def test_default_job_lease_covers_non_preemptible_gpu_sections():
+    manager = WarmImageWorkerManager()
+    assert manager.job_lease_seconds == 180
+    assert manager.job_lease_seconds > manager.worker_lease_seconds
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
@@ -113,7 +119,7 @@ def test_stale_worker_heartbeat_is_rejected(monkeypatch):
 
 def test_busy_job_lease_prevents_relaunch_when_worker_heartbeat_age_is_long(monkeypatch):
     monkeypatch.setenv("AIKA_IMAGE_WARM_WORKER", "true")
-    manager = WarmImageWorkerManager(worker_lease_seconds=30, job_lease_seconds=30)
+    manager = WarmImageWorkerManager(worker_lease_seconds=30, job_lease_seconds=180)
     now = time.time()
     with manager._lock:
         manager._session_id = "session-a"
@@ -122,7 +128,7 @@ def test_busy_job_lease_prevents_relaunch_when_worker_heartbeat_age_is_long(monk
         manager._last_seen = now - 120
         manager._lease_expires_at = now - 1
         manager._current_job_id = "job-a"
-        manager._job_lease_expires_at = now + 20
+        manager._job_lease_expires_at = now + 120
     assert manager.ensure_started() is True
     snapshot = manager.snapshot()
     assert snapshot.session_id == "session-a"
@@ -133,7 +139,7 @@ def test_busy_job_lease_prevents_relaunch_when_worker_heartbeat_age_is_long(monk
 
 def test_busy_heartbeat_renews_worker_and_job_leases(monkeypatch):
     monkeypatch.setenv("AIKA_IMAGE_WARM_WORKER", "true")
-    manager = WarmImageWorkerManager(worker_lease_seconds=30, job_lease_seconds=30)
+    manager = WarmImageWorkerManager(worker_lease_seconds=30, job_lease_seconds=180)
     with manager._lock:
         manager._session_id = "session-a"
         manager._state = WorkerState.READY
