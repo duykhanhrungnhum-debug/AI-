@@ -12,29 +12,123 @@ import time
 import traceback
 
 from .chat_session import CHAT_BROKER
+from .core.kaggle_worker import KaggleGpuWorker
 
 
 def _flag(name: str) -> bool:
     return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def _wait_job(job_id: str, *, timeout_seconds: float) -> dict:
+def _emit(marker: str, payload: dict) -> None:
+    print(marker + " " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+def _diagnostic_worker() -> KaggleGpuWorker:
+    token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+    username = os.environ.get("KAGGLE_USERNAME", "").strip()
+    if not token or not username:
+        raise RuntimeError("Kaggle canary diagnostics require configured credentials")
+    return KaggleGpuWorker(
+        api_token=token,
+        username=username,
+        timeout=60,
+        submission_retry_attempts=1,
+        submission_retry_delay_seconds=0,
+    )
+
+
+def _kernel_status(worker: KaggleGpuWorker) -> dict:
+    try:
+        status = worker.status("ai-agent-image-warm")
+        return {
+            "status": status.status,
+            "terminal": status.terminal,
+            "successful": status.successful,
+            "failure_message": status.failure_message[-1000:],
+        }
+    except Exception as exc:
+        return {"status_error": f"{type(exc).__name__}: {exc}"[:1200]}
+
+
+def _kernel_log_tail(worker: KaggleGpuWorker, limit: int = 5000) -> str:
+    try:
+        return worker.logs("ai-agent-image-warm")[-limit:]
+    except Exception as exc:
+        return f"LOG_READ_FAILED {type(exc).__name__}: {exc}"[:1200]
+
+
+def _wait_existing_kernel(worker: KaggleGpuWorker, *, timeout_seconds: float = 240) -> None:
+    """Avoid blindly submitting another warm kernel while an old one is alive."""
+    status = _kernel_status(worker)
+    if status.get("terminal") is not False:
+        _emit("AIKA_WARM_CANARY_KERNEL_PRECHECK", status)
+        return
+
+    _emit("AIKA_WARM_CANARY_EXISTING_KERNEL", status)
+    started = time.time()
+    next_report = started
+    while time.time() - started < timeout_seconds:
+        snapshot = CHAT_BROKER._warm_image.snapshot()
+        if snapshot.state in {"ready", "idle", "busy"} and snapshot.last_seen:
+            _emit("AIKA_WARM_CANARY_EXISTING_REUSED", {
+                "state": snapshot.state,
+                "launch_count": snapshot.launch_count,
+            })
+            return
+        status = _kernel_status(worker)
+        if status.get("terminal") is True:
+            _emit("AIKA_WARM_CANARY_EXISTING_TERMINAL", status)
+            return
+        if time.time() >= next_report:
+            _emit("AIKA_WARM_CANARY_EXISTING_WAIT", {
+                "manager_state": snapshot.state,
+                "last_seen": snapshot.last_seen,
+                "launch_count": snapshot.launch_count,
+                "kernel": status,
+            })
+            next_report = time.time() + 30
+        time.sleep(5)
+
+    raise RuntimeError(
+        "existing ai-agent-image-warm kernel stayed non-terminal without becoming ready; log_tail="
+        + _kernel_log_tail(worker)
+    )
+
+
+def _wait_job(job_id: str, *, timeout_seconds: float, worker: KaggleGpuWorker, label: str) -> dict:
     deadline = time.time() + timeout_seconds
+    next_report = time.time() + 30
     while time.time() < deadline:
         state = CHAT_BROKER.get_job(job_id)
         if state["status"] == "done":
             return state
         if state["status"] == "error":
             raise RuntimeError(state.get("error") or state.get("worker_error") or "job failed")
+        if time.time() >= next_report:
+            snapshot = CHAT_BROKER._warm_image.snapshot()
+            _emit("AIKA_WARM_CANARY_JOB_WAIT", {
+                "label": label,
+                "job_status": state.get("status"),
+                "worker_state": state.get("worker_state"),
+                "manager_state": snapshot.state,
+                "launch_count": snapshot.launch_count,
+                "last_seen_age": round(time.time() - snapshot.last_seen, 1) if snapshot.last_seen else None,
+                "kernel": _kernel_status(worker),
+            })
+            next_report = time.time() + 30
         time.sleep(2)
-    raise TimeoutError(f"job {job_id} exceeded {timeout_seconds:.0f}s")
+    raise TimeoutError(
+        f"job {job_id} exceeded {timeout_seconds:.0f}s; kernel={_kernel_status(worker)}; "
+        f"log_tail={_kernel_log_tail(worker)}"
+    )
 
 
-def _run_image(label: str, message: str, *, timeout_seconds: float) -> dict:
+def _run_image(label: str, message: str, *, timeout_seconds: float, worker: KaggleGpuWorker) -> dict:
     started = time.perf_counter()
     job = CHAT_BROKER.create_job(message, message=message)
-    state = _wait_job(job.job_id, timeout_seconds=timeout_seconds)
-    return {
+    _emit("AIKA_WARM_CANARY_JOB_CREATED", {"label": label, "job_id": job.job_id})
+    state = _wait_job(job.job_id, timeout_seconds=timeout_seconds, worker=worker, label=label)
+    result = {
         "label": label,
         "job_id": job.job_id,
         "wall_seconds": round(time.perf_counter() - started, 3),
@@ -45,23 +139,32 @@ def _run_image(label: str, message: str, *, timeout_seconds: float) -> dict:
         "worker_state": state.get("worker_state"),
         "warm_image_enabled": state.get("warm_image_enabled"),
     }
+    _emit("AIKA_WARM_CANARY_JOB_DONE", result)
+    return result
 
 
 def run_warm_canary_selftest() -> None:
     if not _flag("AIKA_WARM_CANARY_SELFTEST"):
         return
 
-    # Let the HTTP server enter serve_forever before Kaggle starts calling back.
     time.sleep(3)
     try:
         if not CHAT_BROKER._warm_image.enabled:
             raise RuntimeError("AIKA_IMAGE_WARM_WORKER is not enabled on canary")
+
+        worker = _diagnostic_worker()
+        _emit("AIKA_WARM_CANARY_BEGIN", {
+            "warm_enabled": True,
+            "kernel": _kernel_status(worker),
+        })
+        _wait_existing_kernel(worker)
 
         before = CHAT_BROKER._warm_image.snapshot()
         first = _run_image(
             "first",
             "AIKA tạo một ảnh chân thực quả táo đỏ trên bàn gỗ, nền sạch.",
             timeout_seconds=720,
+            worker=worker,
         )
         after_first = CHAT_BROKER._warm_image.snapshot()
 
@@ -69,6 +172,7 @@ def run_warm_canary_selftest() -> None:
             "second",
             "AIKA tạo một ảnh chân thực quả cam tươi trên bàn gỗ, nền sạch.",
             timeout_seconds=240,
+            worker=worker,
         )
         after_second = CHAT_BROKER._warm_image.snapshot()
 
@@ -77,6 +181,7 @@ def run_warm_canary_selftest() -> None:
             "AIKA tạo hai ảnh riêng biệt để kiểm tra: ảnh thứ nhất là một bông sen hồng chân thực trên mặt nước; "
             "ảnh thứ hai là một bông hướng dương chân thực ngoài đồng. Đây là hai file ảnh riêng, không ghép chung.",
             timeout_seconds=300,
+            worker=worker,
         )
         after_batch = CHAT_BROKER._warm_image.snapshot()
 
@@ -116,11 +221,11 @@ def run_warm_canary_selftest() -> None:
             "second": second,
             "batch": batch,
         }
-        print("AIKA_WARM_CANARY_SUCCESS " + json.dumps(report, ensure_ascii=False, separators=(",", ":")), flush=True)
+        _emit("AIKA_WARM_CANARY_SUCCESS", report)
     except Exception as exc:
         report = {
             "status": "failure",
             "error": f"{type(exc).__name__}: {exc}",
         }
-        print("AIKA_WARM_CANARY_FAILURE " + json.dumps(report, ensure_ascii=False, separators=(",", ":")), flush=True)
+        _emit("AIKA_WARM_CANARY_FAILURE", report)
         traceback.print_exc()
