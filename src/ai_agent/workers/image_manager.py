@@ -1,17 +1,18 @@
 """Warm Kaggle image-worker lifecycle for AIKA.
 
-This module is additive and gated by AIKA_IMAGE_WARM_WORKER. The verified cold
+The warm path is additive and gated by AIKA_IMAGE_WARM_WORKER. The verified cold
 Image V2 provider remains the fallback until the warm path is promoted.
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from enum import Enum
 import json
 import os
+import textwrap
 import threading
 import time
-import textwrap
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_v2 import (
@@ -144,6 +145,9 @@ class WarmImageWorkerManager:
             return
         mapping = {
             "booting": WorkerState.STARTING,
+            "supervisor_starting": WorkerState.STARTING,
+            "child_booting": WorkerState.STARTING,
+            "repairing_dependencies": WorkerState.STARTING,
             "installing_dependencies": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
             "importing_torch": WorkerState.STARTING,
@@ -242,7 +246,7 @@ class WarmImageWorkerManager:
                 self._launching = False
 
     def _worker_source(self, *, base_url: str, worker_token: str) -> str:
-        config = json.dumps({
+        config = {
             "base_url": base_url.rstrip("/"),
             "worker_token": worker_token,
             "image_model": IMAGE_MODEL,
@@ -253,22 +257,25 @@ class WarmImageWorkerManager:
             "poll_seconds": 3,
             "max_images": self.max_images_per_job,
             "delimiter": IMAGE_BATCH_DELIMITER,
-        }, ensure_ascii=False)
-        template = r'''
+        }
+        config_json = json.dumps(config, ensure_ascii=False)
+
+        child_template = r'''
 from __future__ import annotations
 
 import base64
 from io import BytesIO
 import gc
 import json
-import signal as signal_module
-import subprocess
-import sys
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
 
 CONFIG = json.loads(__CONFIG_JSON__)
+STAGE_FILE = Path("/tmp/aika_warm_stage")
+READY_FILE = Path("/tmp/aika_warm_ready")
+ERROR_FILE = Path("/tmp/aika_warm_error")
 
 
 def request(method, path, payload=None, *, timeout=60):
@@ -281,7 +288,7 @@ def request(method, path, payload=None, *, timeout=60):
             "Authorization": "Bearer " + CONFIG["worker_token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/1.0",
+            "User-Agent": "AIKA-Warm-Image/2.0",
         },
     )
     try:
@@ -296,6 +303,10 @@ def request(method, path, payload=None, *, timeout=60):
 
 
 def signal(state):
+    try:
+        STAGE_FILE.write_text(state, encoding="utf-8")
+    except Exception:
+        pass
     for attempt in range(3):
         try:
             request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
@@ -306,58 +317,13 @@ def signal(state):
     return False
 
 
-def report_startup_error(stage, exc):
+def startup_error(stage, exc):
     detail = (type(exc).__name__ + ": " + str(exc)).replace("\n", " ")[:700]
-    signal("error:" + stage + ":" + detail)
-
-
-def _run_with_alarm(seconds, label, func):
-    previous = signal_module.getsignal(signal_module.SIGALRM)
-
-    def handler(signum, frame):
-        raise TimeoutError(f"{label} exceeded {seconds} seconds")
-
-    signal_module.signal(signal_module.SIGALRM, handler)
-    signal_module.setitimer(signal_module.ITIMER_REAL, float(seconds))
     try:
-        return func()
-    finally:
-        signal_module.setitimer(signal_module.ITIMER_REAL, 0)
-        signal_module.signal(signal_module.SIGALRM, previous)
-
-
-def install_dependencies():
-    signal("installing_dependencies")
-    subprocess.run([
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
-        "sentencepiece", "Pillow<13",
-    ], check=True, timeout=300)
-    signal("dependencies_ready")
-
-
-def import_dependencies():
-    signal("importing_torch")
-    def load_torch():
-        import torch
-        return torch
-    torch_module = _run_with_alarm(120, "torch import", load_torch)
-    signal("torch_ready")
-
-    signal("importing_diffusers")
-    def load_diffusers():
-        from diffusers import Flux2KleinPipeline
-        return Flux2KleinPipeline
-    flux_pipeline = _run_with_alarm(180, "diffusers import", load_diffusers)
-    signal("diffusers_ready")
-
-    signal("importing_transformers")
-    def load_transformers():
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        return AutoModelForCausalLM, AutoTokenizer
-    causal_lm, auto_tokenizer = _run_with_alarm(120, "transformers import", load_transformers)
-    signal("transformers_ready")
-    return torch_module, flux_pipeline, causal_lm, auto_tokenizer
+        ERROR_FILE.write_text(stage + ":" + detail, encoding="utf-8")
+    except Exception:
+        pass
+    signal("error:" + stage + ":" + detail)
 
 
 def recaption_batch(command):
@@ -408,24 +374,24 @@ def recaption_batch(command):
     return prompts
 
 
-signal("booting")
+signal("child_booting")
 try:
-    try:
-        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
-    except (ImportError, AttributeError):
-        install_dependencies()
-        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
-except Exception as exc:
-    report_startup_error("dependencies", exc)
-    raise
+    signal("importing_torch")
+    import torch
+    signal("torch_ready")
 
-if not torch.cuda.is_available():
-    exc = RuntimeError("CUDA GPU is required")
-    report_startup_error("cuda", exc)
-    raise exc
+    signal("importing_diffusers")
+    from diffusers import Flux2KleinPipeline
+    signal("diffusers_ready")
 
-signal("loading_models")
-try:
+    signal("importing_transformers")
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    signal("transformers_ready")
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA GPU is required")
+
+    signal("loading_models")
     tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
     recaptioner = AutoModelForCausalLM.from_pretrained(
         CONFIG["recaption_model"],
@@ -436,9 +402,10 @@ try:
     pipe = Flux2KleinPipeline.from_pretrained(CONFIG["image_model"], torch_dtype=torch.float16)
     pipe.enable_model_cpu_offload()
 except Exception as exc:
-    report_startup_error("models", exc)
+    startup_error("startup", exc)
     raise
 
+READY_FILE.write_text("ready", encoding="utf-8")
 signal("ready")
 
 idle_started = time.monotonic()
@@ -503,4 +470,229 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
 
 signal("shutting_down")
 '''
-        return textwrap.dedent(template).replace("__CONFIG_JSON__", repr(config)).strip() + "\n"
+        child_source = (
+            textwrap.dedent(child_template)
+            .replace("__CONFIG_JSON__", repr(config_json))
+            .strip()
+            + "\n"
+        )
+        child_b64 = base64.b64encode(child_source.encode("utf-8")).decode("ascii")
+
+        supervisor_template = r'''
+from __future__ import annotations
+
+import base64
+import json
+import os
+from pathlib import Path
+import signal as signal_module
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+CONFIG = json.loads(__CONFIG_JSON__)
+CHILD_SOURCE = base64.b64decode(__CHILD_B64__).decode("utf-8")
+CHILD_PATH = Path("/tmp/aika_warm_child.py")
+READY_FILE = Path("/tmp/aika_warm_ready")
+ERROR_FILE = Path("/tmp/aika_warm_error")
+STAGE_FILE = Path("/tmp/aika_warm_stage")
+LOG_FILE = Path("/tmp/aika_warm_child.log")
+
+
+def request(method, path, payload=None, *, timeout=60):
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        CONFIG["base_url"] + path,
+        data=body,
+        method=method,
+        headers={
+            "Authorization": "Bearer " + CONFIG["worker_token"],
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "AIKA-Warm-Supervisor/2.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read()
+            return json.loads(raw.decode("utf-8")) if raw else None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 204:
+            return None
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} {path}: {detail[:1000]}") from exc
+
+
+def signal(state):
+    for attempt in range(3):
+        try:
+            request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
+            return True
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+    return False
+
+
+def report_error(stage, detail):
+    clean = str(detail).replace("\n", " ")[:700]
+    signal("error:" + stage + ":" + clean)
+
+
+def kill_group(proc):
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal_module.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except Exception:
+        pass
+
+
+def hard_run(command, *, timeout, label):
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + float(timeout)
+    while proc.poll() is None:
+        if time.monotonic() >= deadline:
+            kill_group(proc)
+            raise TimeoutError(f"{label} exceeded {timeout} seconds")
+        time.sleep(1)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label} exited with code {proc.returncode}")
+
+
+def install_dependencies():
+    signal("repairing_dependencies")
+    hard_run([
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
+        "sentencepiece", "Pillow<13",
+    ], timeout=300, label="dependency repair")
+    signal("dependencies_ready")
+
+
+def stage_name():
+    try:
+        return STAGE_FILE.read_text(encoding="utf-8").strip() or "child_booting"
+    except Exception:
+        return "child_booting"
+
+
+def stage_budget(stage):
+    if stage in {"child_booting", "importing_torch"}:
+        return 120
+    if stage in {"importing_diffusers", "importing_transformers"}:
+        return 120
+    if stage == "loading_models":
+        return 360
+    return 420
+
+
+def start_child():
+    for path in (READY_FILE, ERROR_FILE, STAGE_FILE):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    LOG_FILE.write_text("", encoding="utf-8")
+    log_handle = LOG_FILE.open("ab", buffering=0)
+    proc = subprocess.Popen(
+        [sys.executable, str(CHILD_PATH)],
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return proc, log_handle
+
+
+def wait_ready(proc):
+    current_stage = "child_booting"
+    stage_started = time.monotonic()
+    while True:
+        if READY_FILE.exists():
+            return True, "ready"
+        if ERROR_FILE.exists():
+            try:
+                return False, ERROR_FILE.read_text(encoding="utf-8")[-1500:]
+            except Exception:
+                return False, "child startup error"
+        if proc.poll() is not None:
+            try:
+                tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
+            except Exception:
+                tail = ""
+            return False, f"child exited {proc.returncode}: {tail}"
+
+        observed = stage_name()
+        if observed != current_stage:
+            current_stage = observed
+            stage_started = time.monotonic()
+        budget = stage_budget(current_stage)
+        if time.monotonic() - stage_started > budget:
+            kill_group(proc)
+            return False, f"stage timeout: {current_stage} exceeded {budget}s"
+        time.sleep(2)
+
+
+signal("supervisor_starting")
+CHILD_PATH.write_text(CHILD_SOURCE, encoding="utf-8")
+last_error = ""
+child = None
+handle = None
+for attempt in range(2):
+    child, handle = start_child()
+    ok, detail = wait_ready(child)
+    if ok:
+        break
+    last_error = detail
+    kill_group(child)
+    try:
+        handle.close()
+    except Exception:
+        pass
+    if attempt == 0:
+        try:
+            install_dependencies()
+        except Exception as exc:
+            report_error("dependencies", f"{type(exc).__name__}: {exc}")
+            raise
+else:
+    report_error("child", last_error or "warm child failed to become ready")
+    raise RuntimeError(last_error or "warm child failed to become ready")
+
+try:
+    while child.poll() is None:
+        time.sleep(5)
+    if child.returncode != 0:
+        try:
+            tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
+        except Exception:
+            tail = ""
+        report_error("runtime", f"child exited {child.returncode}: {tail}")
+        raise RuntimeError(f"warm child exited {child.returncode}")
+finally:
+    try:
+        handle.close()
+    except Exception:
+        pass
+'''
+        return (
+            textwrap.dedent(supervisor_template)
+            .replace("__CONFIG_JSON__", repr(config_json))
+            .replace("__CHILD_B64__", repr(child_b64))
+            .strip()
+            + "\n"
+        )
