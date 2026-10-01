@@ -70,14 +70,19 @@ def test_multi_image_job_exposes_separate_urls_and_files():
 
 def test_warm_results_complete_only_after_all_images_arrive():
     broker = ChatSessionBroker()
+    session_id = "warm-test-session"
+    assert broker._warm_image.heartbeat(session_id, "ready") is True
     job = ChatJob(
         job_id="warm123",
         prompt="tạo hai ảnh riêng",
         message="tạo hai ảnh riêng",
         kind="image",
-        status="processing",
+        status="pending",
     )
     broker._jobs[job.job_id] = job
+    pulled = broker.pull_image_job(session_id)
+    assert pulled is not None
+    assert pulled["job_id"] == "warm123"
 
     broker.finish_image_job({
         "job_id": "warm123",
@@ -88,7 +93,7 @@ def test_warm_results_complete_only_after_all_images_arrive():
         "image_b64": base64.b64encode(PNG1).decode("ascii"),
         "generation_prompt": "first",
         "elapsed_seconds": 2.0,
-    })
+    }, session_id=session_id)
     assert broker.get_job("warm123")["status"] == "processing"
 
     broker.finish_image_job({
@@ -100,7 +105,7 @@ def test_warm_results_complete_only_after_all_images_arrive():
         "image_b64": base64.b64encode(PNG2).decode("ascii"),
         "generation_prompt": "second",
         "elapsed_seconds": 3.0,
-    })
+    }, session_id=session_id)
     status = broker.get_job("warm123")
     assert status["status"] == "done"
     assert status["image_count"] == 2
