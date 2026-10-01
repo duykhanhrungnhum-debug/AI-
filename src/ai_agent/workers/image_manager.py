@@ -221,8 +221,6 @@ class WarmImageWorkerManager:
             except Exception:
                 pass
 
-            # Kaggle notebook titles are unique account-wide. Keep the logical
-            # kernel slug stable but make each launch title collision-safe.
             launch_title = f"AIKA Warm Image Worker {time.time_ns()}"
             worker.submit_script(
                 slug=self.kernel_slug,
@@ -235,7 +233,6 @@ class WarmImageWorkerManager:
                 enable_gpu=True,
                 is_private=True,
             )
-            # Only successful submissions count as worker launches.
             with self._lock:
                 self._launch_count += 1
         except Exception as exc:
@@ -298,45 +295,47 @@ def request(method, path, payload=None, *, timeout=60):
 
 
 def signal(state):
-    last_error = None
     for attempt in range(3):
         try:
             request("POST", "/internal/image/heartbeat", {"state": state}, timeout=5)
-            return
-        except Exception as exc:
-            last_error = exc
+            return True
+        except Exception:
             if attempt < 2:
                 time.sleep(1)
-    raise RuntimeError(f"heartbeat callback failed for {state}: {last_error}") from last_error
+    # Heartbeats are observability, not the work itself. A transient callback
+    # outage must not kill a healthy model/bootstrap process; the canary or
+    # manager watchdog will catch a permanently unreachable worker.
+    return False
 
 
 def report_startup_error(stage, exc):
     detail = (type(exc).__name__ + ": " + str(exc)).replace("\n", " ")[:700]
-    try:
-        signal("error:" + stage + ":" + detail)
-    except Exception:
-        pass
+    signal("error:" + stage + ":" + detail)
 
 
 def install_dependencies():
     signal("installing_dependencies")
-    cmd = [
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--disable-pip-version-check", "--no-input",
-        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors", "sentencepiece", "Pillow<13",
-    ]
-    process = subprocess.Popen(cmd)
-    deadline = time.monotonic() + 360
-    while process.poll() is None:
-        if time.monotonic() >= deadline:
-            process.kill()
-            process.wait()
-            raise TimeoutError("dependency bootstrap exceeded 360 seconds")
-        # Keep Railway aware that startup is alive instead of appearing stuck.
-        signal("installing_dependencies")
-        time.sleep(15)
-    if process.returncode != 0:
-        raise RuntimeError(f"dependency bootstrap exited with code {process.returncode}")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
+        "sentencepiece", "Pillow<13",
+    ])
     signal("dependencies_ready")
+
+
+def import_dependencies():
+    signal("importing_torch")
+    import torch as torch_module
+    signal("torch_ready")
+
+    signal("importing_diffusers")
+    from diffusers import Flux2KleinPipeline as flux_pipeline
+    signal("diffusers_ready")
+
+    signal("importing_transformers")
+    from transformers import AutoModelForCausalLM as causal_lm, AutoTokenizer as auto_tokenizer
+    signal("transformers_ready")
+    return torch_module, flux_pipeline, causal_lm, auto_tokenizer
 
 
 def recaption_batch(command):
@@ -389,22 +388,14 @@ def recaption_batch(command):
 
 signal("booting")
 try:
-    # A fresh Kaggle image worker gets a deterministic, known-good dependency
-    # set before importing the heavier ML modules. This avoids hanging inside a
-    # partially compatible preinstalled diffusers/transformers stack.
-    install_dependencies()
-
-    signal("importing_torch")
-    import torch
-    signal("torch_ready")
-
-    signal("importing_diffusers")
-    from diffusers import Flux2KleinPipeline
-    signal("diffusers_ready")
-
-    signal("importing_transformers")
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    signal("transformers_ready")
+    # Match the already-verified cold Image V2 bootstrap: use Kaggle's current
+    # compatible stack first and install only when an import contract is truly
+    # missing. This avoids a network-heavy pip upgrade on every warm session.
+    try:
+        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
+    except (ImportError, AttributeError):
+        install_dependencies()
+        torch, Flux2KleinPipeline, AutoModelForCausalLM, AutoTokenizer = import_dependencies()
 except Exception as exc:
     report_startup_error("dependencies", exc)
     raise
@@ -433,7 +424,11 @@ signal("ready")
 
 idle_started = time.monotonic()
 while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
-    job = request("GET", "/internal/image/pull", timeout=30)
+    try:
+        job = request("GET", "/internal/image/pull", timeout=30)
+    except Exception:
+        time.sleep(float(CONFIG["poll_seconds"]))
+        continue
     if not job:
         signal("idle")
         time.sleep(float(CONFIG["poll_seconds"]))
@@ -478,10 +473,13 @@ while time.monotonic() - idle_started < float(CONFIG["idle_seconds"]):
             torch.cuda.empty_cache()
         except Exception:
             pass
-        request("POST", "/internal/image/result", {
-            "job_id": job_id,
-            "error": f"{type(exc).__name__}: {exc}"[:2000],
-        }, timeout=60)
+        try:
+            request("POST", "/internal/image/result", {
+                "job_id": job_id,
+                "error": f"{type(exc).__name__}: {exc}"[:2000],
+            }, timeout=60)
+        except Exception:
+            pass
     signal("ready")
 
 signal("shutting_down")
