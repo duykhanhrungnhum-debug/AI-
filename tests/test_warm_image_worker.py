@@ -30,12 +30,15 @@ def test_warm_worker_source_matches_verified_cold_bootstrap_and_reuses_models():
     assert '"diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors"' in source
     assert source.index("try:\n    import torch") < source.index("def request(")
     assert source.index("from diffusers import Flux2KleinPipeline") < source.index("def request(")
-    assert 'signal("dependencies_ready")' in source
-    assert 'signal("recaption_model_loading")' in source
-    assert 'signal("recaption_model_ready")' in source
-    assert 'signal("image_model_loading")' in source
-    assert 'signal("ready")' in source
-    assert 'pipe.enable_model_cpu_offload()' in source
+    assert source.index("AutoTokenizer.from_pretrained") < source.index("def request(")
+    assert source.index("AutoModelForCausalLM.from_pretrained") < source.index("def request(")
+    assert source.index("Flux2KleinPipeline.from_pretrained") < source.index("def request(")
+    assert source.index("pipe.enable_model_cpu_offload()") < source.index("def request(")
+    assert 'signal("dependencies_ready")' not in source
+    assert 'signal("recaption_model_loading")' not in source
+    assert 'signal("recaption_model_ready")' not in source
+    assert 'signal("image_model_loading")' not in source
+    assert source.index('signal("ready")') > source.index("pipe.enable_model_cpu_offload()")
     assert 'recaptioner.to("cuda")' in source
     assert 'recaptioner.to("cpu")' in source
     assert 'request("GET", "/internal/image/pull", timeout=30)' in source
@@ -58,7 +61,7 @@ def test_stale_startup_becomes_error_and_opens_circuit(monkeypatch):
     manager = WarmImageWorkerManager(startup_timeout_seconds=10, circuit_cooldown_seconds=60)
     with manager._lock:
         manager._state = WorkerState.STARTING
-        manager._stage = "booting"
+        manager._stage = "starting"
         manager._startup_started_at = time.time() - 11
     snapshot = manager.snapshot()
     assert snapshot.state == "error"
