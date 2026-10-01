@@ -43,9 +43,16 @@ except (ImportError, AttributeError):
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA GPU is required")
 
-# Tokenizer is CPU-only and cheap to keep resident. FLUX remains warm in host RAM
-# through model_cpu_offload. Qwen is loaded on GPU only while recaptioning a job.
+# Both model weights are loaded exactly once. They wait in host RAM while idle.
+# Only one model is allowed to own CUDA at a time.
 tokenizer = AutoTokenizer.from_pretrained(CONFIG["recaption_model"])
+recaptioner = AutoModelForCausalLM.from_pretrained(
+    CONFIG["recaption_model"],
+    torch_dtype=torch.float16,
+    low_cpu_mem_usage=True,
+)
+recaptioner.eval()
+
 pipe = Flux2KleinPipeline.from_pretrained(
     CONFIG["image_model"],
     torch_dtype=torch.float16,
@@ -64,7 +71,7 @@ def request(method, path, payload=None, *, timeout=60):
             "X-AIKA-Worker-Session": CONFIG["session_id"],
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AIKA-Warm-Image/6.3",
+            "User-Agent": "AIKA-Warm-Image/6.4",
         },
     )
     try:
@@ -185,32 +192,25 @@ BASE_CONTRACT = (
 )
 
 
-def prepare_qwen_gpu():
-    # Diffusers documents maybe_free_model_hooks() as offloading all pipeline
-    # components and restoring model_cpu_offload hooks. That makes Qwen the sole
-    # CUDA owner during recaption without reloading FLUX weights from disk.
+def acquire_qwen_gpu():
+    # FLUX uses Diffusers model_cpu_offload. Before Qwen moves to CUDA, force all
+    # FLUX components back to host RAM. Qwen weights are already resident in RAM,
+    # so there is no per-job from_pretrained/download/model construction.
     if not hasattr(pipe, "maybe_free_model_hooks"):
         raise RuntimeError("diffusers pipeline lacks maybe_free_model_hooks")
     pipe.maybe_free_model_hooks()
     gc.collect()
     torch.cuda.empty_cache()
-    recaptioner = AutoModelForCausalLM.from_pretrained(
-        CONFIG["recaption_model"],
-        torch_dtype=torch.float16,
-        device_map="auto",
-        low_cpu_mem_usage=True,
-    )
-    recaptioner.eval()
-    return recaptioner
+    recaptioner.to("cuda")
 
 
-def release_qwen_gpu(recaptioner):
-    del recaptioner
+def release_qwen_gpu():
+    recaptioner.to("cpu")
     gc.collect()
     torch.cuda.empty_cache()
 
 
-def qwen_generate(recaptioner, instruction):
+def qwen_generate(instruction):
     rendered = tokenizer.apply_chat_template(
         [{"role": "user", "content": instruction}],
         tokenize=False,
@@ -235,20 +235,20 @@ def qwen_generate(recaptioner, instruction):
     return text
 
 
-def render_one_recaption(recaptioner, command):
+def render_one_recaption(command):
     instruction = (
         "Rewrite the USER REQUEST as exactly one faithful, concise English image-generation description. "
         + BASE_CONTRACT
         + "Keep it under 120 words. Output only that one description. Do not number it, label it, explain it, or output JSON.\n"
         + "USER REQUEST: " + command
     )
-    text = qwen_generate(recaptioner, instruction).strip().strip('"')
+    text = qwen_generate(instruction).strip().strip('"')
     if len(text) < 12:
         raise RuntimeError("recaption returned an empty/invalid description")
     return text
 
 
-def render_batch_recaption(recaptioner, command):
+def render_batch_recaption(command):
     delimiter = CONFIG["delimiter"]
     instruction = (
         "Convert the USER REQUEST into concise English image-generation descriptions. " + BASE_CONTRACT +
@@ -259,7 +259,7 @@ def render_batch_recaption(recaptioner, command):
         "Do not output JSON, explanation, scoring, or commentary. Never exceed " + str(CONFIG["max_images"]) + " descriptions.\n"
         "USER REQUEST: " + command
     )
-    planned = qwen_generate(recaptioner, instruction)
+    planned = qwen_generate(instruction)
     prompts = [part.strip().strip('"') for part in planned.split(delimiter) if part.strip()]
     if not prompts:
         raise RuntimeError("recaption returned no image descriptions")
@@ -303,11 +303,12 @@ try:
         width = int(job.get("width", 1024))
         height = int(job.get("height", 1024))
 
-        recaptioner = None
+        qwen_on_gpu = False
         try:
             set_state("busy:recaption", job_id)
             signal("busy:recaption", job_id)
-            recaptioner = prepare_qwen_gpu()
+            acquire_qwen_gpu()
+            qwen_on_gpu = True
 
             explicit_items = split_explicit_items(command)
             if explicit_items:
@@ -317,14 +318,14 @@ try:
                     stage = f"busy:recaption:{item_index}/{item_total}"
                     set_state(stage, job_id)
                     signal(stage, job_id)
-                    prompts.append(render_one_recaption(recaptioner, item_command))
+                    prompts.append(render_one_recaption(item_command))
                     signal(stage, job_id)
             else:
-                prompts = render_batch_recaption(recaptioner, command)
+                prompts = render_batch_recaption(command)
                 signal("busy:recaption", job_id)
 
-            release_qwen_gpu(recaptioner)
-            recaptioner = None
+            release_qwen_gpu()
+            qwen_on_gpu = False
 
             total = len(prompts)
             for index, prompt in enumerate(prompts):
@@ -358,8 +359,6 @@ try:
                     "generation_prompt": prompt,
                     "elapsed_seconds": round(time.perf_counter() - item_started, 3),
                 }, timeout=90)
-            # Return every FLUX component to host RAM while idle so the next job
-            # can hand CUDA to Qwen immediately.
             pipe.maybe_free_model_hooks()
             gc.collect()
             torch.cuda.empty_cache()
@@ -372,8 +371,11 @@ try:
             except Exception:
                 pass
         finally:
-            if recaptioner is not None:
-                release_qwen_gpu(recaptioner)
+            if qwen_on_gpu:
+                try:
+                    release_qwen_gpu()
+                except Exception:
+                    pass
             set_state("ready", "")
             signal("ready", "")
 finally:
