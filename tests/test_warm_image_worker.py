@@ -24,7 +24,7 @@ def test_warm_worker_is_off_by_default_and_tracks_leases(monkeypatch):
     assert snapshot.job_lease_expires_at == 0.0
 
 
-def test_warm_worker_source_matches_verified_cold_bootstrap_and_has_independent_heartbeat():
+def test_warm_worker_source_serializes_qwen_then_flux_and_has_independent_heartbeat():
     manager = WarmImageWorkerManager(idle_seconds=300)
     source = manager._worker_source(
         base_url="https://example.invalid",
@@ -39,10 +39,13 @@ def test_warm_worker_source_matches_verified_cold_bootstrap_and_has_independent_
     assert '"diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors"' in source
     assert source.index("try:\n    import torch") < source.index("def request(")
     assert source.index("from diffusers import Flux2KleinPipeline") < source.index("def request(")
-    assert source.index("AutoTokenizer.from_pretrained") < source.index("def request(")
-    assert source.index("AutoModelForCausalLM.from_pretrained") < source.index("def request(")
     assert source.index("Flux2KleinPipeline.from_pretrained") < source.index("def request(")
     assert source.index("pipe.enable_model_cpu_offload()") < source.index("def request(")
+    assert source.index("def render_recaption") < source.index("AutoTokenizer.from_pretrained")
+    assert 'device_map="auto"' in source
+    assert 'recaptioner.to("cuda")' not in source
+    assert 'recaptioner.to("cpu")' not in source
+    assert source.index("del recaptioner") < source.index("image = pipe(")
     assert '"X-AIKA-Worker-Session": CONFIG["session_id"]' in source
     assert '"heartbeat_seconds": 10' in source
     assert "def heartbeat_loop():" in source
