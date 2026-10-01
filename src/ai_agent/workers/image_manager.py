@@ -37,6 +37,7 @@ class WorkerState(str, Enum):
 class WorkerSnapshot:
     enabled: bool
     state: str
+    stage: str
     last_seen: float
     failures: int
     circuit_open_until: float
@@ -71,6 +72,7 @@ class WarmImageWorkerManager:
         self.max_images_per_job = max_images_per_job
         self._lock = threading.Lock()
         self._state = WorkerState.OFFLINE
+        self._stage = WorkerState.OFFLINE.value
         self._last_seen = 0.0
         self._failures = 0
         self._circuit_open_until = 0.0
@@ -89,6 +91,7 @@ class WarmImageWorkerManager:
             return WorkerSnapshot(
                 enabled=self.enabled,
                 state=self._state.value,
+                stage=self._stage,
                 last_seen=self._last_seen,
                 failures=self._failures,
                 circuit_open_until=self._circuit_open_until,
@@ -124,6 +127,7 @@ class WarmImageWorkerManager:
                 return True
             self._launching = True
             self._state = WorkerState.STARTING
+            self._stage = WorkerState.STARTING.value
             self._last_error = ""
         threading.Thread(target=self._launch, name="aika-image-warm-launch", daemon=True).start()
         return True
@@ -136,14 +140,18 @@ class WarmImageWorkerManager:
             self.record_failure(detail)
             with self._lock:
                 self._last_seen = time.time()
+                self._stage = normalized[:2000]
             return
         mapping = {
             "booting": WorkerState.STARTING,
-            "starting": WorkerState.STARTING,
-            "loading": WorkerState.STARTING,
-            "loading_dependencies": WorkerState.STARTING,
             "installing_dependencies": WorkerState.STARTING,
             "dependencies_ready": WorkerState.STARTING,
+            "importing_torch": WorkerState.STARTING,
+            "torch_ready": WorkerState.STARTING,
+            "importing_diffusers": WorkerState.STARTING,
+            "diffusers_ready": WorkerState.STARTING,
+            "importing_transformers": WorkerState.STARTING,
+            "transformers_ready": WorkerState.STARTING,
             "loading_models": WorkerState.STARTING,
             "ready": WorkerState.READY,
             "busy": WorkerState.BUSY,
@@ -153,6 +161,7 @@ class WarmImageWorkerManager:
         }
         with self._lock:
             self._state = mapping.get(normalized, WorkerState.STARTING)
+            self._stage = normalized or WorkerState.STARTING.value
             self._last_seen = time.time()
             if self._state in {WorkerState.READY, WorkerState.BUSY, WorkerState.IDLE}:
                 self._failures = 0
@@ -163,6 +172,7 @@ class WarmImageWorkerManager:
         with self._lock:
             self._failures += 1
             self._state = WorkerState.ERROR
+            self._stage = WorkerState.ERROR.value
             self._last_error = error[:2000]
             if self._failures >= self.circuit_failure_threshold:
                 self._circuit_open_until = time.time() + self.circuit_cooldown_seconds
@@ -170,6 +180,7 @@ class WarmImageWorkerManager:
     def mark_offline(self) -> None:
         with self._lock:
             self._state = WorkerState.OFFLINE
+            self._stage = WorkerState.OFFLINE.value
             self._last_seen = time.time()
 
     def _launch(self) -> None:
@@ -298,6 +309,27 @@ def report_startup_error(stage, exc):
         pass
 
 
+def install_dependencies():
+    signal("installing_dependencies")
+    cmd = [
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--disable-pip-version-check", "--no-input",
+        "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors", "sentencepiece", "Pillow<13",
+    ]
+    process = subprocess.Popen(cmd)
+    deadline = time.monotonic() + 360
+    while process.poll() is None:
+        if time.monotonic() >= deadline:
+            process.kill()
+            process.wait()
+            raise TimeoutError("dependency bootstrap exceeded 360 seconds")
+        # Keep Railway aware that startup is alive instead of appearing stuck.
+        signal("installing_dependencies")
+        time.sleep(15)
+    if process.returncode != 0:
+        raise RuntimeError(f"dependency bootstrap exited with code {process.returncode}")
+    signal("dependencies_ready")
+
+
 def recaption_batch(command):
     delimiter = CONFIG["delimiter"]
     contract = (
@@ -347,27 +379,27 @@ def recaption_batch(command):
 
 
 signal("booting")
-signal("loading_dependencies")
 try:
-    import torch
-    from diffusers import Flux2KleinPipeline
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-except (ImportError, AttributeError):
-    signal("installing_dependencies")
-    try:
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-            "diffusers", "transformers>=4.57,<5", "accelerate<2", "safetensors",
-            "sentencepiece", "Pillow<13",
-        ])
-        import torch
-        from diffusers import Flux2KleinPipeline
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-    except Exception as exc:
-        report_startup_error("dependencies", exc)
-        raise
+    # A fresh Kaggle image worker gets a deterministic, known-good dependency
+    # set before importing the heavier ML modules. This avoids hanging inside a
+    # partially compatible preinstalled diffusers/transformers stack.
+    install_dependencies()
 
-signal("dependencies_ready")
+    signal("importing_torch")
+    import torch
+    signal("torch_ready")
+
+    signal("importing_diffusers")
+    from diffusers import Flux2KleinPipeline
+    signal("diffusers_ready")
+
+    signal("importing_transformers")
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    signal("transformers_ready")
+except Exception as exc:
+    report_startup_error("dependencies", exc)
+    raise
+
 if not torch.cuda.is_available():
     exc = RuntimeError("CUDA GPU is required")
     report_startup_error("cuda", exc)
