@@ -1,7 +1,17 @@
+import ast
+import base64
 import inspect
+import re
 
 from ai_agent.canary_selftest import _flag
 from ai_agent.workers.image_manager import WarmImageWorkerManager
+
+
+def _child_source(source: str) -> str:
+    match = re.search(r"CHILD_SOURCE = base64\.b64decode\((.+?)\)\.decode\(\"utf-8\"\)", source)
+    assert match is not None
+    encoded = ast.literal_eval(match.group(1))
+    return base64.b64decode(encoded).decode("utf-8")
 
 
 def test_warm_worker_is_off_by_default_and_tracks_launches(monkeypatch):
@@ -20,8 +30,9 @@ def test_warm_worker_source_supervises_one_persistent_model_child():
         base_url="https://example.invalid",
         worker_token="test-token",
     )
-    assert source.count("Flux2KleinPipeline.from_pretrained") == 1
-    assert source.count("AutoModelForCausalLM.from_pretrained") == 1
+    child = _child_source(source)
+    assert child.count("Flux2KleinPipeline.from_pretrained") == 1
+    assert child.count("AutoModelForCausalLM.from_pretrained") == 1
     assert "aika_warm_child.py" in source
     assert "aika_warm_stage" in source
     assert "aika_warm_ready" in source
@@ -33,19 +44,19 @@ def test_warm_worker_source_supervises_one_persistent_model_child():
     assert 'stage timeout: {current_stage}' in source
     assert 'if stage == "loading_models":' in source
     assert 'return 360' in source
-    assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in source
-    assert 'request("GET", "/internal/image/pull", timeout=30)' in source
-    assert '"image_total": len(prompts)' in source
-    assert '"image_index": index' in source
-    assert 'timeout=180' in source
-    assert 'signal("importing_torch")' in source
-    assert 'signal("torch_ready")' in source
-    assert 'signal("importing_diffusers")' in source
-    assert 'signal("diffusers_ready")' in source
-    assert 'signal("importing_transformers")' in source
-    assert 'signal("transformers_ready")' in source
-    assert 'signal("loading_models")' in source
-    assert 'signal("ready")' in source
+    assert "while time.monotonic() - idle_started < float(CONFIG[\"idle_seconds\"]):" in child
+    assert 'request("GET", "/internal/image/pull", timeout=30)' in child
+    assert '"image_total": len(prompts)' in child
+    assert '"image_index": index' in child
+    assert 'timeout=180' in child
+    assert 'signal("importing_torch")' in child
+    assert 'signal("torch_ready")' in child
+    assert 'signal("importing_diffusers")' in child
+    assert 'signal("diffusers_ready")' in child
+    assert 'signal("importing_transformers")' in child
+    assert 'signal("transformers_ready")' in child
+    assert 'signal("loading_models")' in child
+    assert 'signal("ready")' in child
 
 
 def test_warm_launch_title_is_collision_safe_and_counted_after_submit():
