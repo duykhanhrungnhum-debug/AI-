@@ -7,6 +7,7 @@ on:
       - ".github/workflows/aika-chat-public-smoke.yml"
   workflow_dispatch:
 
+# Production verification marker: warm-v6 promotion, 2026-10-01.
 jobs:
   smoke:
     runs-on: ubuntu-latest
