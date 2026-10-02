@@ -115,6 +115,7 @@ class SimpleKaggleVideoTool:
         )
 
     def _wait_for_report(self, run_token: str) -> dict:
+        """Wait only on the tokened output artifact; never stream/poll kernel status."""
         deadline = time.monotonic() + self.max_wait_seconds
         while time.monotonic() < deadline:
             try:
@@ -124,30 +125,18 @@ class SimpleKaggleVideoTool:
                     if parsed.get("status") != "success":
                         raise RuntimeError(str(parsed.get("error") or "video tool failed"))
                     return parsed
-            except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            except (FileNotFoundError, ValueError, json.JSONDecodeError, RuntimeError):
                 pass
-
-            # Status is cheap and bounded. Logs are fetched only after a terminal
-            # failure, never inside the normal polling loop.
-            try:
-                status = self.worker.status(self.kernel_slug)
-                if status.terminal and not status.successful:
-                    detail = status.failure_message or status.status
-                    try:
-                        logs = self.worker.logs(self.kernel_slug)
-                        if logs.strip():
-                            detail = logs[-8000:]
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"Kaggle video tool failed: {detail}")
-            except RuntimeError:
-                raise
-            except Exception:
-                pass
-
             if self.poll_interval:
                 time.sleep(self.poll_interval)
-        raise TimeoutError("AIKA video tool exceeded its bounded wait")
+
+        detail = ""
+        try:
+            detail = self.worker.logs(self.kernel_slug).strip()[-4000:]
+        except Exception:
+            pass
+        suffix = f": {detail}" if detail else ""
+        raise TimeoutError("AIKA video tool exceeded its bounded wait" + suffix)
 
     def _worker_source(
         self,
