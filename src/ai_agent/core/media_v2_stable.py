@@ -1,12 +1,12 @@
 """Stable production wrapper for Image V2.
 
 The normal Kaggle status endpoint is not reliable for the current private-token
-setup (``kernels.get`` can return 403 even while a submitted kernel runs).  This
+setup (``kernels.get`` can return 403 even while a submitted kernel runs). This
 provider therefore treats the output artifact itself as the source of truth.
 
 Each run injects a unique token into the worker log and final report, so an old
 report from the previous kernel version can never be mistaken for the current
-run.  Polling is bounded to <10 minutes and logs are used only for early failure
+run. Polling is bounded to <10 minutes and logs are used only for early failure
 diagnostics, never as a required control-plane dependency.
 """
 from __future__ import annotations
@@ -23,6 +23,35 @@ class StableKaggleImageV2Provider(KaggleImageV2Provider):
     """Image V2 provider that verifies completion from the current output report."""
 
     max_wait_seconds: float = 540.0
+
+    def _harden_recaption_source(self, source: str) -> str:
+        """Keep the general recaption contract neutral and apply culture details only when asked.
+
+        The legacy V2 contract embedded a long áo-dài example in every request. A
+        real E2E run proved that this contaminated an unrelated buffalo prompt by
+        inventing traditional clothing. The stable path keeps one compact generic
+        contract and adds the áo-dài construction rule only when the current item
+        actually requests áo dài.
+        """
+        old_contract = '''base_contract = (\n    "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "\n    "important attributes, and explicit exclusions. Preserve culturally specific names and untranslated proper "\n    "terms verbatim instead of substituting an item from another culture. For named garments, foods, places, or "\n    "art forms, keep the original name and optionally add a short English gloss. For a culturally specific named "\n    "garment, add its canonical silhouette and construction details when known confidently. In particular, Vietnamese "\n    "'áo dài' must remain 'Vietnamese áo dài' and must be described as a fitted high-collared long-sleeved tunic with "\n    "long front and back panels, high side slits, worn over separate loose full-length trousers; it is not a one-piece "\n    "dress, hanbok, qipao, or cheongsam. Do not generalize a named subject. Do not invent body parts, objects, text, "\n    "logos, or requirements that the user did not request."\n)\n'''
+        new_contract = '''def contract_for(user_request):\n    contract = (\n        "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "\n        "important attributes, and explicit exclusions. Translate animal species and breed names precisely; never "\n        "replace one species with a related animal, a generic livestock term, or a sex term such as bull/cow. When an "\n        "animal name is Vietnamese, keep the original Vietnamese species term in parentheses after the precise English "\n        "name when useful for fidelity. Preserve culturally specific names and untranslated proper terms instead of "\n        "substituting an item from another culture. Do not introduce garments, props, body parts, text, logos, or other "\n        "requirements the user did not ask for. Do not generalize a named subject."\n    )\n    if "áo dài" in user_request.casefold():\n        contract += (\n            " Vietnamese 'áo dài' must remain 'Vietnamese áo dài' and be described as a fitted high-collared "\n            "long-sleeved tunic with long front and back panels, high side slits, worn over separate loose full-length "\n            "trousers; it is not a one-piece dress, hanbok, qipao, or cheongsam."\n        )\n    return contract\n'''
+        if old_contract not in source:
+            raise RuntimeError("Image V2 recaption contract changed; stable semantic patch is unsafe")
+        source = source.replace(old_contract, new_contract, 1)
+        natural_marker = '+ base_contract + " "'
+        if source.count(natural_marker) != 2:
+            raise RuntimeError("Image V2 recaption call sites changed; stable semantic patch is unsafe")
+        source = source.replace(
+            natural_marker,
+            '+ contract_for(CONFIG["command"]) + " "',
+            1,
+        )
+        source = source.replace(
+            natural_marker,
+            '+ contract_for(item["command"]) + " "',
+            1,
+        )
+        return source
 
     def _instrument_source(self, source: str, run_token: str) -> str:
         future = "from __future__ import annotations\n"
@@ -46,6 +75,7 @@ class StableKaggleImageV2Provider(KaggleImageV2Provider):
 
     def _run_source(self, source: str):
         run_token = uuid4().hex
+        source = self._harden_recaption_source(source)
         source = self._instrument_source(source, run_token)
         kernel_title = (
             "AI Agent Image V2"
