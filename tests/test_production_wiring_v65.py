@@ -1,13 +1,14 @@
 import importlib
+import inspect
 
-from ai_agent.workers.image_manager_v65 import WarmImageWorkerManagerV65
 
-
-def test_production_api_uses_v65_warm_manager(monkeypatch):
-    monkeypatch.setenv("AIKA_WARM_CANARY_SELFTEST", "false")
-
+def test_production_api_does_not_wire_warm_v65_or_start_selftests():
     module = importlib.import_module("ai_agent.chat_api")
     module = importlib.reload(module)
+    source = inspect.getsource(module)
 
-    assert isinstance(module.CHAT_BROKER._warm_image, WarmImageWorkerManagerV65)
-    assert module.CHAT_BROKER._warm_image.kernel_slug == "ai-agent-image-warm"
+    assert "WarmImageWorkerManagerV65" not in source
+    assert "AIKA_WARM_CANARY_SELFTEST" not in source
+    assert "AIKA_COLD_IMAGE_SELFTEST" not in source
+    assert "run_warm_canary_selftest" not in source
+    assert "run_cold_image_selftest" not in source
