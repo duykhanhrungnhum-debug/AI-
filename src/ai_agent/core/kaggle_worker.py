@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import json
 from time import sleep
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from .invariants import assert_core_invariants
@@ -92,7 +92,8 @@ class KaggleGpuWorker:
         if machine_shape is not None and not machine_shape.strip():
             raise ValueError("machine_shape must be non-empty when provided")
 
-        full_slug = f"{self.username.strip()}/{slug}"
+        owner = self.username.strip()
+        full_slug = f"{owner}/{slug}"
         payload = {
             "slug": full_slug,
             "newTitle": title,
@@ -125,13 +126,37 @@ class KaggleGpuWorker:
 
         version = data.get("versionNumber", data.get("version_number"))
         kernel_id = data.get("kernelId", data.get("kernel_id"))
-        url = data.get("url")
+        raw_url = data.get("url")
+        url = str(raw_url) if raw_url else None
+
+        # Kaggle may normalize/rename a new kernel from its title. Always trust
+        # the canonical ref returned by the push response. Fall back to the URL
+        # path, then finally to the requested slug for older responses.
+        actual_owner = owner
+        actual_slug = slug
+        raw_ref = data.get("ref") or data.get("kernelRef") or data.get("kernel_ref")
+        if isinstance(raw_ref, str) and raw_ref.strip():
+            ref = raw_ref.strip().strip("/")
+            if "/" in ref:
+                ref_owner, ref_slug = ref.split("/", 1)
+                if ref_owner and ref_slug:
+                    actual_owner, actual_slug = ref_owner, ref_slug
+            else:
+                actual_slug = ref
+        elif url:
+            parts = [part for part in urlparse(url).path.split("/") if part]
+            if "code" in parts:
+                index = parts.index("code")
+                if len(parts) >= index + 3:
+                    actual_owner = parts[index + 1]
+                    actual_slug = parts[index + 2]
+
         return KaggleKernelSubmission(
-            owner=self.username.strip(),
-            slug=slug,
+            owner=actual_owner,
+            slug=actual_slug,
             version_number=int(version) if version is not None else None,
             kernel_id=int(kernel_id) if kernel_id is not None else None,
-            url=str(url) if url else None,
+            url=url,
         )
 
     def status(self, slug: str) -> KaggleKernelStatus:
