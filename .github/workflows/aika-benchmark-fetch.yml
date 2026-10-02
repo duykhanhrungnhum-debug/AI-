@@ -16,14 +16,7 @@ jobs:
           for i in $(seq 1 70); do
             curl -fsS "$BASE/status" -o out/status.json || true
             if [ -s out/status.json ]; then
-              STATUS=$(python - <<'PY'
-import json
-try:
-    print(json.load(open('out/status.json')).get('status',''))
-except Exception:
-    print('')
-PY
-)
+              STATUS=$(jq -r '.status // empty' out/status.json 2>/dev/null || true)
               echo "poll=$i status=$STATUS"
               cat out/status.json
               echo
