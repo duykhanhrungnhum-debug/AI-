@@ -34,7 +34,7 @@ class SimpleKaggleVideoTool:
     worker: KaggleGpuWorker
     kernel_slug: str = "ai-agent-video-tool"
     model: str = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-    inference_steps: int = 16
+    inference_steps: int = 20
     guidance_scale: float = 5.0
     poll_interval: float = 5.0
     max_wait_seconds: float = 900.0
@@ -71,9 +71,10 @@ class SimpleKaggleVideoTool:
             fps=fps,
             seed=seed,
         )
+        kernel_title = "AIKA Video " + self.kernel_slug.replace("-", " ").title()
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
-            title="AIKA Simple Video Tool",
+            title=kernel_title,
             source=source,
             machine_shape="NvidiaTeslaT4",
             enable_internet=True,
@@ -201,7 +202,6 @@ class SimpleKaggleVideoTool:
             gpu_name = torch.cuda.get_device_name(0)
             device = torch.device("cuda")
 
-            # Prompt encoding is CPU-only. Once encoded, release UMT5 completely.
             vae = AutoencoderKLWan.from_pretrained(
                 model_id,
                 subfolder="vae",
@@ -236,8 +236,8 @@ class SimpleKaggleVideoTool:
             gc.collect()
             torch.cuda.empty_cache()
 
-            # Wan 1.3B fits a T4 after UMT5 is released. Keep the actual video
-            # model on one device instead of mixing accelerate CPU-offload hooks.
+            # Keep the video transformer and VAE on one CUDA device. This avoids
+            # the CPU/CUDA tensor split caused by accelerate model_cpu_offload.
             pipe.transformer.to(device=device, dtype=torch.float16)
             pipe.vae.to(device=device, dtype=torch.float32)
             prompt_embeds = prompt_embeds.to(device=device, dtype=torch.float16)
