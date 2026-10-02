@@ -1,0 +1,57 @@
+name: AIKA Kaggle Image Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aika-kaggle-image-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Read current Kaggle image logs only
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=60,
+          )
+          try:
+              logs = worker.logs("ai-agent-image-v2")
+              print("AIKA_PROBE_LOG_TAIL_BEGIN")
+              print(logs[-16000:])
+              print("AIKA_PROBE_LOG_TAIL_END")
+          except Exception as exc:
+              print("AIKA_PROBE_LOG_ERROR", type(exc).__name__, str(exc))
+          try:
+              raw = worker.download_output_file("ai-agent-image-v2", "image_v2_report.json")
+              report = json.loads(raw.decode("utf-8"))
+              print("AIKA_PROBE_REPORT", json.dumps({
+                  "run_token": report.get("run_token"),
+                  "worker_total_seconds": report.get("worker_total_seconds"),
+                  "gpu_name": report.get("gpu_name"),
+                  "recaption_model": report.get("recaption_model"),
+                  "items": list((report.get("items") or {}).keys()),
+              }, ensure_ascii=False))
+          except Exception as exc:
+              print("AIKA_PROBE_REPORT_ERROR", type(exc).__name__, str(exc))
+          PY
