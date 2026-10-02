@@ -16,7 +16,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 9
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
@@ -51,7 +51,7 @@ jobs:
           wall_started = time.perf_counter()
           job = CHAT_BROKER.create_job(command, message=command)
           assert job.kind == "image", job.kind
-          deadline = time.time() + 1000
+          deadline = time.time() + 500
           state = None
           while time.time() < deadline:
               state = CHAT_BROKER.get_job(job.job_id)
@@ -60,9 +60,9 @@ jobs:
                   break
               if state["status"] == "error":
                   raise RuntimeError(state.get("error") or "AIKA image job failed")
-              time.sleep(5)
+              time.sleep(3)
           else:
-              raise TimeoutError("AIKA crab frog E2E timed out")
+              raise TimeoutError("AIKA crab frog E2E exceeded 500 seconds")
 
           assert state is not None
           assert state["image_count"] == 2, state
@@ -70,12 +70,10 @@ jobs:
           assert len(prompts) == 2, prompts
           folded = [p.casefold() for p in prompts]
           for prompt in folded:
-              assert "crab" in prompt, prompts
-              assert "frog" in prompt, prompts
-              assert "starfish" not in prompt and "sea star" not in prompt, prompts
-          assert any(x in folded[0] for x in ("realistic", "photo", "photoreal")), prompts[0]
-          assert "3d" in folded[1], prompts[1]
-          assert any(x in folded[1] for x in ("cartoon", "animated", "stylized")), prompts[1]
+              assert "cua" in prompt and "ếch" in prompt, prompts
+              assert "sao biển" not in prompt and "sea star" not in prompt and "starfish" not in prompt, prompts
+          assert "chân thực" in folded[0] or "thật" in folded[0], prompts[0]
+          assert "3d" in folded[1] and "hoạt hình" in folded[1], prompts[1]
 
           evidence = []
           for index in range(2):
@@ -120,4 +118,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-# trigger: nonblocking artifact polling E2E
+# trigger: direct original-language crab-frog verification
