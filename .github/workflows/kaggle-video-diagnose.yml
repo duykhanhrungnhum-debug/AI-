@@ -1,0 +1,60 @@
+name: Diagnose Latest AIKA Video Kernel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/kaggle-video-diagnose.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Inspect latest Kaggle video kernel without submitting GPU
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=30,
+          )
+          slug = "ai-agent-video-smoke"
+          result = {"slug": slug}
+          try:
+              result["status"] = worker.status(slug).__dict__
+          except Exception as exc:
+              result["status_error"] = f"{type(exc).__name__}: {exc}"
+          try:
+              meta = worker.output_metadata(slug)
+              result["output_metadata"] = meta
+              try:
+                  report = worker.download_output_file(slug, "video_tool_report.json").decode("utf-8", errors="replace")
+                  result["report"] = json.loads(report)
+              except Exception as exc:
+                  result["report_error"] = f"{type(exc).__name__}: {exc}"
+          except Exception as exc:
+              result["output_error"] = f"{type(exc).__name__}: {exc}"
+          try:
+              logs = worker.logs(slug)
+              result["logs_tail"] = logs[-12000:]
+          except Exception as exc:
+              result["logs_error"] = f"{type(exc).__name__}: {exc}"
+          print("AIKA_VIDEO_DIAGNOSE")
+          print(json.dumps(result, ensure_ascii=False, indent=2))
+          PY
