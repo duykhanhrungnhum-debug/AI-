@@ -1,1 +1,1 @@
-AIKA one-shot video quality smoke 20 steps 2026-10-02
+AIKA final 20-step video quality smoke 2026-10-02
