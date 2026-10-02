@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import pytest
+
 from ai_agent.core.simple_i2v_tool import SimpleI2VArtifact
-from ai_agent.executors.video import VideoExecutor
+from ai_agent.executors.video import VideoExecutor, assert_video_quality
 
 
 KEYFRAME = b"keyframe-bytes"
 VIDEO = b"\x00\x00\x00\x18ftypisom" + b"V" * 128
+PASSING_EVIDENCE = (
+    "technical:test",
+    "frames:33",
+    "first_frame_similarity:0.99",
+    "last_frame_similarity:0.96",
+    "motion_delta:7.5",
+)
 
 
 class FakeI2V:
@@ -30,7 +39,7 @@ class FakeI2V:
             height=288,
             fps=8.0,
             elapsed_seconds=1.0,
-            evidence=("technical:test",),
+            evidence=PASSING_EVIDENCE,
         )
 
 
@@ -59,3 +68,49 @@ def test_video_tool_uses_explicit_reference_without_generating_keyframe():
 
     assert fake.image == KEYFRAME
     assert artifact.duration_seconds == 4.125
+
+
+def test_quality_gate_rejects_short_or_static_video():
+    short = SimpleI2VArtifact(
+        data=VIDEO,
+        mime_type="video/mp4",
+        provider="fake-i2v",
+        model="Lightricks/LTX-Video",
+        duration_seconds=1.125,
+        width=512,
+        height=288,
+        fps=8.0,
+        elapsed_seconds=1.0,
+        evidence=(
+            "frames:9",
+            "first_frame_similarity:0.99",
+            "last_frame_similarity:0.98",
+            "motion_delta:0.1",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="duration"):
+        assert_video_quality(short)
+
+
+def test_quality_gate_rejects_identity_drift():
+    drifted = SimpleI2VArtifact(
+        data=VIDEO,
+        mime_type="video/mp4",
+        provider="fake-i2v",
+        model="Lightricks/LTX-Video",
+        duration_seconds=4.125,
+        width=512,
+        height=288,
+        fps=8.0,
+        elapsed_seconds=1.0,
+        evidence=(
+            "frames:33",
+            "first_frame_similarity:0.99",
+            "last_frame_similarity:0.50",
+            "motion_delta:7.5",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="identity"):
+        assert_video_quality(drifted)
