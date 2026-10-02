@@ -1,0 +1,70 @@
+name: Recover Current AIKA Video Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/kaggle-video-recover.trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Recover existing one-shot output without submitting GPU
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=30,
+          )
+          out = Path("recovered-video")
+          out.mkdir(exist_ok=True)
+          deadline = time.time() + 720
+          last = ""
+          while time.time() < deadline:
+              try:
+                  report_bytes = worker.download_output_file("ai-agent-video-smoke", "video_tool_report.json")
+                  report = json.loads(report_bytes.decode("utf-8"))
+                  video = worker.download_output_file("ai-agent-video-smoke", "video_tool.mp4")
+                  if report.get("status") != "success":
+                      raise RuntimeError(report)
+                  if len(video) < 12 or video[4:8] != b"ftyp":
+                      raise RuntimeError("invalid MP4")
+                  (out / "report.json").write_bytes(report_bytes)
+                  (out / "smoke.mp4").write_bytes(video)
+                  print("AIKA_VIDEO_RECOVER_OK")
+                  print(json.dumps(report, ensure_ascii=False))
+                  raise SystemExit(0)
+              except SystemExit:
+                  raise
+              except Exception as exc:
+                  last = str(exc)
+                  time.sleep(5)
+          raise TimeoutError("existing Kaggle video did not produce artifact: " + last)
+          PY
+      - name: Upload recovered evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-aika-video-smoke
+          path: recovered-video/
+          if-no-files-found: warn
+          retention-days: 3
