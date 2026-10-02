@@ -23,19 +23,18 @@ jobs:
           hidden_beyond/longform_audio_worker_v3.py
           hidden_beyond/benchmark_v3_worker.py
           scripts/submit_hidden_beyond_audio_worker.py
-          src/ai_agent/core/kaggle_video.py
-          src/ai_agent/core/generative_video_pipeline.py
           src/ai_agent/core/production_learning.py
+          src/ai_agent/core/kaggle_worker.py
           src/ai_agent/core/media_v2.py
+          src/ai_agent/core/media_v2_direct.py
+          src/ai_agent/core/simple_video_tool.py
           src/ai_agent/command/schema.py
-          src/ai_agent/router/skill_router.py
           src/ai_agent/jobs/manager.py
           src/ai_agent/executors/image.py
-          src/ai_agent/workers/image_manager.py
-          src/ai_agent/chat_session.py
+          src/ai_agent/executors/video.py
+          src/ai_agent/agent_broker.py
+          src/ai_agent/media_broker.py
           src/ai_agent/chat_api.py
-          scripts/generate_image_v2.py
-          scripts/kaggle_video_smoke.py
       - name: Run test suite
         run: python -m pytest -q
       - name: Smoke test public Internet retrieval and verification
