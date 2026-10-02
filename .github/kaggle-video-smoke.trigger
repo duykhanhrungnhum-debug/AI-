@@ -1,1 +1,1 @@
-AIKA final 20-step video quality smoke 2026-10-02
+AIKA final observable 40-step T4 video smoke 2026-10-02
