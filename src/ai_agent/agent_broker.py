@@ -14,6 +14,7 @@ import time
 import textwrap
 from uuid import uuid4
 
+from .brain_lifecycle import kernel_is_active, kernel_is_terminal, probe_kernel
 from .core.kaggle_worker import KaggleGpuWorker
 
 
@@ -88,8 +89,13 @@ class AIKAAgentBroker:
         self._worker_state = "idle"
         self._worker_error = ""
         self._worker_last_seen = 0.0
+        self._worker_started_at = 0.0
         self._launching = False
-        self.kernel_slug = "ai-agent-brain-session-v1"
+        self._monitoring = False
+        self.kernel_slug = os.environ.get("AIKA_BRAIN_KERNEL_SLUG", "aika-brain-prod-v2").strip()
+        self.kernel_title = os.environ.get("AIKA_BRAIN_KERNEL_TITLE", "AIKA Brain Prod V2").strip()
+        self._startup_grace_seconds = float(os.environ.get("AIKA_BRAIN_STARTUP_GRACE_SECONDS", "900"))
+        self._heartbeat_stale_seconds = float(os.environ.get("AIKA_BRAIN_HEARTBEAT_STALE_SECONDS", "45"))
 
     def create_job(self, prompt: str) -> AgentJob:
         prompt = prompt.strip()
@@ -150,10 +156,20 @@ class AIKAAgentBroker:
 
     def heartbeat(self, state: str = "ready") -> None:
         normalized = state.strip().casefold()
+        now = time.time()
         with self._lock:
-            self._worker_state = "starting" if normalized in {"booting", "starting", "loading"} else "running"
+            if normalized in {"booting", "starting", "loading"}:
+                self._worker_state = "starting"
+                if self._worker_started_at <= 0:
+                    self._worker_started_at = now
+            elif normalized in {"stopped", "stopping", "idle_exit", "offline"}:
+                self._worker_state = "idle"
+                self._worker_started_at = 0.0
+            else:
+                self._worker_state = "running"
+                self._worker_started_at = 0.0
             self._worker_error = ""
-            self._worker_last_seen = time.time()
+            self._worker_last_seen = now
 
     def finish_job(self, payload: dict) -> None:
         job_id = str(payload.get("job_id", "")).strip()
@@ -191,7 +207,6 @@ class AIKAAgentBroker:
 
         tool, instruction = call
         try:
-            # Import here to keep the brain independent from tool implementation.
             from .media_broker import MEDIA_BROKER
 
             MEDIA_BROKER.create_job(tool, instruction, job_id=job_id)
@@ -217,14 +232,37 @@ class AIKAAgentBroker:
             self._worker_last_seen = time.time()
 
     def ensure_worker(self) -> None:
+        now = time.time()
         with self._lock:
-            alive = self._worker_state == "running" and time.time() - self._worker_last_seen < 45
-            if alive or self._launching:
+            heartbeat_fresh = (
+                self._worker_last_seen > 0
+                and now - self._worker_last_seen < self._heartbeat_stale_seconds
+            )
+            running_alive = self._worker_state == "running" and heartbeat_fresh
+            starting_alive = self._worker_state == "starting" and (
+                heartbeat_fresh
+                or (
+                    self._worker_started_at > 0
+                    and now - self._worker_started_at < self._startup_grace_seconds
+                )
+            )
+            if running_alive or starting_alive or self._launching:
                 return
             self._launching = True
             self._worker_state = "starting"
+            self._worker_started_at = now
             self._worker_error = ""
         threading.Thread(target=self._launch_worker, name="aika-brain-launcher", daemon=True).start()
+
+    def _mark_pending_jobs_error(self, message: str) -> None:
+        with self._lock:
+            self._worker_state = "error"
+            self._worker_error = message[:1000]
+            self._worker_started_at = 0.0
+            for job in self._jobs.values():
+                if job.status == "pending":
+                    job.status = "error"
+                    job.error = self._worker_error
 
     def _launch_worker(self) -> None:
         try:
@@ -249,32 +287,105 @@ class AIKAAgentBroker:
                 submission_retry_attempts=2,
                 submission_retry_delay_seconds=10,
             )
+
+            probe = probe_kernel(worker, self.kernel_slug)
+            if probe.active:
+                with self._lock:
+                    self._worker_state = "starting"
+                    self._worker_error = ""
+                    if self._worker_started_at <= 0:
+                        self._worker_started_at = time.time()
+                self._start_worker_monitor(worker)
+                return
+            if probe.exists and not probe.terminal:
+                raise RuntimeError(f"unexpected Kaggle brain state: {probe.status.status if probe.status else 'unknown'}")
+
             source = self._worker_source(
                 base_url="https://" + public_domain,
                 worker_token=worker_token,
                 model=model,
             )
-            worker.submit_script(
-                slug=self.kernel_slug,
-                title="AIKA Brain Session V1",
-                source=source,
-                enable_internet=True,
-                enable_gpu=True,
-                is_private=True,
-            )
+            try:
+                worker.submit_script(
+                    slug=self.kernel_slug,
+                    title=self.kernel_title,
+                    source=source,
+                    enable_internet=True,
+                    enable_gpu=True,
+                    is_private=True,
+                )
+            except RuntimeError as exc:
+                message = str(exc).casefold()
+                if "kaggle http 409" in message or "already in use" in message:
+                    race_probe = probe_kernel(worker, self.kernel_slug)
+                    if race_probe.active:
+                        with self._lock:
+                            self._worker_state = "starting"
+                            self._worker_error = ""
+                            self._worker_started_at = time.time()
+                        self._start_worker_monitor(worker)
+                        return
+                raise
+
             with self._lock:
                 self._worker_state = "starting"
+                self._worker_error = ""
+                self._worker_started_at = time.time()
+            self._start_worker_monitor(worker)
         except Exception as exc:
-            with self._lock:
-                self._worker_state = "error"
-                self._worker_error = str(exc)[:1000]
-                for job in self._jobs.values():
-                    if job.status == "pending":
-                        job.status = "error"
-                        job.error = self._worker_error
+            self._mark_pending_jobs_error(str(exc))
         finally:
             with self._lock:
                 self._launching = False
+
+    def _start_worker_monitor(self, worker: KaggleGpuWorker) -> None:
+        with self._lock:
+            if self._monitoring:
+                return
+            self._monitoring = True
+        threading.Thread(
+            target=self._monitor_worker_startup,
+            args=(worker,),
+            name="aika-brain-monitor",
+            daemon=True,
+        ).start()
+
+    def _monitor_worker_startup(self, worker: KaggleGpuWorker) -> None:
+        deadline = time.time() + self._startup_grace_seconds
+        try:
+            while time.time() < deadline:
+                with self._lock:
+                    state = self._worker_state
+                    last_seen = self._worker_last_seen
+                if state == "running" and last_seen > 0 and time.time() - last_seen < self._heartbeat_stale_seconds:
+                    return
+
+                time.sleep(15.0)
+                try:
+                    probe = probe_kernel(worker, self.kernel_slug)
+                except Exception as exc:
+                    self._mark_pending_jobs_error(f"Kaggle brain status check failed: {exc}")
+                    return
+
+                if not probe.exists:
+                    self._mark_pending_jobs_error("Kaggle brain notebook disappeared during startup")
+                    return
+                if probe.active:
+                    continue
+                if probe.terminal:
+                    status = probe.status.status if probe.status else "unknown"
+                    detail = probe.status.failure_message if probe.status else ""
+                    suffix = f": {detail}" if detail else ""
+                    self._mark_pending_jobs_error(f"Kaggle brain stopped during startup ({status}){suffix}")
+                    return
+                status = probe.status.status if probe.status else "unknown"
+                self._mark_pending_jobs_error(f"unexpected Kaggle brain state during startup: {status}")
+                return
+
+            self._mark_pending_jobs_error("Kaggle brain startup timed out before ready heartbeat")
+        finally:
+            with self._lock:
+                self._monitoring = False
 
     @staticmethod
     def _worker_source(*, base_url: str, worker_token: str, model: str) -> str:
@@ -292,6 +403,7 @@ class AIKAAgentBroker:
             import json
             import subprocess
             import sys
+            import threading
             import time
             import urllib.error
             import urllib.request
@@ -332,62 +444,85 @@ class AIKAAgentBroker:
                     detail = exc.read().decode("utf-8", errors="replace")
                     raise RuntimeError(f"HTTP {{exc.code}} {{path}}: {{detail[:500]}}") from exc
 
+            loading_done = threading.Event()
+
+            def loading_heartbeat():
+                while not loading_done.wait(15.0):
+                    try:
+                        request("POST", "/internal/chat/heartbeat", {{"state": "loading"}})
+                    except Exception:
+                        pass
+
             request("POST", "/internal/chat/heartbeat", {{"state": "booting"}})
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA GPU is not available")
-            tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
-            model = AutoModelForCausalLM.from_pretrained(
-                CONFIG["model"],
-                torch_dtype=torch.float16,
-                device_map="auto",
-            )
-            model.eval()
+
+            heartbeat_thread = threading.Thread(target=loading_heartbeat, daemon=True)
+            heartbeat_thread.start()
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
+                model = AutoModelForCausalLM.from_pretrained(
+                    CONFIG["model"],
+                    dtype=torch.float16,
+                    device_map="auto",
+                )
+                model.eval()
+            finally:
+                loading_done.set()
+                heartbeat_thread.join(timeout=2.0)
+
             request("POST", "/internal/chat/heartbeat", {{"state": "ready"}})
 
             idle = 0
             heartbeat_tick = 0
-            while idle < int(CONFIG["idle_polls"]):
-                job = request("GET", "/internal/chat/pull")
-                if not job:
-                    idle += 1
-                    heartbeat_tick += 1
-                    if heartbeat_tick >= 3:
-                        request("POST", "/internal/chat/heartbeat", {{"state": "idle"}})
-                        heartbeat_tick = 0
-                    time.sleep(float(CONFIG["poll_seconds"]))
-                    continue
-                idle = 0
-                heartbeat_tick = 0
-                job_id = str(job["job_id"])
-                prompt = str(job["prompt"])
+            try:
+                while idle < int(CONFIG["idle_polls"]):
+                    job = request("GET", "/internal/chat/pull")
+                    if not job:
+                        idle += 1
+                        heartbeat_tick += 1
+                        if heartbeat_tick >= 3:
+                            request("POST", "/internal/chat/heartbeat", {{"state": "idle"}})
+                            heartbeat_tick = 0
+                        time.sleep(float(CONFIG["poll_seconds"]))
+                        continue
+                    idle = 0
+                    heartbeat_tick = 0
+                    job_id = str(job["job_id"])
+                    prompt = str(job["prompt"])
+                    try:
+                        messages = [
+                            {{"role": "system", "content": CONFIG["system_prompt"]}},
+                            {{"role": "user", "content": prompt}},
+                        ]
+                        rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                        inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
+                        generated = model.generate(
+                            **inputs,
+                            max_new_tokens=int(CONFIG["max_new_tokens"]),
+                            do_sample=False,
+                            repetition_penalty=1.05,
+                        )
+                        new_tokens = generated[:, inputs.input_ids.shape[1]:]
+                        text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+                        if not text:
+                            raise RuntimeError("model returned empty text")
+                        request("POST", "/internal/chat/result", {{
+                            "job_id": job_id,
+                            "text": text,
+                            "provider": "kaggle-aika-brain",
+                            "model": CONFIG["model"],
+                        }})
+                    except Exception as exc:
+                        request("POST", "/internal/chat/result", {{
+                            "job_id": job_id,
+                            "error": type(exc).__name__ + ": " + str(exc),
+                        }})
+            finally:
                 try:
-                    messages = [
-                        {{"role": "system", "content": CONFIG["system_prompt"]}},
-                        {{"role": "user", "content": prompt}},
-                    ]
-                    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
-                    generated = model.generate(
-                        **inputs,
-                        max_new_tokens=int(CONFIG["max_new_tokens"]),
-                        do_sample=False,
-                        repetition_penalty=1.05,
-                    )
-                    new_tokens = generated[:, inputs.input_ids.shape[1]:]
-                    text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
-                    if not text:
-                        raise RuntimeError("model returned empty text")
-                    request("POST", "/internal/chat/result", {{
-                        "job_id": job_id,
-                        "text": text,
-                        "provider": "kaggle-aika-brain",
-                        "model": CONFIG["model"],
-                    }})
-                except Exception as exc:
-                    request("POST", "/internal/chat/result", {{
-                        "job_id": job_id,
-                        "error": type(exc).__name__ + ": " + str(exc),
-                    }})
+                    request("POST", "/internal/chat/heartbeat", {{"state": "stopped"}})
+                except Exception:
+                    pass
             print("AIKA_BRAIN_SESSION_IDLE_EXIT")
         """).strip() + "\n"
 
