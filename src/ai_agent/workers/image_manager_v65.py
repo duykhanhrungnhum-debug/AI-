@@ -36,7 +36,7 @@ class WarmImageWorkerManagerV65(WarmImageWorkerManagerV6):
         source = source.replace(load_old, load_new, 1)
 
         pipe_old = '''pipe = Flux2KleinPipeline.from_pretrained(\n    CONFIG["image_model"],\n    torch_dtype=torch.float16,\n)\npipe.enable_model_cpu_offload()\n'''
-        pipe_new = '''pipe = Flux2KleinPipeline.from_pretrained(\n    CONFIG["image_model"],\n    torch_dtype=torch.float16,\n)\ngpu_name = torch.cuda.get_device_name(0)\ngpu_total_bytes = int(torch.cuda.get_device_properties(0).total_memory)\n# BFL documents Klein 4B at about 13 GB VRAM. Require extra headroom before\n# keeping the full pipeline on CUDA; otherwise retain the verified offload path.\nif gpu_total_bytes >= 15 * 1024 ** 3:\n    pipe.to("cuda")\n    flux_execution = "cuda"\nelse:\n    pipe.enable_model_cpu_offload()\n    flux_execution = "model_cpu_offload"\n'''
+        pipe_new = '''pipe = Flux2KleinPipeline.from_pretrained(\n    CONFIG["image_model"],\n    torch_dtype=torch.float16,\n)\ngpu_name = torch.cuda.get_device_name(0)\ngpu_total_bytes = int(torch.cuda.get_device_properties(0).total_memory)\n# BFL documents Klein 4B at about 13 GB VRAM. Kaggle Tesla T4 exposes about\n# 14.6 GiB, so require 14 GiB total VRAM and keep the remaining headroom free.\nif gpu_total_bytes >= 14 * 1024 ** 3:\n    pipe.to("cuda")\n    flux_execution = "cuda"\nelse:\n    pipe.enable_model_cpu_offload()\n    flux_execution = "model_cpu_offload"\n'''
         if pipe_old not in source:
             raise RuntimeError("V6 FLUX load block changed; placement patch is unsafe")
         source = source.replace(pipe_old, pipe_new, 1)
