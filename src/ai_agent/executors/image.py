@@ -13,8 +13,9 @@ from ai_agent.core.media_v2_stable import StableKaggleImageV2Provider
 # Production recaption is intentionally compact: it only translates/normalizes
 # image requests. Subject identity is enforced separately by the stable semantic
 # gate, so a larger language model only increases cold-start without improving
-# the image model itself. Qwen2.5-0.5B-Instruct explicitly supports Vietnamese.
-PRODUCTION_RECAPTION_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+# the image model itself. Qwen3-0.6B supports Vietnamese and the same chat template
+# controls already used by this worker.
+PRODUCTION_RECAPTION_MODEL = "Qwen/Qwen3-0.6B"
 
 
 _VI_ORDINALS = {
