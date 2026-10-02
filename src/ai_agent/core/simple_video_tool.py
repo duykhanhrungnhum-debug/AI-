@@ -72,9 +72,10 @@ class SimpleKaggleVideoTool:
             fps=fps,
             seed=seed,
         )
-        # Kaggle notebook titles are globally unique for the account. Include
-        # this run token so independent smoke/production jobs can never collide.
-        kernel_title = f"AIKA {self.kernel_slug} {run_token[:10]}"
+        # Kaggle links a kernel title to its slug. The caller already provides a
+        # unique per-job slug, so keep title and slug identical to avoid server
+        # normalization creating a different kernel handle.
+        kernel_title = self.kernel_slug
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
             title=kernel_title,
@@ -84,9 +85,10 @@ class SimpleKaggleVideoTool:
             enable_gpu=True,
             is_private=True,
         )
+        canonical_slug = submission.slug
 
-        report = self._wait_for_report(run_token)
-        video = self.worker.download_output_file(self.kernel_slug, "video_tool.mp4")
+        report = self._wait_for_report(run_token, canonical_slug)
+        video = self.worker.download_output_file(canonical_slug, "video_tool.mp4")
         if len(video) < self.min_video_bytes:
             raise RuntimeError(f"video artifact too small: {len(video)} bytes")
         if len(video) < 12 or video[4:8] != b"ftyp":
@@ -120,13 +122,13 @@ class SimpleKaggleVideoTool:
             ),
         )
 
-    def _wait_for_report(self, run_token: str) -> dict:
+    def _wait_for_report(self, run_token: str, kernel_slug: str) -> dict:
         """Wait for this exact run token and surface worker failures immediately."""
         deadline = time.monotonic() + self.max_wait_seconds
         latest_token = ""
         while time.monotonic() < deadline:
             try:
-                raw = self.worker.download_output_file(self.kernel_slug, "video_tool_report.json")
+                raw = self.worker.download_output_file(kernel_slug, "video_tool_report.json")
                 parsed = json.loads(raw.decode("utf-8"))
             except (FileNotFoundError, ValueError, json.JSONDecodeError, RuntimeError):
                 parsed = None
@@ -147,7 +149,7 @@ class SimpleKaggleVideoTool:
 
         detail = ""
         try:
-            metadata = self.worker.output_metadata(self.kernel_slug)
+            metadata = self.worker.output_metadata(kernel_slug)
             if isinstance(metadata, dict):
                 detail = str(metadata.get("logNullable") or metadata.get("log") or "")[-3000:]
         except Exception:
@@ -155,7 +157,7 @@ class SimpleKaggleVideoTool:
         stale = f" latest_artifact_token={latest_token}" if latest_token else ""
         suffix = f" log_tail={detail}" if detail else ""
         raise TimeoutError(
-            f"AIKA video tool timeout run_token={run_token}{stale}{suffix}"
+            f"AIKA video tool timeout run_token={run_token} slug={kernel_slug}{stale}{suffix}"
         )
 
     def _worker_source(
@@ -220,7 +222,7 @@ try:
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-        "diffusers==0.40.0", "transformers>=4.53,<5",
+        "diffusers==0.40.0", "transformers==5.18.0",
         "accelerate>=1,<2", "safetensors", "sentencepiece", "ftfy",
         "imageio", "imageio-ffmpeg",
     ])
