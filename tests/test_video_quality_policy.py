@@ -6,7 +6,7 @@ from ai_agent.executors.video import GENERIC_VIDEO_CONSTRAINTS, VideoExecutor
 
 
 def test_default_video_duration_is_meaningful() -> None:
-    signature = inspect.signature(VideoExecutor.execute)
+    signature = inspect.signature(VideoExecutor.generate)
     num_frames = int(signature.parameters["num_frames"].default)
     fps = int(signature.parameters["fps"].default)
 
