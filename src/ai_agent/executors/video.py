@@ -1,7 +1,7 @@
-"""Simple production video tool for AIKA.
+"""AIKA video tool.
 
-AIKA chooses the tool. This executor performs exactly one bounded video
-creation call and returns one MP4 artifact.
+The public contract is intentionally small: AIKA supplies a natural request and
+receives one MP4 artifact. GPU/model/orchestration details stay private here.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _tool_prompt(command: str) -> str:
 
 
 class VideoExecutor:
-    """One bounded tool call: original request + generic guard -> one MP4."""
+    """Stable video-tool boundary used by AIKA's media broker."""
 
     def __init__(
         self,
@@ -73,7 +73,7 @@ class VideoExecutor:
             guidance_scale=5.0,
         )
 
-    def execute(
+    def generate(
         self,
         command: str,
         *,
@@ -82,10 +82,9 @@ class VideoExecutor:
         num_frames: int = 33,
         fps: int = 8,
     ) -> SimpleVideoArtifact:
+        """Generate one bounded MP4 through exactly one private backend path."""
         original = command.strip()
         prompt = _tool_prompt(original)
-        # One job gets one Kaggle slug. Output/status can therefore never be
-        # confused with a previous run that used the same production tool.
         job_slug = f"{self.kernel_slug}-{uuid4().hex[:10]}"
         return self._provider(job_slug=job_slug).generate(
             prompt,
