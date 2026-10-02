@@ -24,10 +24,10 @@ def test_v65_keeps_qwen_cpu_only_and_flux_fp16():
     assert "FLUX is the sole CUDA owner" in v65_source
 
 
-def test_v65_selects_full_cuda_with_offload_fallback():
+def test_v65_selects_full_cuda_for_kaggle_t4_with_offload_fallback():
     _, v65_source = _sources()
 
-    assert 'gpu_total_bytes >= 15 * 1024 ** 3' in v65_source
+    assert 'gpu_total_bytes >= 14 * 1024 ** 3' in v65_source
     assert 'pipe.to("cuda")' in v65_source
     assert 'flux_execution = "cuda"' in v65_source
     assert "pipe.enable_model_cpu_offload()" in v65_source
