@@ -1,1 +1,1 @@
-AIKA one-shot video tool smoke 2026-10-02 v2
+AIKA one-shot video quality smoke 20 steps 2026-10-02
