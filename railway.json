@@ -5,7 +5,7 @@
     "buildCommand": "python -m pip install ."
   },
   "deploy": {
-    "startCommand": "PYTHONPATH=src python -m ai_agent.chat_api",
+    "startCommand": "PYTHONPATH=src python -m ai_agent.production_boot",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
