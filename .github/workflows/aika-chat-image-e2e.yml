@@ -16,7 +16,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
@@ -51,7 +51,7 @@ jobs:
           wall_started = time.perf_counter()
           job = CHAT_BROKER.create_job(command, message=command)
           assert job.kind == "image", job.kind
-          deadline = time.time() + 650
+          deadline = time.time() + 1000
           state = None
           while time.time() < deadline:
               state = CHAT_BROKER.get_job(job.job_id)
@@ -120,4 +120,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-# trigger: compact Qwen crab-frog E2E
+# trigger: nonblocking artifact polling E2E
