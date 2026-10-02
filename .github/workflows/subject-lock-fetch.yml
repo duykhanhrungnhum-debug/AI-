@@ -1,0 +1,42 @@
+name: Subject Lock Fetch
+on:
+  push:
+    branches:
+      - subject-lock-fetch-temp
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll benchmark and download images
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://aika-chat-canary-v3-production.up.railway.app/_aika_subject_lock/bf36ab91445f4514a28aaa1d5ecf7434'
+          mkdir -p out
+          for i in $(seq 1 70); do
+            if curl -fsS "$BASE/status" -o out/status.json; then
+              STATUS=$(jq -r '.status // empty' out/status.json)
+              echo "poll=$i status=$STATUS"
+              cat out/status.json
+              echo
+              if [ "$STATUS" = success ]; then
+                curl -fsS "$BASE/1.png" -o out/1.png
+                curl -fsS "$BASE/2.png" -o out/2.png
+                exit 0
+              fi
+              if [ "$STATUS" = failure ]; then
+                exit 1
+              fi
+            fi
+            sleep 10
+          done
+          echo 'benchmark fetch timed out' >&2
+          exit 1
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: subject-lock-e2e
+          path: out/
+          if-no-files-found: warn
