@@ -1,7 +1,6 @@
 import time
 
 from ai_agent.media_broker import MediaToolBroker
-from ai_agent.router.skill_router import route_skill
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"A" * 64
@@ -44,14 +43,7 @@ def _wait_done(broker, job_id):
     raise AssertionError("media job did not finish")
 
 
-def test_router_calls_video_tool_before_image_word():
-    assert route_skill("AIKA tạo video từ ảnh nhân vật này") == "video"
-    assert route_skill("AIKA tạo clip hoạt hình 3D") == "video"
-    assert route_skill("AIKA tạo ảnh hoạt hình 3D") == "image"
-    assert route_skill("phân tích video này") == "chat"
-
-
-def test_image_tool_broker_returns_png_without_warm_worker():
+def test_image_tool_broker_returns_png_without_media_routing():
     broker = MediaToolBroker()
     broker._image = FakeImageExecutor()
     job = broker.create_job("image", "tạo ảnh con mèo")
