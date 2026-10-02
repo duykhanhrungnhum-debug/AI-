@@ -22,41 +22,83 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install -e .
-      - name: Inspect latest Kaggle video kernel without submitting GPU
+      - name: Inspect newest isolated AIKA video kernels without submitting GPU
         shell: bash
         run: |
           mkdir -p video-diag
           python - <<'PY'
           import json, os
           from pathlib import Path
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
           from ai_agent.core.kaggle_worker import KaggleGpuWorker
 
-          worker = KaggleGpuWorker(
-              api_token=os.environ["KAGGLE_API_TOKEN"],
-              username=os.environ["KAGGLE_USERNAME"],
-              timeout=30,
+          token = os.environ["KAGGLE_API_TOKEN"].strip()
+          username = os.environ["KAGGLE_USERNAME"].strip()
+          worker = KaggleGpuWorker(api_token=token, username=username, timeout=30)
+          result = {"username": username, "candidates": []}
+
+          query = urlencode({"user": username, "pageSize": 100, "sortBy": "dateRun"})
+          req = Request(
+              "https://www.kaggle.com/api/v1/kernels/list?" + query,
+              headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "AIKA-Diag/1"},
           )
-          slug = "ai-agent-video-smoke"
-          result = {"slug": slug}
           try:
-              result["status"] = worker.status(slug).__dict__
+              with urlopen(req, timeout=30) as resp:
+                  raw = resp.read().decode("utf-8", errors="replace")
+              listed = json.loads(raw)
+              result["list_type"] = type(listed).__name__
+              result["list_preview"] = listed if isinstance(listed, dict) else listed[:20]
           except Exception as exc:
-              result["status_error"] = f"{type(exc).__name__}: {exc}"
-          try:
-              meta = worker.output_metadata(slug)
-              result["output_metadata"] = meta
+              result["list_error"] = f"{type(exc).__name__}: {exc}"
+              listed = []
+
+          items = []
+          if isinstance(listed, list):
+              items = listed
+          elif isinstance(listed, dict):
+              for key in ("kernels", "items", "results"):
+                  value = listed.get(key)
+                  if isinstance(value, list):
+                      items = value
+                      break
+
+          slugs = []
+          for item in items:
+              if not isinstance(item, dict):
+                  continue
+              ref = str(item.get("ref") or item.get("id") or item.get("slug") or item.get("kernelRef") or "")
+              title = str(item.get("title") or item.get("name") or "")
+              slug = ref.split("/", 1)[-1] if "/" in ref else ref
+              if not slug:
+                  slug = str(item.get("slug") or "")
+              if slug.startswith("ai-agent-video-tool-") or slug.startswith("ai-agent-video-smoke-") or title.startswith("AIKA ai-agent-video-tool-"):
+                  slugs.append(slug)
+              if len(slugs) >= 8:
+                  break
+
+          result["candidate_slugs"] = slugs
+          for slug in slugs:
+              entry = {"slug": slug}
+              try:
+                  entry["status"] = worker.status(slug).__dict__
+              except Exception as exc:
+                  entry["status_error"] = f"{type(exc).__name__}: {exc}"
+              try:
+                  entry["output_metadata"] = worker.output_metadata(slug)
+              except Exception as exc:
+                  entry["output_error"] = f"{type(exc).__name__}: {exc}"
               try:
                   report = worker.download_output_file(slug, "video_tool_report.json").decode("utf-8", errors="replace")
-                  result["report"] = json.loads(report)
+                  entry["report"] = json.loads(report)
               except Exception as exc:
-                  result["report_error"] = f"{type(exc).__name__}: {exc}"
-          except Exception as exc:
-              result["output_error"] = f"{type(exc).__name__}: {exc}"
-          try:
-              logs = worker.logs(slug)
-              result["logs_tail"] = logs[-12000:]
-          except Exception as exc:
-              result["logs_error"] = f"{type(exc).__name__}: {exc}"
+                  entry["report_error"] = f"{type(exc).__name__}: {exc}"
+              try:
+                  entry["logs_tail"] = worker.logs(slug)[-16000:]
+              except Exception as exc:
+                  entry["logs_error"] = f"{type(exc).__name__}: {exc}"
+              result["candidates"].append(entry)
+
           text = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
           Path("video-diag/diag.json").write_text(text, encoding="utf-8")
           print("AIKA_VIDEO_DIAGNOSE")
