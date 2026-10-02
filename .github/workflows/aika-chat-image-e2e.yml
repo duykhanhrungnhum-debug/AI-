@@ -120,4 +120,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-# trigger: final semantic verifier E2E
+# trigger: compact Qwen crab-frog E2E
