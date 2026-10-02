@@ -113,7 +113,7 @@ def test_subject_lock_repairs_only_on_mismatch_and_validates_before_flux():
 
     assert "if not locks or prompt_has_subject_locks(candidate_prompt, locks):" in source
     assert "These locked subjects are mandatory" in source
-    assert "each English label must appear verbatim" in source
+    assert "English label must appear verbatim" in source
     assert "not prompt_has_subject_locks(repaired, locks)" in source
 
 
