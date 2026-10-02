@@ -5,7 +5,6 @@ import hmac
 import json
 import os
 from http.server import ThreadingHTTPServer
-import threading
 from urllib.parse import parse_qs, urlparse
 
 from ai_agent.api import AIRequestHandler
@@ -47,35 +46,8 @@ class ChatRequestHandler(AIRequestHandler):
         else:
             self._json(200, payload)
 
-    def _benchmark_path(self, parsed_path: str) -> bool:
-        key = os.environ.get("AIKA_IMAGE_BENCHMARK_KEY", "").strip()
-        if not key:
-            return False
-        prefix = f"/_aika_benchmark/{key}/"
-        if not parsed_path.startswith(prefix):
-            return False
-        from ai_agent import image_benchmark_temp
-
-        tail = parsed_path[len(prefix):]
-        if tail == "status":
-            self._json(200, image_benchmark_temp.snapshot())
-            return True
-        if tail in {"1.png", "2.png"}:
-            try:
-                index = int(tail[0]) - 1
-                data = image_benchmark_temp.get_image(index)
-            except (ValueError, IndexError):
-                self._json(404, {"error": "image_not_ready"})
-                return True
-            self._binary(200, data, "image/png", filename=f"AIKA-benchmark-{index + 1}.png")
-            return True
-        self._json(404, {"error": "not_found"})
-        return True
-
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if self._benchmark_path(parsed.path):
-            return
         if parsed.path == "/internal/chat/pull":
             if not self._worker_authorized():
                 self._json(401, {"error": "unauthorized"})
@@ -210,10 +182,6 @@ class ChatRequestHandler(AIRequestHandler):
             self._json(502, {"error": "chat_failure", "detail": str(exc)})
 
 
-def _enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
-
-
 def main() -> None:
     host = os.environ.get("AI_AGENT_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
@@ -221,10 +189,6 @@ def main() -> None:
         raise SystemExit("AI_AGENT_API_TOKEN is required")
 
     server = ThreadingHTTPServer((host, port), ChatRequestHandler)
-    if _enabled("AIKA_IMAGE_BENCHMARK"):
-        from ai_agent.image_benchmark_temp import run
-
-        threading.Thread(target=run, name="aika-image-benchmark", daemon=True).start()
     server.serve_forever()
 
 
