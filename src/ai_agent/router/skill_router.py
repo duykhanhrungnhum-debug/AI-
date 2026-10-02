@@ -1,7 +1,7 @@
 """Central skill router for AIKA commands.
 
-The router classifies at the skill level only. It intentionally does not contain
-species, garment, visual-style, or other subject-specific tables.
+The router classifies only which tool AIKA should call. It deliberately does not
+interpret species, garments, characters, visual styles, or scene semantics.
 """
 from __future__ import annotations
 
@@ -15,14 +15,9 @@ def _fold_text(value: str) -> str:
 
 
 def route_skill(command: str, *, skill_hint: str = "") -> str:
-    """Return the stable skill name for one natural-language command.
-
-    Only skills with verified runtime executors are routed explicitly. Unknown or
-    conversational input stays on the existing chat path so this router cannot
-    silently break another AIKA skill during rollout.
-    """
+    """Return one stable AIKA tool name: chat, image, or video."""
     hint = skill_hint.strip().casefold()
-    if hint in {"chat", "image"}:
+    if hint in {"chat", "image", "video"}:
         return hint
 
     text = _fold_text(command.strip())
@@ -36,13 +31,26 @@ def route_skill(command: str, *, skill_hint: str = "") -> str:
     if routed.endswith("?") or any(routed.startswith(prefix) for prefix in question_prefixes):
         return "chat"
 
+    create_verbs = (
+        "tao", "ve", "lam", "generate", "create", "draw", "render", "thiet ke",
+        "animate", "hoat hoa",
+    )
+    has_action = any(re.search(rf"\b{re.escape(verb)}\b", routed) for verb in create_verbs)
+    if not has_action:
+        return "chat"
+
+    # Video wins before image so requests such as "tạo video từ ảnh" correctly
+    # call the video tool rather than being captured by the word "ảnh".
+    video_nouns = (
+        "video", "clip", "doan phim", "phim ngan", "motion video", "animation video",
+    )
+    has_video = any(re.search(rf"\b{re.escape(noun)}\b", routed) for noun in video_nouns)
+    if has_video:
+        return "video"
+
     image_nouns = (
         "anh", "hinh anh", "hinh", "image", "photo", "picture", "portrait",
         "poster", "minh hoa", "illustration",
     )
-    create_verbs = (
-        "tao", "ve", "lam", "generate", "create", "draw", "render", "thiet ke",
-    )
     has_image = any(re.search(rf"\b{re.escape(noun)}\b", routed) for noun in image_nouns)
-    has_action = any(re.search(rf"\b{re.escape(verb)}\b", routed) for verb in create_verbs)
-    return "image" if has_image and has_action else "chat"
+    return "image" if has_image else "chat"
