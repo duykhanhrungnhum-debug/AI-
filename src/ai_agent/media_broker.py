@@ -1,7 +1,7 @@
 """Minimal asynchronous media-tool broker for AIKA.
 
-AIKA decides which tool to call. This broker never classifies user intent; it
-only executes the already-selected image/video tool and stores its artifacts.
+AIKA decides which tool to call. This broker never classifies user intent and
+never knows which GPU, model, provider, or orchestration strategy a tool uses.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class MediaJob:
 
 
 class MediaToolBroker:
-    """One broker, two tools, no intent routing, warm/cold switching, or leases."""
+    """One broker, two stable tool calls: image.generate() and video.generate()."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -93,7 +93,7 @@ class MediaToolBroker:
         started = time.perf_counter()
         try:
             command = self._command(job_id)
-            results = self._image.execute_command_cold(
+            results = self._image.generate(
                 command,
                 width=1024,
                 height=1024,
@@ -109,7 +109,7 @@ class MediaToolBroker:
                     if len(results) == 1
                     else f"AIKA đã tạo xong {len(results)} ảnh riêng."
                 )
-                job.provider = "kaggle-image-v2"
+                job.provider = "image-tool"
                 job.model = results[0].model
                 job.artifacts = [result.data for result in results]
                 job.mimes = ["image/png" for _ in results]
@@ -124,12 +124,12 @@ class MediaToolBroker:
         started = time.perf_counter()
         try:
             command = self._command(job_id)
-            artifact = self._video.execute(command)
+            artifact = self._video.generate(command)
             with self._lock:
                 job = self._jobs[job_id]
                 job.status = "done"
                 job.text = "AIKA đã tạo video xong."
-                job.provider = artifact.provider
+                job.provider = "video-tool"
                 job.model = artifact.model
                 job.artifacts = [artifact.data]
                 job.mimes = [artifact.mime_type]
