@@ -14,8 +14,8 @@ class FakeImageResult:
     model = "fake-image-model"
 
 
-class FakeImageExecutor:
-    def execute_command_cold(self, command, **kwargs):
+class FakeImageTool:
+    def generate(self, command, **kwargs):
         assert command == "tạo ảnh con mèo"
         return (FakeImageResult(),)
 
@@ -27,8 +27,8 @@ class FakeVideoArtifact:
     model = "fake-video-model"
 
 
-class FakeVideoExecutor:
-    def execute(self, command):
+class FakeVideoTool:
+    def generate(self, command, **kwargs):
         assert command == "tạo video con mèo chạy"
         return FakeVideoArtifact()
 
@@ -43,27 +43,29 @@ def _wait_done(broker, job_id):
     raise AssertionError("media job did not finish")
 
 
-def test_image_tool_broker_returns_png_without_media_routing():
+def test_image_tool_broker_returns_png_without_backend_knowledge():
     broker = MediaToolBroker()
-    broker._image = FakeImageExecutor()
+    broker._image = FakeImageTool()
     job = broker.create_job("image", "tạo ảnh con mèo")
     state = _wait_done(broker, job.job_id)
     assert state["status"] == "done"
     assert state["kind"] == "image"
     assert state["image_count"] == 1
+    assert state["provider"] == "image-tool"
     assert state["has_video"] is False
     data, mime = broker.get_image(job.job_id)
     assert data == PNG
     assert mime == "image/png"
 
 
-def test_video_tool_broker_returns_mp4_directly():
+def test_video_tool_broker_returns_mp4_without_backend_knowledge():
     broker = MediaToolBroker()
-    broker._video = FakeVideoExecutor()
+    broker._video = FakeVideoTool()
     job = broker.create_job("video", "tạo video con mèo chạy")
     state = _wait_done(broker, job.job_id)
     assert state["status"] == "done"
     assert state["kind"] == "video"
+    assert state["provider"] == "video-tool"
     assert state["has_image"] is False
     assert state["has_video"] is True
     assert state["video_url"].endswith(job.job_id)
