@@ -1,1 +1,1 @@
-diagnose latest AIKA video kernel 2026-10-02
+diagnose active AIKA video smoke unique-title 2026-10-02
