@@ -17,7 +17,7 @@ concurrency:
 jobs:
   video-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 20
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
@@ -43,7 +43,7 @@ jobs:
         run: >-
           python -m py_compile
           src/ai_agent/core/kaggle_video.py
-          src/ai_agent/core/generative_video_pipeline.py
+          src/ai_agent/executors/video.py
           scripts/kaggle_video_smoke.py
 
       - name: Generate and verify one real motion clip
