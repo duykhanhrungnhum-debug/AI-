@@ -5,7 +5,12 @@ import re
 from ai_agent.core.kaggle_worker import KaggleKernelSubmission
 from ai_agent.core.media_v2 import ImageRequestV2
 from ai_agent.core.media_v2_stable import StableKaggleImageV2Provider
-from ai_agent.executors.image import ImageExecutor, PRODUCTION_RECAPTION_MODEL
+from ai_agent.executors.image import (
+    ArtifactPollingKaggleImageWorker,
+    ImageExecutor,
+    PRODUCTION_IMAGE_MAX_WAIT_SECONDS,
+    PRODUCTION_RECAPTION_MODEL,
+)
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"S" * 64
@@ -82,7 +87,6 @@ def test_stable_source_uses_generic_semantic_review_not_species_patch():
     assert "literal-faithful English image-generation description" in source
     assert "+ base_contract" not in source
 
-    # Regression guard: never reintroduce brittle JSON subject extraction or species patches.
     folded = source.casefold()
     assert "extract_subject_locks" not in folded
     assert "prompt_has_subject_locks" not in folded
@@ -119,13 +123,18 @@ def test_stable_natural_batch_keeps_sibling_variants_separate():
     assert "never merge subjects from sibling images" in source
 
 
-def test_production_executor_uses_stable_provider_and_is_bounded(monkeypatch):
+def test_production_executor_uses_nonblocking_artifact_polling_and_15m_bound(monkeypatch):
     monkeypatch.setenv("KAGGLE_API_TOKEN", "token")
     monkeypatch.setenv("KAGGLE_USERNAME", "user")
     provider = ImageExecutor()._provider()
+
     assert isinstance(provider, StableKaggleImageV2Provider)
+    assert isinstance(provider.worker, ArtifactPollingKaggleImageWorker)
+    assert provider.worker.logs("anything") == ""
     assert PRODUCTION_RECAPTION_MODEL == "Qwen/Qwen3-0.6B"
     assert provider.recaption_model == PRODUCTION_RECAPTION_MODEL
-    assert provider.max_poll_attempts == 180
+    assert PRODUCTION_IMAGE_MAX_WAIT_SECONDS == 900.0
+    assert provider.max_wait_seconds == PRODUCTION_IMAGE_MAX_WAIT_SECONDS
+    assert provider.max_poll_attempts == 300
     assert provider.poll_interval == 3
-    assert provider.max_poll_attempts * provider.poll_interval == 540
+    assert provider.max_poll_attempts * provider.poll_interval == 900
