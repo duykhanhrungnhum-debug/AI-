@@ -18,13 +18,36 @@ from ai_agent.core.kaggle_worker import KaggleGpuWorker
 
 
 PRODUCTION_VIDEO_KERNEL = "ai-agent-video-batch"
+GENERIC_VIDEO_CONSTRAINTS = (
+    "Keep every named subject visually distinct and anatomically coherent for the whole shot. "
+    "Preserve exact subject identity and count. Do not merge, hybridize, morph, substitute, duplicate, "
+    "or omit subjects. Use one continuous coherent shot with natural motion and stable composition. "
+    "No text, subtitles, logos, or watermarks unless requested."
+)
+
+
+def _tool_prompt(command: str) -> str:
+    command = command.strip()
+    if not command:
+        raise ValueError("video prompt is required")
+    return f"{command}. {GENERIC_VIDEO_CONSTRAINTS}"
 
 
 class VideoExecutor:
-    """One bounded tool call: original prompt -> one short video artifact."""
+    """One bounded tool call: original request + generic guard -> one MP4."""
 
-    def __init__(self, *, kernel_slug: str = PRODUCTION_VIDEO_KERNEL) -> None:
+    def __init__(
+        self,
+        *,
+        kernel_slug: str = PRODUCTION_VIDEO_KERNEL,
+        inference_steps: int = 16,
+        poll_interval: float = 10.0,
+        max_poll_attempts: int = 90,
+    ) -> None:
         self.kernel_slug = kernel_slug
+        self.inference_steps = inference_steps
+        self.poll_interval = poll_interval
+        self.max_poll_attempts = max_poll_attempts
 
     @staticmethod
     def seed_for(command: str) -> int:
@@ -46,9 +69,9 @@ class VideoExecutor:
                 submission_retry_delay_seconds=10,
             ),
             kernel_slug=self.kernel_slug,
-            poll_interval=10,
-            max_poll_attempts=90,
-            inference_steps=16,
+            poll_interval=self.poll_interval,
+            max_poll_attempts=self.max_poll_attempts,
+            inference_steps=self.inference_steps,
             guidance_scale=5.0,
         )
 
@@ -61,9 +84,8 @@ class VideoExecutor:
         num_frames: int = 17,
         fps: int = 16,
     ) -> SceneVideoArtifact:
-        prompt = command.strip()
-        if not prompt:
-            raise ValueError("video prompt is required")
+        original = command.strip()
+        prompt = _tool_prompt(original)
         request = SceneVideoRequest(
             scene_id="video-01",
             prompt=prompt,
@@ -71,7 +93,7 @@ class VideoExecutor:
             height=height,
             num_frames=num_frames,
             fps=fps,
-            seed=self.seed_for(prompt),
+            seed=self.seed_for(original),
         )
         batch = self._provider().generate_batch((request,))
         if len(batch.scenes) != 1:
