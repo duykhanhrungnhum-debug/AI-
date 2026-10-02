@@ -78,7 +78,8 @@ def test_stable_source_uses_neutral_semantics_and_conditional_aodai_rule():
     source = worker.source
     assert "def contract_for(user_request):" in source
     assert 'if "áo dài" in user_request.casefold():' in source
-    assert "never replace one species with a related animal" in source
+    assert "Translate animal species and breed names precisely" in source
+    assert "a generic livestock term" in source
     assert "Do not introduce garments" in source
     assert '+ contract_for(item["command"]) + " "' in source
     assert "+ base_contract" not in source
