@@ -1,4 +1,4 @@
-"""Production image executor: preserve user semantics and run FLUX once."""
+"""Production image tool: preserve user semantics and run FLUX once."""
 from __future__ import annotations
 
 from hashlib import sha256
@@ -10,14 +10,16 @@ from ai_agent.core.media_v2 import ImageRequestV2, ImageResultV2
 from ai_agent.core.media_v2_direct import DirectStableKaggleImageV2Provider
 
 
-# Compatibility/evidence label: there is no external recaption model in the
-# production image path. FLUX.2 Klein uses its own bundled text encoder.
 PRODUCTION_RECAPTION_MODEL = "direct-original-language"
 PRODUCTION_IMAGE_MAX_WAIT_SECONDS = 720.0
-# Keep the established Kaggle slug because the current private token can read
-# output artifacts for this kernel; semantic behavior comes from the submitted
-# direct worker source, not from the slug name or any previous kernel version.
 PRODUCTION_IMAGE_KERNEL = "ai-agent-image-v2"
+
+GENERIC_IMAGE_CONSTRAINTS = (
+    "Render every named subject as a separate, complete, anatomically coherent entity. "
+    "Preserve the exact subject identities and requested subject count. "
+    "Do not merge, hybridize, morph, substitute, duplicate, or omit subjects. "
+    "Preserve the requested visual style. Do not add text, logos, or watermarks unless requested."
+)
 
 
 class ArtifactPollingKaggleImageWorker(KaggleGpuWorker):
@@ -79,8 +81,16 @@ def _split_explicit_image_items(command: str, *, max_images: int) -> tuple[str, 
     return tuple(items)
 
 
+def _tool_prompt(command: str) -> str:
+    """Add one generic media invariant without rewriting user semantics."""
+    command = command.strip()
+    if not command:
+        raise ValueError("image prompt is required")
+    return f"{command}. {GENERIC_IMAGE_CONSTRAINTS}"
+
+
 class ImageExecutor:
-    """One bounded production path: original prompt -> FLUX.2 Klein."""
+    """One bounded production path: original request + generic guard -> FLUX.2 Klein."""
 
     def __init__(self, *, kernel_slug: str = PRODUCTION_IMAGE_KERNEL) -> None:
         self.kernel_slug = kernel_slug
@@ -113,9 +123,10 @@ class ImageExecutor:
         return provider
 
     def execute_cold(self, command: str, *, item_id: str, width: int = 1024, height: int = 1024) -> ImageResultV2:
+        guarded = _tool_prompt(command)
         return self._provider().generate_many((ImageRequestV2(
             item_id=item_id,
-            command=command.strip(),
+            command=guarded,
             seed=self.seed_for(command),
             width=width,
             height=height,
@@ -129,10 +140,11 @@ class ImageExecutor:
         height: int = 1024,
         max_images: int = 6,
     ) -> tuple[ImageResultV2, ...]:
-        """Preserve every item prompt verbatim; split only explicit file boundaries."""
+        """Split only explicit file boundaries and apply the same generic guard to each item."""
         provider = self._provider()
         explicit_items = _split_explicit_image_items(command, max_images=max_images)
-        item_commands = explicit_items or (command.strip(),)
+        raw_items = explicit_items or (command.strip(),)
+        item_commands = tuple(_tool_prompt(item) for item in raw_items)
         base_seed = self.seed_for(command)
         requests = tuple(
             ImageRequestV2(
