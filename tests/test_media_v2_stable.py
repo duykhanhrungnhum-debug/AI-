@@ -19,6 +19,7 @@ class StableFakeWorker:
 
     def submit_script(self, **kwargs):
         self.source = kwargs["source"]
+        compile(self.source, "<aika-image-v2-worker>", "exec")
         match = re.search(r"RUN_TOKEN = '([0-9a-f]+)'", self.source)
         assert match
         self.run_token = match.group(1)
@@ -53,36 +54,27 @@ class StableFakeWorker:
 
 def test_stable_provider_ignores_stale_report_and_never_calls_status():
     worker = StableFakeWorker()
-    provider = StableKaggleImageV2Provider(
-        worker=worker,
-        poll_interval=0,
-        max_poll_attempts=3,
-    )
+    provider = StableKaggleImageV2Provider(worker=worker, poll_interval=0, max_poll_attempts=3)
     result = provider.generate_many((ImageRequestV2("x", "Tạo ảnh chân dung", 7),))[0]
-
     assert result.data == PNG
     assert worker.report_reads == 2
     assert 'report["run_token"] = RUN_TOKEN' in worker.source
     assert "AIKA_IMAGE_RUN" in worker.source
 
 
-def test_stable_source_has_generic_subject_identity_lock_without_species_patch():
+def test_stable_source_uses_generic_semantic_review_not_species_patch():
     worker = StableFakeWorker()
-    provider = StableKaggleImageV2Provider(
-        worker=worker,
-        poll_interval=0,
-        max_poll_attempts=3,
-    )
+    provider = StableKaggleImageV2Provider(worker=worker, poll_interval=0, max_poll_attempts=3)
     provider.generate_many((ImageRequestV2("x", "một con trâu nước hoạt hình 3D", 7),))
 
     source = worker.source
     assert "def contract_for(user_request):" in source
-    assert "def extract_subject_locks(user_request):" in source
-    assert "def prompt_has_subject_locks(prompt, locks):" in source
+    assert "def _review_instruction(" in source
     assert "def enforce_semantic_integrity(" in source
-    assert "shortest exact noun phrase copied verbatim" in source
-    assert "Silently verify each translation before output" in source
-    assert "subject integrity guard failed before image generation" in source
+    assert "output exactly OK" in source
+    assert "output FIX:" in source
+    assert "output exactly FAIL" in source
+    assert "semantic integrity guard failed final verification before image generation" in source
     assert 'if "áo dài" in user_request.casefold():' in source
     assert "+ contract_for(item[\"command\"]) + \" \"" in source
     assert 'repaired_prompt = enforce_semantic_integrity(item["command"], prompt)' in source
@@ -90,9 +82,11 @@ def test_stable_source_has_generic_subject_identity_lock_without_species_patch()
     assert "literal-faithful English image-generation description" in source
     assert "+ base_contract" not in source
 
-    # Regression guard: the mechanism must stay generic, never become a species table.
+    # Regression guard: never reintroduce brittle JSON subject extraction or species patches.
     folded = source.casefold()
-    assert "subject_class" not in folded
+    assert "extract_subject_locks" not in folded
+    assert "prompt_has_subject_locks" not in folded
+    assert "strict json array" not in folded
     assert "species table" not in folded
     assert "if species" not in folded
     assert "if animal" not in folded
@@ -101,43 +95,34 @@ def test_stable_source_has_generic_subject_identity_lock_without_species_patch()
     assert "water buffalo" not in folded
 
 
-def test_subject_lock_repairs_only_on_mismatch_and_validates_before_flux():
-    provider = StableKaggleImageV2Provider(
-        worker=StableFakeWorker(),
-        poll_interval=0,
-        max_poll_attempts=3,
-    )
+def test_semantic_review_repairs_once_then_requires_final_ok_before_flux():
+    provider = StableKaggleImageV2Provider(worker=StableFakeWorker(), poll_interval=0, max_poll_attempts=3)
     source = provider._harden_recaption_source(provider._build_worker_source((
         ImageRequestV2("x", "hai chủ thể hoạt hình 3D", 7),
     )))
+    compile(source, "<aika-image-v2-explicit-worker>", "exec")
 
-    assert "if not locks or prompt_has_subject_locks(candidate_prompt, locks):" in source
-    assert "These locked subjects are mandatory" in source
-    assert "English label must appear verbatim" in source
-    assert "not prompt_has_subject_locks(repaired, locks)" in source
+    assert 'if normalized == "ok":' in source
+    assert 'verdict.casefold().startswith("fix:")' in source
+    assert 'verdict.split(":", 1)[1]' in source
+    assert "final_check=True" in source
+    assert 'final_verdict.casefold().rstrip(".! ") != "ok"' in source
 
 
 def test_stable_natural_batch_keeps_sibling_variants_separate():
-    provider = StableKaggleImageV2Provider(
-        worker=StableFakeWorker(),
-        poll_interval=0,
-        max_poll_attempts=3,
-    )
+    provider = StableKaggleImageV2Provider(worker=StableFakeWorker(), poll_interval=0, max_poll_attempts=3)
     source = provider._harden_recaption_source(provider._build_command_worker_source(
-        "Tạo hai ảnh riêng với hai chủ thể khác nhau",
-        seed=7,
-        max_images=2,
+        "Tạo hai ảnh riêng với hai chủ thể khác nhau", seed=7, max_images=2,
     ))
-
+    compile(source, "<aika-image-v2-natural-worker>", "exec")
     assert "variant_scope=(len(parts) > 1)" in source
-    assert "do not merge subjects from other requested images" in source
+    assert "never merge subjects from sibling images" in source
 
 
 def test_production_executor_uses_stable_provider_and_is_bounded(monkeypatch):
     monkeypatch.setenv("KAGGLE_API_TOKEN", "token")
     monkeypatch.setenv("KAGGLE_USERNAME", "user")
     provider = ImageExecutor()._provider()
-
     assert isinstance(provider, StableKaggleImageV2Provider)
     assert provider.max_poll_attempts == 180
     assert provider.poll_interval == 3
