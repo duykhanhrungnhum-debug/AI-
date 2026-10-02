@@ -17,12 +17,9 @@ def main() -> int:
     output_dir = Path(os.environ.get("OUTPUT_DIR", "kaggle-video-smoke-output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Four denoising steps produced an MP4 that was still raw noise. Wan's
-    # official pipeline defaults to 50; 20 is the smallest production-oriented
-    # quality gate we use here while keeping this tiny smoke inexpensive.
     executor = VideoExecutor(
         kernel_slug="ai-agent-video-smoke",
-        inference_steps=20,
+        inference_steps=40,
         poll_interval=5,
         max_poll_attempts=180,
     )
