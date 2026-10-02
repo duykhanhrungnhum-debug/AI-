@@ -5,17 +5,10 @@ import hmac
 import json
 import os
 from http.server import ThreadingHTTPServer
-import threading
 from urllib.parse import parse_qs, urlparse
 
 from ai_agent.api import AIRequestHandler
 from ai_agent.chat_session import CHAT_BROKER
-from ai_agent.workers.image_manager_v65 import WarmImageWorkerManagerV65
-
-
-# Warm remains available only as an experimental feature. Production keeps it
-# disabled and uses the stable bounded Cold Image V2 path.
-CHAT_BROKER._warm_image = WarmImageWorkerManagerV65()
 
 
 class ChatRequestHandler(AIRequestHandler):
@@ -189,10 +182,6 @@ class ChatRequestHandler(AIRequestHandler):
             self._json(502, {"error": "chat_failure", "detail": str(exc)})
 
 
-def _env_enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
-
-
 def main() -> None:
     host = os.environ.get("AI_AGENT_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("AI_AGENT_API_PORT", "8080")))
@@ -200,22 +189,6 @@ def main() -> None:
         raise SystemExit("AI_AGENT_API_TOKEN is required")
 
     server = ThreadingHTTPServer((host, port), ChatRequestHandler)
-    if _env_enabled("AIKA_WARM_CANARY_SELFTEST"):
-        from ai_agent.canary_selftest import run_warm_canary_selftest
-
-        threading.Thread(
-            target=run_warm_canary_selftest,
-            name="aika-warm-canary-selftest",
-            daemon=True,
-        ).start()
-    if _env_enabled("AIKA_COLD_IMAGE_SELFTEST"):
-        from ai_agent.cold_image_selftest import run_cold_image_selftest
-
-        threading.Thread(
-            target=run_cold_image_selftest,
-            name="aika-cold-image-selftest",
-            daemon=True,
-        ).start()
     server.serve_forever()
 
 
