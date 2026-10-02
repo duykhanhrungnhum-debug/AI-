@@ -72,7 +72,9 @@ class SimpleKaggleVideoTool:
             fps=fps,
             seed=seed,
         )
-        kernel_title = "AIKA Video " + self.kernel_slug.replace("-", " ").title()
+        # Kaggle notebook titles are globally unique for the account. Include
+        # this run token so independent smoke/production jobs can never collide.
+        kernel_title = f"AIKA {self.kernel_slug} {run_token[:10]}"
         submission = self.worker.submit_script(
             slug=self.kernel_slug,
             title=kernel_title,
@@ -243,9 +245,6 @@ try:
         torch_dtype=torch.float32,
         low_cpu_mem_usage=True,
     )
-    # Wan is trained/recommended in BF16. T4 has no native BF16 tensor cores,
-    # so load compact BF16 weights on CPU, then run the video transformer in
-    # FP32 on CUDA instead of forcing the whole pipeline into unstable FP16.
     pipe = WanPipeline.from_pretrained(
         model_id,
         vae=vae,
@@ -313,8 +312,6 @@ try:
     if len(data) < 20_000 or len(data) < 12 or data[4:8] != b"ftyp":
         raise RuntimeError("generated video artifact is invalid")
 
-    # Record cheap visual metrics so AIKA can reject obvious gray/noise output
-    # without another GPU model. Final semantic QA remains a separate gate.
     samples = []
     for index in sorted({0, len(frames) // 2, len(frames) - 1}):
         samples.append(np.asarray(frames[index], dtype=np.float32))
