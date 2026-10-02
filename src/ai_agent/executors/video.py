@@ -3,6 +3,10 @@
 AIKA sees one stable generate() call. If no reference image is supplied, this
 tool asks the Image Tool for exactly one opening keyframe, then animates that
 keyframe with the private I2V backend. Text-to-video is not a production path.
+
+The tool does not expose an MP4 as complete until the backend evidence passes
+AIKA's bounded visual-quality gate for meaningful duration, subject continuity,
+and real motion.
 """
 from __future__ import annotations
 
@@ -16,6 +20,13 @@ from ai_agent.executors.image import ImageExecutor
 
 
 PRODUCTION_VIDEO_KERNEL = "ai-agent-video-i2v"
+MIN_VIDEO_DURATION_SECONDS = 4.0
+MIN_VIDEO_FRAMES = 33
+MIN_FIRST_FRAME_SIMILARITY = 0.90
+MIN_LAST_FRAME_SIMILARITY = 0.85
+MIN_MOTION_DELTA = 0.25
+MAX_MOTION_DELTA = 35.0
+
 GENERIC_VIDEO_CONSTRAINTS = (
     "Keep every named subject visually distinct and anatomically coherent for the whole shot. "
     "Preserve exact subject identity and count. Do not merge, hybridize, morph, substitute, duplicate, "
@@ -45,8 +56,57 @@ def _keyframe_prompt(command: str) -> str:
     return f"{KEYFRAME_CONSTRAINTS} Requested video: {command}"
 
 
+def _evidence_number(artifact: SimpleI2VArtifact, name: str) -> float:
+    prefix = name + ":"
+    for item in artifact.evidence:
+        if item.startswith(prefix):
+            raw = item[len(prefix):].strip()
+            try:
+                return float(raw)
+            except ValueError as exc:
+                raise RuntimeError(f"invalid video QA evidence {name}: {raw}") from exc
+    raise RuntimeError(f"missing video QA evidence: {name}")
+
+
+def assert_video_quality(artifact: SimpleI2VArtifact) -> None:
+    """Hard gate applied by AIKA before a generated MP4 can be published.
+
+    These checks deliberately use backend-produced frame evidence rather than
+    provider/model names, so the backend remains replaceable behind the stable
+    Video Tool interface.
+    """
+    if artifact.mime_type != "video/mp4" or not artifact.data:
+        raise RuntimeError("video QA failed: missing MP4 artifact")
+    if artifact.duration_seconds < MIN_VIDEO_DURATION_SECONDS:
+        raise RuntimeError(
+            f"video QA failed: duration {artifact.duration_seconds:.3f}s < {MIN_VIDEO_DURATION_SECONDS:.1f}s"
+        )
+
+    frames = int(_evidence_number(artifact, "frames"))
+    first_similarity = _evidence_number(artifact, "first_frame_similarity")
+    last_similarity = _evidence_number(artifact, "last_frame_similarity")
+    motion_delta = _evidence_number(artifact, "motion_delta")
+
+    if frames < MIN_VIDEO_FRAMES:
+        raise RuntimeError(f"video QA failed: frames {frames} < {MIN_VIDEO_FRAMES}")
+    if first_similarity < MIN_FIRST_FRAME_SIMILARITY:
+        raise RuntimeError(
+            f"video QA failed: opening identity similarity {first_similarity:.4f} < {MIN_FIRST_FRAME_SIMILARITY:.2f}"
+        )
+    if last_similarity < MIN_LAST_FRAME_SIMILARITY:
+        raise RuntimeError(
+            f"video QA failed: ending identity similarity {last_similarity:.4f} < {MIN_LAST_FRAME_SIMILARITY:.2f}"
+        )
+    if motion_delta < MIN_MOTION_DELTA:
+        raise RuntimeError(f"video QA failed: motion {motion_delta:.4f} is effectively static")
+    if motion_delta > MAX_MOTION_DELTA:
+        raise RuntimeError(
+            f"video QA failed: motion {motion_delta:.4f} exceeds continuity bound {MAX_MOTION_DELTA:.1f}"
+        )
+
+
 class VideoExecutor:
-    """Stable Video Tool boundary: keyframe -> one bounded I2V GPU call."""
+    """Stable Video Tool boundary: keyframe -> one bounded I2V GPU call -> QA."""
 
     def __init__(
         self,
@@ -111,7 +171,7 @@ class VideoExecutor:
         num_frames: int = 33,
         fps: int = 8,
     ) -> SimpleI2VArtifact:
-        """Generate one MP4 from an explicit or automatically-created keyframe."""
+        """Generate and quality-gate one MP4 from an explicit or generated keyframe."""
         original = command.strip()
         if not original:
             raise ValueError("video prompt is required")
@@ -126,7 +186,7 @@ class VideoExecutor:
         if not keyframe:
             raise RuntimeError("Video Tool has no reference keyframe")
         job_slug = f"{self.kernel_slug}-{uuid4().hex[:10]}"
-        return self._provider(job_slug=job_slug).generate(
+        artifact = self._provider(job_slug=job_slug).generate(
             _video_prompt(original),
             keyframe,
             width=width,
@@ -135,3 +195,5 @@ class VideoExecutor:
             fps=fps,
             seed=self.seed_for(original),
         )
+        assert_video_quality(artifact)
+        return artifact
