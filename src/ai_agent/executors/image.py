@@ -1,4 +1,9 @@
-"""Production image tool: preserve user semantics and run FLUX once."""
+"""AIKA image tool.
+
+The public contract is intentionally small: AIKA supplies a natural request and
+receives one or more image artifacts. Kaggle/model/runtime details stay private
+to this module.
+"""
 from __future__ import annotations
 
 from hashlib import sha256
@@ -23,7 +28,7 @@ GENERIC_IMAGE_CONSTRAINTS = (
 
 
 class ArtifactPollingKaggleImageWorker(KaggleGpuWorker):
-    """Kaggle worker with nonblocking artifact-only completion polling."""
+    """Private backend adapter. Never expose it to AIKA or MediaToolBroker."""
 
     def logs(self, slug: str) -> str:
         return ""
@@ -44,7 +49,7 @@ _EN_ORDINALS = {
 
 
 def _split_explicit_image_items(command: str, *, max_images: int) -> tuple[str, ...] | None:
-    """Split explicit ordered images without interpreting subjects or styles."""
+    """Split explicit output-file boundaries without interpreting scene semantics."""
     patterns = (
         re.compile(r"(?i)\b(?:ảnh|hình)\s+(?:thứ\s+)?(nhất|một|hai|ba|tư|bốn|năm|sáu|bảy|tám)\b"),
         re.compile(r"(?i)\b(?:ảnh|hình)\s+(?:số\s*)?([1-8])\b"),
@@ -82,7 +87,6 @@ def _split_explicit_image_items(command: str, *, max_images: int) -> tuple[str, 
 
 
 def _tool_prompt(command: str) -> str:
-    """Add one generic media invariant without rewriting user semantics."""
     command = command.strip()
     if not command:
         raise ValueError("image prompt is required")
@@ -90,7 +94,7 @@ def _tool_prompt(command: str) -> str:
 
 
 class ImageExecutor:
-    """One bounded production path: original request + generic guard -> FLUX.2 Klein."""
+    """Stable image-tool boundary used by AIKA's media broker."""
 
     def __init__(self, *, kernel_slug: str = PRODUCTION_IMAGE_KERNEL) -> None:
         self.kernel_slug = kernel_slug
@@ -122,17 +126,7 @@ class ImageExecutor:
         provider.max_wait_seconds = PRODUCTION_IMAGE_MAX_WAIT_SECONDS
         return provider
 
-    def execute_cold(self, command: str, *, item_id: str, width: int = 1024, height: int = 1024) -> ImageResultV2:
-        guarded = _tool_prompt(command)
-        return self._provider().generate_many((ImageRequestV2(
-            item_id=item_id,
-            command=guarded,
-            seed=self.seed_for(command),
-            width=width,
-            height=height,
-        ),))[0]
-
-    def execute_command_cold(
+    def generate(
         self,
         command: str,
         *,
@@ -140,20 +134,21 @@ class ImageExecutor:
         height: int = 1024,
         max_images: int = 6,
     ) -> tuple[ImageResultV2, ...]:
-        """Split only explicit file boundaries and apply the same generic guard to each item."""
-        provider = self._provider()
+        """Generate requested image files through exactly one private backend path."""
+        command = command.strip()
+        if not command:
+            raise ValueError("image prompt is required")
         explicit_items = _split_explicit_image_items(command, max_images=max_images)
-        raw_items = explicit_items or (command.strip(),)
-        item_commands = tuple(_tool_prompt(item) for item in raw_items)
+        raw_items = explicit_items or (command,)
         base_seed = self.seed_for(command)
         requests = tuple(
             ImageRequestV2(
                 item_id=f"image-{index:02d}",
-                command=item_command,
+                command=_tool_prompt(item),
                 seed=(base_seed + index - 1) % (2 ** 32),
                 width=width,
                 height=height,
             )
-            for index, item_command in enumerate(item_commands, 1)
+            for index, item in enumerate(raw_items, 1)
         )
-        return provider.generate_many(requests)
+        return self._provider().generate_many(requests)
