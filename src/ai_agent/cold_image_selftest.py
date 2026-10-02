@@ -1,16 +1,15 @@
 """One-shot production gate for the simple Cold Image V2 path.
 
-This module is intentionally a temporary verification harness. It exercises the
-real Kaggle provider once with a three-image natural-language command so portrait,
-semantic batching, photoreal and 3D paths are verified in one GPU session.
+Temporary verification harness: one real three-image natural-language run covers
+portrait, semantic batching, photoreal and 3D output in a single GPU session.
+It intentionally uses only the Python standard library.
 """
 from __future__ import annotations
 
-from io import BytesIO
 import json
+import struct
 import time
-
-from PIL import Image, ImageStat
+import zlib
 
 from ai_agent.executors.image import ImageExecutor
 
@@ -25,24 +24,45 @@ COMMAND = (
 
 
 def _validate_png(data: bytes, *, index: int) -> dict:
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    signature = b"\x89PNG\r\n\x1a\n"
+    if not data.startswith(signature):
         raise RuntimeError(f"image {index} is not PNG")
     if len(data) < 20_000:
         raise RuntimeError(f"image {index} is unexpectedly small: {len(data)} bytes")
-    with Image.open(BytesIO(data)) as image:
-        image.load()
-        if image.size != (1024, 1024):
-            raise RuntimeError(f"image {index} has wrong size: {image.size}")
-        rgb = image.convert("RGB").resize((64, 64))
-        stat = ImageStat.Stat(rgb)
-        spread = sum(stat.var) / 3.0
-        if spread < 25.0:
-            raise RuntimeError(f"image {index} appears blank/near-uniform: variance={spread:.2f}")
-        return {
-            "bytes": len(data),
-            "size": list(image.size),
-            "variance": round(spread, 2),
-        }
+    if len(data) < 33 or data[12:16] != b"IHDR":
+        raise RuntimeError(f"image {index} has no valid IHDR")
+    width, height = struct.unpack(">II", data[16:24])
+    if (width, height) != (1024, 1024):
+        raise RuntimeError(f"image {index} has wrong size: {(width, height)}")
+
+    offset = 8
+    idat = bytearray()
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_type = data[offset + 4:offset + 8]
+        chunk_data = data[offset + 8:offset + 8 + length]
+        if len(chunk_data) != length:
+            raise RuntimeError(f"image {index} has truncated PNG chunk")
+        if chunk_type == b"IDAT":
+            idat.extend(chunk_data)
+        offset += 12 + length
+        if chunk_type == b"IEND":
+            break
+    if not idat:
+        raise RuntimeError(f"image {index} has no IDAT payload")
+    try:
+        raw = zlib.decompress(bytes(idat))
+    except zlib.error as exc:
+        raise RuntimeError(f"image {index} has invalid compressed pixels: {exc}") from exc
+    # A valid 1024px generated image should have substantial scanline data and
+    # many byte values. This cheaply catches blank/corrupt placeholder outputs.
+    if len(raw) < 1_000_000 or len(set(raw[::max(1, len(raw) // 100_000)])) < 16:
+        raise RuntimeError(f"image {index} appears blank or corrupt")
+    return {
+        "bytes": len(data),
+        "size": [width, height],
+        "sampled_byte_values": len(set(raw[::max(1, len(raw) // 100_000)])),
+    }
 
 
 def run_cold_image_selftest() -> None:
