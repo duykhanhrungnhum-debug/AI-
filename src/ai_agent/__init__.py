@@ -1,3 +1,3 @@
 """Verification-first autonomous AI Agent foundation."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
