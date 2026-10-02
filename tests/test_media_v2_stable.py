@@ -4,10 +4,12 @@ import re
 
 from ai_agent.core.kaggle_worker import KaggleKernelSubmission
 from ai_agent.core.media_v2 import ImageRequestV2
+from ai_agent.core.media_v2_direct import DirectStableKaggleImageV2Provider
 from ai_agent.core.media_v2_stable import StableKaggleImageV2Provider
 from ai_agent.executors.image import (
     ArtifactPollingKaggleImageWorker,
     ImageExecutor,
+    PRODUCTION_IMAGE_KERNEL,
     PRODUCTION_IMAGE_MAX_WAIT_SECONDS,
     PRODUCTION_RECAPTION_MODEL,
 )
@@ -123,18 +125,29 @@ def test_stable_natural_batch_keeps_sibling_variants_separate():
     assert "never merge subjects from sibling images" in source
 
 
-def test_production_executor_uses_nonblocking_artifact_polling_and_15m_bound(monkeypatch):
+def test_production_executor_uses_direct_prompt_nonblocking_artifact_polling_and_12m_bound(monkeypatch):
     monkeypatch.setenv("KAGGLE_API_TOKEN", "token")
     monkeypatch.setenv("KAGGLE_USERNAME", "user")
     provider = ImageExecutor()._provider()
 
+    assert isinstance(provider, DirectStableKaggleImageV2Provider)
     assert isinstance(provider, StableKaggleImageV2Provider)
     assert isinstance(provider.worker, ArtifactPollingKaggleImageWorker)
     assert provider.worker.logs("anything") == ""
-    assert PRODUCTION_RECAPTION_MODEL == "Qwen/Qwen3-0.6B"
+    assert PRODUCTION_RECAPTION_MODEL == "direct-original-language"
     assert provider.recaption_model == PRODUCTION_RECAPTION_MODEL
-    assert PRODUCTION_IMAGE_MAX_WAIT_SECONDS == 900.0
+    assert provider.kernel_slug == PRODUCTION_IMAGE_KERNEL == "ai-agent-image-v2-direct"
+    assert PRODUCTION_IMAGE_MAX_WAIT_SECONDS == 720.0
     assert provider.max_wait_seconds == PRODUCTION_IMAGE_MAX_WAIT_SECONDS
-    assert provider.max_poll_attempts == 300
+    assert provider.max_poll_attempts == 240
     assert provider.poll_interval == 3
-    assert provider.max_poll_attempts * provider.poll_interval == 900
+    assert provider.max_poll_attempts * provider.poll_interval == 720
+
+    source = provider._harden_recaption_source(provider._build_worker_source((
+        ImageRequestV2("x", "một con vật hoạt hình 3D", 7),
+    )))
+    compile(source, "<aika-image-v2-direct-worker>", "exec")
+    assert 'mode="direct_original_language"' in source
+    assert 'prompt = str(item["command"]).strip()' in source
+    assert 'progress("prompt_preserved"' in source
+    assert 'AutoModelForCausalLM.from_pretrained(CONFIG["recaption_model"]' not in source
