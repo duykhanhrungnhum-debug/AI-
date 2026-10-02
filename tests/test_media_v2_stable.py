@@ -66,6 +66,24 @@ def test_stable_provider_ignores_stale_report_and_never_calls_status():
     assert "AIKA_IMAGE_RUN" in worker.source
 
 
+def test_stable_source_uses_neutral_semantics_and_conditional_aodai_rule():
+    worker = StableFakeWorker()
+    provider = StableKaggleImageV2Provider(
+        worker=worker,
+        poll_interval=0,
+        max_poll_attempts=3,
+    )
+    provider.generate_many((ImageRequestV2("x", "một con trâu nước hoạt hình 3D", 7),))
+
+    source = worker.source
+    assert "def contract_for(user_request):" in source
+    assert 'if "áo dài" in user_request.casefold():' in source
+    assert "never replace one species with a related animal" in source
+    assert "Do not introduce garments" in source
+    assert '+ contract_for(item["command"]) + " "' in source
+    assert "+ base_contract" not in source
+
+
 def test_production_executor_uses_stable_provider_and_is_bounded(monkeypatch):
     monkeypatch.setenv("KAGGLE_API_TOKEN", "token")
     monkeypatch.setenv("KAGGLE_USERNAME", "user")
