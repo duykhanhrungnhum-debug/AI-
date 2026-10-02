@@ -3,10 +3,91 @@ from __future__ import annotations
 
 from hashlib import sha256
 import os
+import re
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.media_v2 import ImageRequestV2, ImageResultV2
 from ai_agent.core.media_v2_stable import StableKaggleImageV2Provider
+
+
+_VI_ORDINALS = {
+    "nhất": 1,
+    "một": 1,
+    "hai": 2,
+    "ba": 3,
+    "tư": 4,
+    "bốn": 4,
+    "năm": 5,
+    "sáu": 6,
+    "bảy": 7,
+    "tám": 8,
+}
+_EN_ORDINALS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+}
+
+
+def _split_explicit_image_items(command: str, *, max_images: int) -> tuple[str, ...] | None:
+    """Split only explicitly enumerated separate images; never classify subjects/styles.
+
+    This is deliberately syntax-only. It handles commands such as ``ảnh thứ nhất`` /
+    ``ảnh 2`` / ``first image`` and leaves all semantic understanding to Qwen.
+    A normal request without a clear ordered list returns ``None`` and follows the
+    ordinary natural-language recaption path.
+    """
+    patterns = (
+        re.compile(
+            r"(?i)\b(?:ảnh|hình)\s+(?:thứ\s+)?"
+            r"(nhất|một|hai|ba|tư|bốn|năm|sáu|bảy|tám)\b"
+        ),
+        re.compile(r"(?i)\b(?:ảnh|hình)\s+(?:số\s*)?([1-8])\b"),
+        re.compile(
+            r"(?i)\b(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+"
+            r"(?:image|picture)\b"
+        ),
+        re.compile(r"(?i)\b(?:image|picture)\s*#?\s*([1-8])\b"),
+    )
+    found: list[tuple[int, int, int]] = []
+    for pattern in patterns:
+        for match in pattern.finditer(command):
+            token = match.group(1).casefold()
+            if token.isdigit():
+                index = int(token)
+            else:
+                index = _VI_ORDINALS.get(token) or _EN_ORDINALS.get(token) or 0
+            if index:
+                found.append((match.start(), match.end(), index))
+
+    found.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    markers: list[tuple[int, int, int]] = []
+    last_end = -1
+    for marker in found:
+        if marker[0] < last_end:
+            continue
+        markers.append(marker)
+        last_end = marker[1]
+
+    if len(markers) < 2 or len(markers) > max_images:
+        return None
+    if [marker[2] for marker in markers] != list(range(1, len(markers) + 1)):
+        return None
+
+    items: list[str] = []
+    for position, (_, end, _) in enumerate(markers):
+        next_start = markers[position + 1][0] if position + 1 < len(markers) else len(command)
+        body = command[end:next_start].strip(" \t\r\n,;:.-")
+        body = re.sub(r"(?i)^(?:là|is)\s+", "", body).strip()
+        if not body:
+            return None
+        items.append(body)
+    return tuple(items)
 
 
 class ImageExecutor:
@@ -63,8 +144,30 @@ class ImageExecutor:
         height: int = 1024,
         max_images: int = 6,
     ) -> tuple[ImageResultV2, ...]:
-        """Generate all explicitly requested separate images in one GPU session."""
-        return self._provider().generate_command(
+        """Generate requested images in one bounded GPU session.
+
+        Explicitly enumerated batches are split deterministically before Qwen so a
+        language model cannot accidentally collapse ``ảnh thứ nhất/hai/ba`` into
+        one picture. Each item is still semantically recaptioned by the same Qwen
+        model loaded once inside the same Kaggle run; FLUX is also loaded once.
+        """
+        provider = self._provider()
+        explicit_items = _split_explicit_image_items(command, max_images=max_images)
+        if explicit_items:
+            base_seed = self.seed_for(command)
+            requests = tuple(
+                ImageRequestV2(
+                    item_id=f"image-{index:02d}",
+                    command=item_command,
+                    seed=(base_seed + index - 1) % (2 ** 32),
+                    width=width,
+                    height=height,
+                )
+                for index, item_command in enumerate(explicit_items, 1)
+            )
+            return provider.generate_many(requests)
+
+        return provider.generate_command(
             command,
             seed=self.seed_for(command),
             width=width,
