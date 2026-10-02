@@ -129,27 +129,33 @@ class KaggleGpuWorker:
         raw_url = data.get("url")
         url = str(raw_url) if raw_url else None
 
-        # Kaggle may normalize/rename a new kernel from its title. Always trust
-        # the canonical ref returned by the push response. Fall back to the URL
-        # path, then finally to the requested slug for older responses.
+        # Kaggle can return refs in several forms, including duplicated owner
+        # prefixes. Status/output endpoints require ONLY the bare kernel slug.
+        # Normalize by taking the last non-empty path segment as the slug and
+        # the preceding segment as owner. This prevents owner/slug from being
+        # passed back as a slug and silently polled until timeout.
         actual_owner = owner
         actual_slug = slug
         raw_ref = data.get("ref") or data.get("kernelRef") or data.get("kernel_ref")
         if isinstance(raw_ref, str) and raw_ref.strip():
-            ref = raw_ref.strip().strip("/")
-            if "/" in ref:
-                ref_owner, ref_slug = ref.split("/", 1)
-                if ref_owner and ref_slug:
-                    actual_owner, actual_slug = ref_owner, ref_slug
+            ref = raw_ref.strip()
+            if "://" in ref:
+                parts = [part for part in urlparse(ref).path.split("/") if part]
             else:
-                actual_slug = ref
+                parts = [part for part in ref.strip("/").split("/") if part]
+            if parts:
+                actual_slug = parts[-1]
+                if len(parts) >= 2:
+                    actual_owner = parts[-2]
         elif url:
             parts = [part for part in urlparse(url).path.split("/") if part]
-            if "code" in parts:
-                index = parts.index("code")
-                if len(parts) >= index + 3:
-                    actual_owner = parts[index + 1]
-                    actual_slug = parts[index + 2]
+            if parts:
+                actual_slug = parts[-1]
+                if len(parts) >= 2:
+                    actual_owner = parts[-2]
+
+        if not actual_slug or "/" in actual_slug:
+            raise ValueError(f"Kaggle returned invalid kernel slug: {actual_slug!r}")
 
         return KaggleKernelSubmission(
             owner=actual_owner,
