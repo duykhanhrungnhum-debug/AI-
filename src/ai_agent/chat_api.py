@@ -1,4 +1,8 @@
-"""AIKA web API with simple chat/image/video tool routing."""
+"""AIKA web API.
+
+Every user request goes to AIKA first. AIKA may answer directly or call one of
+its media tools. The HTTP layer never classifies media intent itself.
+"""
 from __future__ import annotations
 
 import hmac
@@ -10,11 +14,10 @@ from urllib.parse import parse_qs, urlparse
 from ai_agent.api import AIRequestHandler
 from ai_agent.chat_session import CHAT_BROKER
 from ai_agent.media_broker import MEDIA_BROKER
-from ai_agent.router.skill_router import route_skill
 
 
 class ChatRequestHandler(AIRequestHandler):
-    server_version = "AIKA-Chat-API/0.6"
+    server_version = "AIKA-Chat-API/0.7"
 
     def _worker_authorized(self) -> bool:
         expected = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
@@ -47,6 +50,8 @@ class ChatRequestHandler(AIRequestHandler):
 
     @staticmethod
     def _job_status(job_id: str) -> dict:
+        # Once AIKA calls a media tool, that tool owns the same public job id.
+        # Until then, status belongs to the AIKA brain job.
         try:
             return MEDIA_BROKER.get_job(job_id)
         except KeyError:
@@ -55,9 +60,6 @@ class ChatRequestHandler(AIRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
 
-        # Only the conversational model uses a persistent worker callback.
-        # Media tools are direct on-demand executor calls and need no lease,
-        # heartbeat, warm worker, or callback protocol.
         if parsed.path == "/internal/chat/pull":
             if not self._worker_authorized():
                 self._json(401, {"error": "unauthorized"})
@@ -150,20 +152,14 @@ class ChatRequestHandler(AIRequestHandler):
                 command = message or prompt
                 if not command:
                     raise ValueError("message or prompt is required")
-                kind = route_skill(command, skill_hint=str(body.get("skill", "")))
 
-                if kind in {"image", "video"}:
-                    job = MEDIA_BROKER.create_job(kind, command)
-                    state = MEDIA_BROKER.get_job(job.job_id)
-                else:
-                    # Passing an empty message keeps the legacy chat broker on the
-                    # chat path only; all media dispatch lives above in this API.
-                    job = CHAT_BROKER.create_job(prompt or command, message="")
-                    state = CHAT_BROKER.get_job(job.job_id)
-
+                # The HTTP layer does not choose image/video. AIKA sees every
+                # request and decides whether a tool call is required.
+                job = CHAT_BROKER.create_job(command, message="")
+                state = CHAT_BROKER.get_job(job.job_id)
                 self._json(202, {
                     "job_id": job.job_id,
-                    "kind": kind,
+                    "kind": "agent",
                     "status": state["status"],
                     "worker_state": state["worker_state"],
                 })
