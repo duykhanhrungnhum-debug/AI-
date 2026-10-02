@@ -9,13 +9,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: kaggle-gpu-session
+  cancel-in-progress: true
+
 jobs:
-  recover:
+  e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
+      AIKA_IMAGE_WARM_WORKER: "false"
+      AIKA_WARM_CANARY_SELFTEST: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,85 +29,86 @@ jobs:
           python-version: "3.11"
       - name: Install package
         run: python -m pip install -e .
-      - name: Recover existing AIKA run only
+      - name: Require Kaggle credential
+        run: test -n "$KAGGLE_API_TOKEN"
+      - name: Run final AIKA crab frog E2E
         run: |
           python - <<'PY'
           import io
           import json
-          import os
           import time
           from pathlib import Path
           from PIL import Image
-          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          from ai_agent.chat_session import CHAT_BROKER
 
-          EXPECTED_PREFIX = "903dbc46"
-          worker = KaggleGpuWorker(
-              api_token=os.environ["KAGGLE_API_TOKEN"],
-              username=os.environ["KAGGLE_USERNAME"],
-              timeout=120,
+          command = (
+              "AIKA tạo hai ảnh riêng: "
+              "ảnh thứ nhất là một con cua và một con ếch thật, phong cách ảnh chụp chân thực, "
+              "cả hai cùng xuất hiện rõ ràng trong cùng một khung hình; "
+              "ảnh thứ hai là một con cua và một con ếch hoạt hình 3D, "
+              "cả hai cùng xuất hiện rõ ràng trong cùng một khung hình."
           )
-          deadline = time.time() + 240
-          report = None
+          wall_started = time.perf_counter()
+          job = CHAT_BROKER.create_job(command, message=command)
+          assert job.kind == "image", job.kind
+          deadline = time.time() + 650
+          state = None
           while time.time() < deadline:
-              try:
-                  raw = worker.download_output_file("ai-agent-image-v2", "image_v2_report.json")
-                  candidate = json.loads(raw.decode("utf-8"))
-                  token = str(candidate.get("run_token") or "")
-                  print("RECOVERY_REPORT_TOKEN", token[:8], flush=True)
-                  if token.startswith(EXPECTED_PREFIX):
-                      report = candidate
-                      break
-              except Exception as exc:
-                  print("RECOVERY_WAIT", type(exc).__name__, str(exc)[:200], flush=True)
+              state = CHAT_BROKER.get_job(job.job_id)
+              print("AIKA_E2E_STATUS", state["status"], state.get("worker_state", ""), flush=True)
+              if state["status"] == "done":
+                  break
+              if state["status"] == "error":
+                  raise RuntimeError(state.get("error") or "AIKA image job failed")
               time.sleep(5)
-          if report is None:
-              raise TimeoutError("current AIKA run report did not appear")
+          else:
+              raise TimeoutError("AIKA crab frog E2E timed out")
 
-          items = report.get("items")
-          assert isinstance(items, dict) and len(items) == 2, report
-          ordered = list(items.items())
-          prompts = [str(item[1].get("prompt") or "") for item in ordered]
-          folded = [prompt.casefold() for prompt in prompts]
+          assert state is not None
+          assert state["image_count"] == 2, state
+          prompts = list(state["generation_prompts"])
+          assert len(prompts) == 2, prompts
+          folded = [p.casefold() for p in prompts]
           for prompt in folded:
               assert "crab" in prompt, prompts
               assert "frog" in prompt, prompts
               assert "starfish" not in prompt and "sea star" not in prompt, prompts
           assert any(x in folded[0] for x in ("realistic", "photo", "photoreal")), prompts[0]
           assert "3d" in folded[1], prompts[1]
+          assert any(x in folded[1] for x in ("cartoon", "animated", "stylized")), prompts[1]
 
           evidence = []
-          for index, (item_id, item) in enumerate(ordered, 1):
-              data = worker.download_output_file("ai-agent-image-v2", str(item["filename"]))
+          for index in range(2):
+              data, mime = CHAT_BROKER.get_image(job.job_id, index=index)
+              assert mime == "image/png"
               assert data.startswith(b"\x89PNG\r\n\x1a\n")
               with Image.open(io.BytesIO(data)) as image:
-                  assert image.size == (1024, 1024)
+                  assert image.size == (1024, 1024), image.size
                   size = list(image.size)
-              Path(f"aika-crab-frog-{index}.png").write_bytes(data)
-              evidence.append({
-                  "index": index,
-                  "item_id": item_id,
-                  "bytes": len(data),
-                  "size": size,
-                  "generation_seconds": float(item.get("elapsed_seconds") or 0),
-                  "prompt": str(item.get("prompt") or ""),
-              })
+              Path(f"aika-crab-frog-{index + 1}.png").write_bytes(data)
+              evidence.append({"index": index + 1, "bytes": len(data), "size": size})
 
-          clean = {
+          with CHAT_BROKER._lock:
+              stored = CHAT_BROKER._jobs[job.job_id]
+              per_image_seconds = list(stored.image_elapsed_seconds)
+          report = {
               "status": "success",
-              "run_token": report.get("run_token"),
-              "worker_total_seconds": report.get("worker_total_seconds"),
-              "gpu_name": report.get("gpu_name"),
-              "image_model": report.get("image_model"),
-              "recaption_model": report.get("recaption_model"),
-              "items": evidence,
+              "command": command,
+              "wall_total_seconds": round(time.perf_counter() - wall_started, 3),
+              "generation_sum_seconds": float(state["elapsed_seconds"]),
+              "per_image_generation_seconds": per_image_seconds,
+              "prompts": prompts,
+              "provider": state["provider"],
+              "model": state["model"],
+              "images": evidence,
           }
           Path("aika-crab-frog-report.json").write_text(
-              json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+              json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
           )
-          print("AIKA_CRAB_FROG_RECOVERY_OK")
-          print(json.dumps(clean, ensure_ascii=False))
+          print("AIKA_CRAB_FROG_E2E_OK")
+          print(json.dumps(report, ensure_ascii=False))
           PY
-      - name: Upload recovered evidence
+      - name: Upload E2E evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
