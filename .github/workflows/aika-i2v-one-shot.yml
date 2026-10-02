@@ -1,0 +1,103 @@
+name: AIKA LTX I2V One Shot
+
+on:
+  push:
+    paths:
+      - '.github/workflows/aika-i2v-one-shot.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aika-ltx-i2v-one-shot
+  cancel-in-progress: false
+
+jobs:
+  verify-i2v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install AIKA package
+        run: python -m pip install -e .
+      - name: Run exactly one LTX I2V GPU job
+        run: |
+          mkdir -p i2v-output
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+          from ai_agent.core.simple_i2v_tool import SimpleKaggleI2VTool
+
+          if not os.environ.get('KAGGLE_API_TOKEN', '').strip():
+              raise SystemExit('KAGGLE_API_TOKEN is missing')
+
+          url = 'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/guitar-man.png'
+          req = Request(url, headers={'User-Agent': 'AIKA-I2V-Test/1.0'})
+          with urlopen(req, timeout=60) as response:
+              reference = response.read()
+          Path('i2v-output/reference.png').write_bytes(reference)
+
+          slug = 'aika-ltx-i2v-' + os.environ['GITHUB_SHA'][:10]
+          worker = KaggleGpuWorker(
+              api_token=os.environ['KAGGLE_API_TOKEN'],
+              username=os.environ['KAGGLE_USERNAME'],
+              timeout=45,
+              submission_retry_attempts=1,
+              submission_retry_delay_seconds=0,
+          )
+          tool = SimpleKaggleI2VTool(
+              worker=worker,
+              kernel_slug=slug,
+              inference_steps=30,
+              guidance_scale=3.0,
+              poll_interval=5,
+              max_wait_seconds=1200,
+          )
+          prompt = (
+              'The man gently strums the red electric guitar and makes a small natural head movement. '
+              'His identity, face, clothing, guitar, and background remain consistent. '
+              'The camera stays fixed. No zoom, no cut, no morphing.'
+          )
+          artifact = tool.generate(
+              prompt,
+              reference,
+              width=512,
+              height=288,
+              num_frames=33,
+              fps=8,
+              seed=1701,
+          )
+          Path('i2v-output/video.mp4').write_bytes(artifact.data)
+          Path('i2v-output/evidence.json').write_text(json.dumps({
+              'provider': artifact.provider,
+              'model': artifact.model,
+              'duration_seconds': artifact.duration_seconds,
+              'width': artifact.width,
+              'height': artifact.height,
+              'fps': artifact.fps,
+              'generation_seconds': artifact.elapsed_seconds,
+              'evidence': list(artifact.evidence),
+              'visual_qa': 'pending',
+          }, indent=2), encoding='utf-8')
+          print('AIKA_LTX_I2V_ARTIFACT_READY_PENDING_VISUAL_QA')
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aika-ltx-i2v-one-shot
+          path: i2v-output/
+          if-no-files-found: warn
