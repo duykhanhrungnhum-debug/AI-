@@ -27,7 +27,7 @@ jobs:
           src/ai_agent/core/kaggle_worker.py
           src/ai_agent/core/media_v2.py
           src/ai_agent/core/media_v2_direct.py
-          src/ai_agent/core/simple_video_tool.py
+          src/ai_agent/core/simple_i2v_tool.py
           src/ai_agent/command/schema.py
           src/ai_agent/jobs/manager.py
           src/ai_agent/executors/image.py
