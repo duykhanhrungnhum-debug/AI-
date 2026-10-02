@@ -1,1 +1,1 @@
-capture current AIKA video diagnosis artifact 2026-10-02 13:19
+inspect isolated AIKA video kernels 2026-10-02 14:08
