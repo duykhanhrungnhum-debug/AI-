@@ -118,4 +118,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-# trigger: direct original-language crab-frog verification
+# trigger: final authorized-kernel direct verification
