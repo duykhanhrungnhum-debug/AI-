@@ -11,8 +11,8 @@ import os
 from http.server import ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from ai_agent.agent_broker import AGENT_BROKER
 from ai_agent.api import AIRequestHandler
-from ai_agent.chat_session import CHAT_BROKER
 from ai_agent.media_broker import MEDIA_BROKER
 
 
@@ -55,7 +55,7 @@ class ChatRequestHandler(AIRequestHandler):
         try:
             return MEDIA_BROKER.get_job(job_id)
         except KeyError:
-            return CHAT_BROKER.get_job(job_id)
+            return AGENT_BROKER.get_job(job_id)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -64,7 +64,7 @@ class ChatRequestHandler(AIRequestHandler):
             if not self._worker_authorized():
                 self._json(401, {"error": "unauthorized"})
                 return
-            self._empty_or_json(CHAT_BROKER.pull_job())
+            self._empty_or_json(AGENT_BROKER.pull_job())
             return
 
         if parsed.path == "/v1/chat/status":
@@ -130,7 +130,7 @@ class ChatRequestHandler(AIRequestHandler):
                     self._json(401, {"error": "unauthorized"})
                     return
                 body = self._read_body()
-                CHAT_BROKER.heartbeat(str(body.get("state", "ready")))
+                AGENT_BROKER.heartbeat(str(body.get("state", "ready")))
                 self._json(200, {"status": "ok"})
                 return
 
@@ -138,7 +138,7 @@ class ChatRequestHandler(AIRequestHandler):
                 if not self._worker_authorized():
                     self._json(401, {"error": "unauthorized"})
                     return
-                CHAT_BROKER.finish_job(self._read_body())
+                AGENT_BROKER.finish_job(self._read_body())
                 self._json(200, {"status": "ok"})
                 return
 
@@ -153,10 +153,9 @@ class ChatRequestHandler(AIRequestHandler):
                 if not command:
                     raise ValueError("message or prompt is required")
 
-                # The HTTP layer does not choose image/video. AIKA sees every
-                # request and decides whether a tool call is required.
-                job = CHAT_BROKER.create_job(command, message="")
-                state = CHAT_BROKER.get_job(job.job_id)
+                # No server-side media routing: AIKA sees and decides every request.
+                job = AGENT_BROKER.create_job(command)
+                state = AGENT_BROKER.get_job(job.job_id)
                 self._json(202, {
                     "job_id": job.job_id,
                     "kind": "agent",
