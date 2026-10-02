@@ -25,19 +25,20 @@ class StableKaggleImageV2Provider(KaggleImageV2Provider):
     max_wait_seconds: float = 540.0
 
     def _harden_recaption_source(self, source: str) -> str:
-        """Keep the general recaption contract neutral and apply culture details only when asked.
+        """Install one generic semantic-integrity gate before FLUX.
 
-        The legacy V2 contract embedded a long áo-dài example in every request. A
-        real E2E run proved that this contaminated an unrelated buffalo prompt by
-        inventing traditional clothing. The stable path keeps one compact generic
-        contract and adds the áo-dài construction rule only when the current item
-        actually requests áo dài.
+        The gate is deliberately subject-agnostic: there is no animal/species table,
+        blacklist, or per-word fix. Qwen first recaptions the request, then the same
+        already-loaded Qwen performs one short fidelity pass against the original
+        request. Any subject/entity/species/count/style drift is corrected before
+        FLUX is loaded, so a bad recaption does not waste an image-generation run.
         """
         old_contract = '''base_contract = (\n    "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "\n    "important attributes, and explicit exclusions. Preserve culturally specific names and untranslated proper "\n    "terms verbatim instead of substituting an item from another culture. For named garments, foods, places, or "\n    "art forms, keep the original name and optionally add a short English gloss. For a culturally specific named "\n    "garment, add its canonical silhouette and construction details when known confidently. In particular, Vietnamese "\n    "'áo dài' must remain 'Vietnamese áo dài' and must be described as a fitted high-collared long-sleeved tunic with "\n    "long front and back panels, high side slits, worn over separate loose full-length trousers; it is not a one-piece "\n    "dress, hanbok, qipao, or cheongsam. Do not generalize a named subject. Do not invent body parts, objects, text, "\n    "logos, or requirements that the user did not request."\n)\n'''
-        new_contract = '''def contract_for(user_request):\n    contract = (\n        "Preserve exactly the requested subject or species, number of subjects, visual style, setting, framing, "\n        "important attributes, and explicit exclusions. Translate animal species and breed names precisely; never "\n        "replace one species with a related animal, a generic livestock term, or a sex term such as bull/cow. When an "\n        "animal name is Vietnamese, keep the original Vietnamese species term in parentheses after the precise English "\n        "name when useful for fidelity. Preserve culturally specific names and untranslated proper terms instead of "\n        "substituting an item from another culture. Do not introduce garments, props, body parts, text, logos, or other "\n        "requirements the user did not ask for. Do not generalize a named subject."\n    )\n    if "áo dài" in user_request.casefold():\n        contract += (\n            " Vietnamese 'áo dài' must remain 'Vietnamese áo dài' and be described as a fitted high-collared "\n            "long-sleeved tunic with long front and back panels, high side slits, worn over separate loose full-length "\n            "trousers; it is not a one-piece dress, hanbok, qipao, or cheongsam."\n        )\n    return contract\n'''
+        new_contract = '''def contract_for(user_request):\n    contract = (\n        "Treat the original user request as semantic authority. Preserve exactly every requested concrete subject, "\n        "entity, species, breed, count, visual style, setting, framing, important attribute, and explicit exclusion. "\n        "Translate named subjects literally and precisely; never replace one subject/species/entity with a related, "\n        "similar, generic, culturally adjacent, or more visually convenient substitute. Never invent a new subject. "\n        "For a non-English named subject/species/entity, retain its exact source-language term in parentheses after the "\n        "precise English translation when useful as a fidelity anchor. Preserve culturally specific names and proper "\n        "terms instead of substituting an item from another culture. Do not introduce garments, props, body parts, "\n        "text, logos, or other requirements the user did not ask for. Do not generalize a named subject."\n    )\n    if "áo dài" in user_request.casefold():\n        contract += (\n            " Vietnamese 'áo dài' must remain 'Vietnamese áo dài' and be described as a fitted high-collared "\n            "long-sleeved tunic with long front and back panels, high side slits, worn over separate loose full-length "\n            "trousers; it is not a one-piece dress, hanbok, qipao, or cheongsam."\n        )\n    return contract\n\n\ndef enforce_semantic_integrity(user_request, candidate_prompt, *, variant_scope=False):\n    scope_rule = (\n        "The candidate is one image from a multi-image request. Repair only the subjects and attributes relevant to "\n        "this candidate; do not merge subjects from other requested images. "\n        if variant_scope else ""\n    )\n    instruction = (\n        "You are AIKA's final semantic-integrity gate for an image prompt. Independently reread the ORIGINAL USER "\n        "REQUEST; do not trust the candidate when they disagree. " + scope_rule +\n        "Silently identify every concrete subject, entity, species/breed, count, style, and explicit attribute required "\n        "by the original request for this image. Compare them with the CANDIDATE PROMPT. Correct every omission, "\n        "substitution, mistranslation, invented subject, count drift, or style drift. A species/entity must remain that "\n        "exact species/entity, never a related or visually similar one. If the original request is non-English, translate "\n        "named subjects literally and keep the exact source-language term in parentheses after the English name when "\n        "useful for fidelity. If the candidate is already faithful, keep its meaning unchanged. Return exactly one "\n        "concise English image-generation description and nothing else.\n"\n        "ORIGINAL USER REQUEST: " + user_request + "\n"\n        "CANDIDATE PROMPT: " + candidate_prompt\n    )\n    repaired = render_recaption(tokenizer, recaptioner, instruction).strip().strip('"')\n    if len(repaired) < 12:\n        raise RuntimeError("semantic integrity gate returned an empty/invalid description")\n    return repaired\n'''
         if old_contract not in source:
             raise RuntimeError("Image V2 recaption contract changed; stable semantic patch is unsafe")
         source = source.replace(old_contract, new_contract, 1)
+
         natural_marker = '+ base_contract + " "'
         if source.count(natural_marker) != 2:
             raise RuntimeError("Image V2 recaption call sites changed; stable semantic patch is unsafe")
@@ -51,6 +52,24 @@ class StableKaggleImageV2Provider(KaggleImageV2Provider):
             '+ contract_for(item["command"]) + " "',
             1,
         )
+
+        source = source.replace(
+            '"Rewrite the USER REQUEST as one concise, vivid English image-generation description. "',
+            '"Rewrite the USER REQUEST as one concise, literal-faithful English image-generation description. "',
+            1,
+        )
+
+        natural_assignment = '        prompts[item_id] = prompt\n        progress("recaptioned", item_id=item_id, item_index=index + 1, item_total=len(parts))'
+        natural_replacement = '''        repaired_prompt = enforce_semantic_integrity(\n            CONFIG["command"], prompt, variant_scope=True\n        )\n        prompts[item_id] = repaired_prompt\n        progress(\n            "integrity_checked",\n            item_id=item_id,\n            item_index=index + 1,\n            item_total=len(parts),\n            changed=(repaired_prompt != prompt),\n        )'''
+        if natural_assignment not in source:
+            raise RuntimeError("Image V2 natural-batch prompt assignment changed; semantic gate is unsafe")
+        source = source.replace(natural_assignment, natural_replacement, 1)
+
+        explicit_assignment = '        prompts[item["id"]] = prompt\n        progress("recaptioned", item_id=item["id"], item_index=index + 1, item_total=len(items))'
+        explicit_replacement = '''        repaired_prompt = enforce_semantic_integrity(item["command"], prompt)\n        prompts[item["id"]] = repaired_prompt\n        progress(\n            "integrity_checked",\n            item_id=item["id"],\n            item_index=index + 1,\n            item_total=len(items),\n            changed=(repaired_prompt != prompt),\n        )'''
+        if explicit_assignment not in source:
+            raise RuntimeError("Image V2 explicit prompt assignment changed; semantic gate is unsafe")
+        source = source.replace(explicit_assignment, explicit_replacement, 1)
         return source
 
     def _instrument_source(self, source: str, run_token: str) -> str:
