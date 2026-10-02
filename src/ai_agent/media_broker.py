@@ -1,7 +1,7 @@
 """Minimal asynchronous media-tool broker for AIKA.
 
-AIKA decides which skill to call. The broker does not interpret media semantics;
-it only runs the selected image/video executor and stores returned artifacts.
+AIKA decides which tool to call. This broker never classifies user intent; it
+only executes the already-selected image/video tool and stores its artifacts.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class MediaJob:
 
 
 class MediaToolBroker:
-    """One broker, two tools, no warm/cold switching or worker leases."""
+    """One broker, two tools, no intent routing, warm/cold switching, or leases."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -41,22 +41,27 @@ class MediaToolBroker:
         self._image = ImageExecutor()
         self._video = VideoExecutor()
 
-    def create_job(self, kind: str, command: str) -> MediaJob:
+    def create_job(self, kind: str, command: str, *, job_id: str | None = None) -> MediaJob:
         kind = kind.strip().casefold()
         command = command.strip()
         if kind not in {"image", "video"}:
             raise ValueError("media kind must be image or video")
         if not command:
             raise ValueError("media command is required")
+        resolved_id = (job_id or uuid4().hex).strip()
+        if not resolved_id:
+            raise ValueError("job_id must not be empty")
         job = MediaJob(
-            job_id=uuid4().hex,
+            job_id=resolved_id,
             kind=kind,
             command=command,
             status="processing",
             created_at=time.time(),
         )
         with self._lock:
-            self._jobs[job.job_id] = job
+            if resolved_id in self._jobs:
+                raise ValueError(f"media job already exists: {resolved_id}")
+            self._jobs[resolved_id] = job
             if len(self._jobs) > 40:
                 oldest = sorted(self._jobs.values(), key=lambda item: item.created_at)[:-30]
                 for item in oldest:
