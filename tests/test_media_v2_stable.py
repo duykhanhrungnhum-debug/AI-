@@ -66,7 +66,7 @@ def test_stable_provider_ignores_stale_report_and_never_calls_status():
     assert "AIKA_IMAGE_RUN" in worker.source
 
 
-def test_stable_source_has_general_semantic_integrity_gate_without_species_patch():
+def test_stable_source_has_generic_subject_identity_lock_without_species_patch():
     worker = StableFakeWorker()
     provider = StableKaggleImageV2Provider(
         worker=worker,
@@ -77,10 +77,12 @@ def test_stable_source_has_general_semantic_integrity_gate_without_species_patch
 
     source = worker.source
     assert "def contract_for(user_request):" in source
+    assert "def extract_subject_locks(user_request):" in source
+    assert "def prompt_has_subject_locks(prompt, locks):" in source
     assert "def enforce_semantic_integrity(" in source
-    assert "final semantic-integrity gate" in source
-    assert "ORIGINAL USER REQUEST" in source
-    assert "never a related or visually similar one" in source
+    assert "shortest exact noun phrase copied verbatim" in source
+    assert "Silently verify each translation before output" in source
+    assert "subject integrity guard failed before image generation" in source
     assert 'if "áo dài" in user_request.casefold():' in source
     assert "+ contract_for(item[\"command\"]) + \" \"" in source
     assert 'repaired_prompt = enforce_semantic_integrity(item["command"], prompt)' in source
@@ -88,7 +90,7 @@ def test_stable_source_has_general_semantic_integrity_gate_without_species_patch
     assert "literal-faithful English image-generation description" in source
     assert "+ base_contract" not in source
 
-    # Regression guard: the fix must stay generic, never become a crab/frog/buffalo table.
+    # Regression guard: the mechanism must stay generic, never become a species table.
     folded = source.casefold()
     assert "subject_class" not in folded
     assert "species table" not in folded
@@ -99,7 +101,23 @@ def test_stable_source_has_general_semantic_integrity_gate_without_species_patch
     assert "water buffalo" not in folded
 
 
-def test_stable_natural_batch_checks_each_candidate_without_merging_variants():
+def test_subject_lock_repairs_only_on_mismatch_and_validates_before_flux():
+    provider = StableKaggleImageV2Provider(
+        worker=StableFakeWorker(),
+        poll_interval=0,
+        max_poll_attempts=3,
+    )
+    source = provider._harden_recaption_source(provider._build_worker_source((
+        ImageRequestV2("x", "hai chủ thể hoạt hình 3D", 7),
+    )))
+
+    assert "if not locks or prompt_has_subject_locks(candidate_prompt, locks):" in source
+    assert "These locked subjects are mandatory" in source
+    assert "each English label must appear verbatim" in source
+    assert "not prompt_has_subject_locks(repaired, locks)" in source
+
+
+def test_stable_natural_batch_keeps_sibling_variants_separate():
     provider = StableKaggleImageV2Provider(
         worker=StableFakeWorker(),
         poll_interval=0,
@@ -111,9 +129,8 @@ def test_stable_natural_batch_checks_each_candidate_without_merging_variants():
         max_images=2,
     ))
 
-    assert "variant_scope=True" in source
+    assert "variant_scope=(len(parts) > 1)" in source
     assert "do not merge subjects from other requested images" in source
-    assert 'CONFIG["command"], prompt, variant_scope=True' in source
 
 
 def test_production_executor_uses_stable_provider_and_is_bounded(monkeypatch):
