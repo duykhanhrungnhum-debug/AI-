@@ -35,7 +35,7 @@ class VideoExecutor:
         self,
         *,
         kernel_slug: str = PRODUCTION_VIDEO_KERNEL,
-        inference_steps: int = 20,
+        inference_steps: int = 40,
         poll_interval: float = 5.0,
         max_poll_attempts: int = 180,
     ) -> None:
