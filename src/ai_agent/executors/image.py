@@ -14,7 +14,10 @@ from ai_agent.core.media_v2_direct import DirectStableKaggleImageV2Provider
 # production image path. FLUX.2 Klein uses its own bundled text encoder.
 PRODUCTION_RECAPTION_MODEL = "direct-original-language"
 PRODUCTION_IMAGE_MAX_WAIT_SECONDS = 720.0
-PRODUCTION_IMAGE_KERNEL = "ai-agent-image-v2-direct"
+# Keep the established Kaggle slug because the current private token can read
+# output artifacts for this kernel; semantic behavior comes from the submitted
+# direct worker source, not from the slug name or any previous kernel version.
+PRODUCTION_IMAGE_KERNEL = "ai-agent-image-v2"
 
 
 class ArtifactPollingKaggleImageWorker(KaggleGpuWorker):
@@ -80,8 +83,7 @@ class ImageExecutor:
     """One bounded production path: original prompt -> FLUX.2 Klein."""
 
     def __init__(self, *, kernel_slug: str = PRODUCTION_IMAGE_KERNEL) -> None:
-        # Migrate legacy callers transparently to the clean direct kernel slug.
-        self.kernel_slug = PRODUCTION_IMAGE_KERNEL if kernel_slug == "ai-agent-image-v2" else kernel_slug
+        self.kernel_slug = kernel_slug
 
     @staticmethod
     def seed_for(command: str) -> int:
