@@ -1,0 +1,92 @@
+name: AIKA Qwen Recaption Cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aika-qwen-cache.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Build persistent CPU-only recaption cache
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          MODEL = "Qwen/Qwen3-0.6B"
+          SLUG = "aika-qwen-recaption-cache"
+          source = r'''
+          from pathlib import Path
+          import json
+          import subprocess
+          import sys
+          import time
+
+          MODEL = "Qwen/Qwen3-0.6B"
+          OUT = Path("/kaggle/working/qwen-recaption")
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "huggingface_hub>=0.30"])
+          from huggingface_hub import snapshot_download
+          started = time.perf_counter()
+          snapshot_download(
+              repo_id=MODEL,
+              local_dir=str(OUT),
+              local_dir_use_symlinks=False,
+          )
+          payload = {
+              "model": MODEL,
+              "path": "qwen-recaption",
+              "elapsed_seconds": round(time.perf_counter() - started, 3),
+          }
+          Path("/kaggle/working/cache_ready.json").write_text(json.dumps(payload), encoding="utf-8")
+          print("AIKA_QWEN_CACHE_READY " + json.dumps(payload), flush=True)
+          '''
+          source = "\n".join(line[10:] if line.startswith("          ") else line for line in source.splitlines()).strip() + "\n"
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+              submission_retry_attempts=2,
+              submission_retry_delay_seconds=10,
+          )
+          submission = worker.submit_script(
+              slug=SLUG,
+              title="AIKA Qwen Recaption Cache",
+              source=source,
+              enable_internet=True,
+              enable_gpu=False,
+              is_private=True,
+          )
+          print("AIKA_QWEN_CACHE_SUBMITTED", submission.ref, flush=True)
+          deadline = time.time() + 720
+          while time.time() < deadline:
+              try:
+                  raw = worker.download_output_file(SLUG, "cache_ready.json")
+                  payload = json.loads(raw.decode("utf-8"))
+                  if payload.get("model") == MODEL:
+                      print("AIKA_QWEN_CACHE_VERIFIED", json.dumps(payload), flush=True)
+                      break
+              except Exception as exc:
+                  print("AIKA_QWEN_CACHE_WAIT", type(exc).__name__, str(exc)[:160], flush=True)
+              time.sleep(5)
+          else:
+              raise TimeoutError("Qwen recaption cache did not become available")
+          PY
