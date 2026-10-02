@@ -1,8 +1,5 @@
 name: AIKA Chat Image E2E
 
-# Manual end-to-end proof that a natural-language command entered in AIKA chat
-# routes through the existing Image V2 skill and returns a real PNG. Pushes only
-# cancel an older duplicate run; the GPU test itself runs on workflow_dispatch.
 on:
   push:
     branches: [main]
@@ -19,12 +16,13 @@ concurrency:
 
 jobs:
   e2e:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: duykhanhta
+      AIKA_IMAGE_WARM_WORKER: "false"
+      AIKA_WARM_CANARY_SELFTEST: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,18 +32,28 @@ jobs:
         run: python -m pip install -e .
       - name: Require Kaggle credential
         run: test -n "$KAGGLE_API_TOKEN"
-      - name: Run real AIKA chat to image path
+      - name: Run real AIKA crab frog integrity E2E
         run: |
           python - <<'PY'
+          import io
+          import json
           import time
           from pathlib import Path
+          from PIL import Image
           from ai_agent.chat_session import CHAT_BROKER
 
-          command = "AIKA tạo ảnh một quả táo đỏ trên nền trắng, phong cách ảnh sản phẩm chân thực"
+          command = (
+              "AIKA tạo hai ảnh riêng: "
+              "ảnh thứ nhất là một con cua và một con ếch thật, phong cách ảnh chụp chân thực, "
+              "cả hai cùng xuất hiện rõ ràng trong cùng một khung hình; "
+              "ảnh thứ hai là một con cua và một con ếch hoạt hình 3D, "
+              "cả hai cùng xuất hiện rõ ràng trong cùng một khung hình."
+          )
+          wall_started = time.perf_counter()
           job = CHAT_BROKER.create_job(command, message=command)
           assert job.kind == "image", job.kind
 
-          deadline = time.time() + 1500
+          deadline = time.time() + 700
           state = None
           while time.time() < deadline:
               state = CHAT_BROKER.get_job(job.job_id)
@@ -56,25 +64,61 @@ jobs:
                   raise RuntimeError(state.get("error") or "AIKA image job failed")
               time.sleep(5)
           else:
-              raise TimeoutError("AIKA chat image E2E timed out")
+              raise TimeoutError("AIKA crab frog E2E timed out")
 
           assert state is not None
-          assert state["kind"] == "image"
-          assert state["has_image"] is True
-          assert state["image_url"].startswith("/v1/chat/image?job_id=")
-          data, mime = CHAT_BROKER.get_image(job.job_id)
-          assert mime == "image/png"
-          assert data.startswith(b"\x89PNG\r\n\x1a\n")
-          Path("aika-chat-e2e.png").write_bytes(data)
-          print("AIKA_CHAT_IMAGE_E2E_OK")
-          print("MODEL", state["model"])
-          print("GEN_SECONDS", state["elapsed_seconds"])
+          assert state["image_count"] == 2, state
+          prompts = list(state["generation_prompts"])
+          assert len(prompts) == 2, prompts
+          folded = [p.casefold() for p in prompts]
+          for p in folded:
+              assert "crab" in p, prompts
+              assert "frog" in p, prompts
+              assert "starfish" not in p and "sea star" not in p, prompts
+          assert any(word in folded[0] for word in ("realistic", "photo", "photoreal")), prompts[0]
+          assert "3d" in folded[1], prompts[1]
+          assert any(word in folded[1] for word in ("cartoon", "animated", "stylized")), prompts[1]
+
+          evidence = []
+          for index in range(2):
+              data, mime = CHAT_BROKER.get_image(job.job_id, index=index)
+              assert mime == "image/png"
+              assert data.startswith(b"\x89PNG\r\n\x1a\n")
+              with Image.open(io.BytesIO(data)) as image:
+                  assert image.size == (1024, 1024), image.size
+                  size = list(image.size)
+              Path(f"aika-crab-frog-{index + 1}.png").write_bytes(data)
+              evidence.append({"index": index + 1, "bytes": len(data), "size": size})
+
+          with CHAT_BROKER._lock:
+              stored = CHAT_BROKER._jobs[job.job_id]
+              per_image_seconds = list(stored.image_elapsed_seconds)
+
+          report = {
+              "status": "success",
+              "command": command,
+              "wall_total_seconds": round(time.perf_counter() - wall_started, 3),
+              "generation_sum_seconds": float(state["elapsed_seconds"]),
+              "per_image_generation_seconds": per_image_seconds,
+              "prompts": prompts,
+              "model": state["model"],
+              "provider": state["provider"],
+              "images": evidence,
+          }
+          Path("aika-crab-frog-report.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          print("AIKA_CRAB_FROG_E2E_OK")
+          print(json.dumps(report, ensure_ascii=False))
           PY
-      - name: Upload E2E image evidence
+      - name: Upload E2E evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aika-chat-image-e2e
-          path: aika-chat-e2e.png
+          name: aika-crab-frog-integrity-e2e
+          path: |
+            aika-crab-frog-1.png
+            aika-crab-frog-2.png
+            aika-crab-frog-report.json
           if-no-files-found: warn
           retention-days: 3
