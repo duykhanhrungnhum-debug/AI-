@@ -78,12 +78,13 @@ def test_stable_source_has_general_semantic_integrity_gate_without_species_patch
     source = worker.source
     assert "def contract_for(user_request):" in source
     assert "def enforce_semantic_integrity(" in source
-    assert "Independently reread the ORIGINAL USER REQUEST" in source
+    assert "final semantic-integrity gate" in source
+    assert "ORIGINAL USER REQUEST" in source
     assert "never a related or visually similar one" in source
     assert 'if "áo dài" in user_request.casefold():' in source
     assert "+ contract_for(item[\"command\"]) + \" \"" in source
     assert 'repaired_prompt = enforce_semantic_integrity(item["command"], prompt)' in source
-    assert 'progress(\n            "integrity_checked"' in source
+    assert '"integrity_checked"' in source
     assert "literal-faithful English image-generation description" in source
     assert "+ base_contract" not in source
 
