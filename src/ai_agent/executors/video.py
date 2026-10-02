@@ -17,8 +17,10 @@ PRODUCTION_VIDEO_KERNEL = "ai-agent-video-tool"
 GENERIC_VIDEO_CONSTRAINTS = (
     "Keep every named subject visually distinct and anatomically coherent for the whole shot. "
     "Preserve exact subject identity and count. Do not merge, hybridize, morph, substitute, duplicate, "
-    "or omit subjects. Use one continuous coherent shot with natural motion and stable composition. "
-    "No text, subtitles, logos, or watermarks unless requested."
+    "or omit subjects. Keep every explicitly requested object and action visibly present in the shot. "
+    "Requested motion must be real subject or environmental motion, not camera drift, zoom, blur, "
+    "crossfade, dissolve, exposure change, or lighting-only change. Use one continuous coherent shot "
+    "with natural motion and stable composition. No text, subtitles, logos, or watermarks unless requested."
 )
 
 
@@ -77,8 +79,8 @@ class VideoExecutor:
         *,
         width: int = 832,
         height: int = 480,
-        num_frames: int = 17,
-        fps: int = 16,
+        num_frames: int = 33,
+        fps: int = 8,
     ) -> SimpleVideoArtifact:
         original = command.strip()
         prompt = _tool_prompt(original)
