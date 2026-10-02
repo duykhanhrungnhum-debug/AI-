@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import os
+from uuid import uuid4
 
 from ai_agent.core.kaggle_worker import KaggleGpuWorker
 from ai_agent.core.simple_video_tool import SimpleKaggleVideoTool, SimpleVideoArtifact
@@ -48,7 +49,7 @@ class VideoExecutor:
     def seed_for(command: str) -> int:
         return int.from_bytes(sha256(command.encode("utf-8")).digest()[:4], "big")
 
-    def _provider(self) -> SimpleKaggleVideoTool:
+    def _provider(self, *, job_slug: str) -> SimpleKaggleVideoTool:
         token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
         username = os.environ.get("KAGGLE_USERNAME", "").strip()
         if not token:
@@ -63,7 +64,7 @@ class VideoExecutor:
                 submission_retry_attempts=2,
                 submission_retry_delay_seconds=10,
             ),
-            kernel_slug=self.kernel_slug,
+            kernel_slug=job_slug,
             poll_interval=self.poll_interval,
             max_wait_seconds=min(self.max_wait_seconds, 900.0),
             inference_steps=self.inference_steps,
@@ -81,7 +82,10 @@ class VideoExecutor:
     ) -> SimpleVideoArtifact:
         original = command.strip()
         prompt = _tool_prompt(original)
-        return self._provider().generate(
+        # One job gets one Kaggle slug. Output/status can therefore never be
+        # confused with a previous run that used the same production tool.
+        job_slug = f"{self.kernel_slug}-{uuid4().hex[:10]}"
+        return self._provider(job_slug=job_slug).generate(
             prompt,
             width=width,
             height=height,
