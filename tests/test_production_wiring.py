@@ -30,6 +30,21 @@ def test_legacy_media_architecture_is_physically_removed():
         "src/ai_agent/workers/image_manager_v6.py",
         "src/ai_agent/workers/image_manager_v65.py",
         "src/ai_agent/workers/image_worker_source_v6.py",
+        "src/ai_agent/core/simple_video_tool.py",
+        "src/ai_agent/core/kaggle_i2v.py",
     )
     for raw_path in legacy_paths:
         assert not Path(raw_path).exists(), raw_path
+
+
+def test_production_video_executor_is_i2v_only():
+    module = importlib.import_module("ai_agent.executors.video")
+    module = importlib.reload(module)
+    source = inspect.getsource(module)
+
+    assert "SimpleKaggleI2VTool" in source
+    assert "ImageExecutor" in source
+    assert "reference_image" in source
+    assert "WanPipeline" not in source
+    assert "SimpleKaggleVideoTool" not in source
+    assert "StableVideoDiffusionPipeline" not in source
