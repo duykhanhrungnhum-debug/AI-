@@ -66,7 +66,7 @@ def test_stable_provider_ignores_stale_report_and_never_calls_status():
     assert "AIKA_IMAGE_RUN" in worker.source
 
 
-def test_stable_source_uses_neutral_semantics_and_conditional_aodai_rule():
+def test_stable_source_has_general_semantic_integrity_gate_without_species_patch():
     worker = StableFakeWorker()
     provider = StableKaggleImageV2Provider(
         worker=worker,
@@ -77,12 +77,42 @@ def test_stable_source_uses_neutral_semantics_and_conditional_aodai_rule():
 
     source = worker.source
     assert "def contract_for(user_request):" in source
+    assert "def enforce_semantic_integrity(" in source
+    assert "Independently reread the ORIGINAL USER REQUEST" in source
+    assert "never a related or visually similar one" in source
     assert 'if "áo dài" in user_request.casefold():' in source
-    assert "Translate animal species and breed names precisely" in source
-    assert "a generic livestock term" in source
-    assert "Do not introduce garments" in source
-    assert '+ contract_for(item["command"]) + " "' in source
+    assert "+ contract_for(item[\"command\"]) + \" \"" in source
+    assert 'repaired_prompt = enforce_semantic_integrity(item["command"], prompt)' in source
+    assert 'progress(\n            "integrity_checked"' in source
+    assert "literal-faithful English image-generation description" in source
     assert "+ base_contract" not in source
+
+    # Regression guard: the fix must stay generic, never become a crab/frog/buffalo table.
+    folded = source.casefold()
+    assert "subject_class" not in folded
+    assert "species table" not in folded
+    assert "if species" not in folded
+    assert "if animal" not in folded
+    assert "crab" not in folded
+    assert "frog" not in folded
+    assert "water buffalo" not in folded
+
+
+def test_stable_natural_batch_checks_each_candidate_without_merging_variants():
+    provider = StableKaggleImageV2Provider(
+        worker=StableFakeWorker(),
+        poll_interval=0,
+        max_poll_attempts=3,
+    )
+    source = provider._harden_recaption_source(provider._build_command_worker_source(
+        "Tạo hai ảnh riêng với hai chủ thể khác nhau",
+        seed=7,
+        max_images=2,
+    ))
+
+    assert "variant_scope=True" in source
+    assert "do not merge subjects from other requested images" in source
+    assert 'CONFIG["command"], prompt, variant_scope=True' in source
 
 
 def test_production_executor_uses_stable_provider_and_is_bounded(monkeypatch):
