@@ -136,7 +136,7 @@ def test_production_executor_uses_direct_prompt_nonblocking_artifact_polling_and
     assert provider.worker.logs("anything") == ""
     assert PRODUCTION_RECAPTION_MODEL == "direct-original-language"
     assert provider.recaption_model == PRODUCTION_RECAPTION_MODEL
-    assert provider.kernel_slug == PRODUCTION_IMAGE_KERNEL == "ai-agent-image-v2-direct"
+    assert provider.kernel_slug == PRODUCTION_IMAGE_KERNEL == "ai-agent-image-v2"
     assert PRODUCTION_IMAGE_MAX_WAIT_SECONDS == 720.0
     assert provider.max_wait_seconds == PRODUCTION_IMAGE_MAX_WAIT_SECONDS
     assert provider.max_poll_attempts == 240
