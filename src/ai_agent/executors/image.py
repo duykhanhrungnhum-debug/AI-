@@ -13,9 +13,28 @@ from ai_agent.core.media_v2_stable import StableKaggleImageV2Provider
 # Production recaption is intentionally compact: it only translates/normalizes
 # image requests. Subject identity is enforced separately by the stable semantic
 # gate, so a larger language model only increases cold-start without improving
-# the image model itself. Qwen3-0.6B supports Vietnamese and the same chat template
-# controls already used by this worker.
+# the image model itself.
 PRODUCTION_RECAPTION_MODEL = "Qwen/Qwen3-0.6B"
+PRODUCTION_IMAGE_MAX_WAIT_SECONDS = 900.0
+
+
+class ArtifactPollingKaggleImageWorker(KaggleGpuWorker):
+    """Kaggle image worker whose control plane never blocks on live log streaming.
+
+    The Kaggle logs endpoint can hold a request for 60-120 seconds while a GPU
+    kernel is queued/running. Production completion is already proven by the
+    run-tokened output artifact, so live logs must not sit in the polling loop.
+    Logs remain available to separate diagnostic/probe tooling when needed.
+    """
+
+    def logs(self, slug: str) -> str:
+        return ""
+
+    def submit_script(self, **kwargs):
+        # Request the supported T4 accelerator explicitly instead of leaving
+        # accelerator selection implicit in Kaggle's scheduler.
+        kwargs.setdefault("machine_shape", "NvidiaTeslaT4")
+        return super().submit_script(**kwargs)
 
 
 _VI_ORDINALS = {
@@ -43,13 +62,7 @@ _EN_ORDINALS = {
 
 
 def _split_explicit_image_items(command: str, *, max_images: int) -> tuple[str, ...] | None:
-    """Split only explicitly enumerated separate images; never classify subjects/styles.
-
-    This is deliberately syntax-only. It handles commands such as ``ảnh thứ nhất`` /
-    ``ảnh 2`` / ``first image`` and leaves all semantic understanding to Qwen.
-    A normal request without a clear ordered list returns ``None`` and follows the
-    ordinary natural-language recaption path.
-    """
+    """Split only explicitly enumerated separate images; never classify subjects/styles."""
     patterns = (
         re.compile(
             r"(?i)\b(?:ảnh|hình)\s+(?:thứ\s+)?"
@@ -115,8 +128,8 @@ class ImageExecutor:
             raise RuntimeError("KAGGLE_API_TOKEN is required")
         if not username:
             raise RuntimeError("KAGGLE_USERNAME is required")
-        return StableKaggleImageV2Provider(
-            worker=KaggleGpuWorker(
+        provider = StableKaggleImageV2Provider(
+            worker=ArtifactPollingKaggleImageWorker(
                 api_token=token,
                 username=username,
                 timeout=120,
@@ -125,9 +138,11 @@ class ImageExecutor:
             ),
             kernel_slug=self.kernel_slug,
             poll_interval=3,
-            max_poll_attempts=180,
+            max_poll_attempts=300,
             recaption_model=PRODUCTION_RECAPTION_MODEL,
         )
+        provider.max_wait_seconds = PRODUCTION_IMAGE_MAX_WAIT_SECONDS
+        return provider
 
     def execute_cold(
         self,
