@@ -1,0 +1,107 @@
+name: AIKA Brain Model Cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aika-brain-model-cache.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: duykhanhta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Build persistent CPU-only AIKA brain cache
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from ai_agent.core.kaggle_worker import KaggleGpuWorker
+
+          MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+          SLUG = "aika-brain-model-cache-v1"
+          MARKER = "aika_brain_cache.json"
+          source = r'''
+          from pathlib import Path
+          import json
+          import subprocess
+          import sys
+          import time
+
+          MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+          OUT = Path("/kaggle/working/aika-brain-model")
+          MARKER = "aika_brain_cache.json"
+          subprocess.check_call([
+              sys.executable, "-m", "pip", "install", "--quiet",
+              "huggingface_hub>=0.30,<2",
+          ])
+          from huggingface_hub import snapshot_download
+
+          started = time.perf_counter()
+          snapshot_download(
+              repo_id=MODEL,
+              local_dir=str(OUT),
+              local_dir_use_symlinks=False,
+          )
+          if not (OUT / "config.json").is_file():
+              raise RuntimeError("AIKA brain cache has no config.json")
+          payload = {
+              "schema": 1,
+              "model": MODEL,
+              "model_dir": ".",
+              "marker": MARKER,
+              "elapsed_seconds": round(time.perf_counter() - started, 3),
+          }
+          (OUT / MARKER).write_text(json.dumps(payload), encoding="utf-8")
+          print("AIKA_BRAIN_CACHE_READY " + json.dumps(payload), flush=True)
+          '''
+          source = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in source.splitlines()
+          ).strip() + "\n"
+
+          worker = KaggleGpuWorker(
+              api_token=os.environ["KAGGLE_API_TOKEN"],
+              username=os.environ["KAGGLE_USERNAME"],
+              timeout=120,
+              submission_retry_attempts=2,
+              submission_retry_delay_seconds=10,
+          )
+          submission = worker.submit_script(
+              slug=SLUG,
+              title="AIKA Brain Model Cache V1",
+              source=source,
+              enable_internet=True,
+              enable_gpu=False,
+              is_private=True,
+          )
+          print("AIKA_BRAIN_CACHE_SUBMITTED", submission.ref, flush=True)
+
+          deadline = time.time() + 1500
+          while time.time() < deadline:
+              try:
+                  raw = worker.download_output_file(SLUG, MARKER)
+                  payload = json.loads(raw.decode("utf-8"))
+                  if payload.get("model") == MODEL and payload.get("schema") == 1:
+                      print("AIKA_BRAIN_CACHE_VERIFIED", json.dumps(payload), flush=True)
+                      break
+              except Exception as exc:
+                  print("AIKA_BRAIN_CACHE_WAIT", type(exc).__name__, str(exc)[:180], flush=True)
+              time.sleep(10)
+          else:
+              raise TimeoutError("AIKA brain model cache did not become available")
+          PY
