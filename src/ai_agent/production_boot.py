@@ -1,8 +1,8 @@
 """Production bootstrap for AIKA.
 
 Production injects one production-specific brain broker into the HTTP layer.
-The generic broker still owns AIKA semantics; the production adapter owns only
-stable accelerator selection and hardware validation.
+AIKA's text control plane uses a finite Kaggle burst worker; image/video remain
+separate tools.
 """
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from ai_agent import chat_api
 from ai_agent.production_agent_broker import ProductionAIKAAgentBroker
 
 
-PRODUCTION_BRAIN_SLUG = "aika-brain-prod-v2"
-PRODUCTION_BRAIN_TITLE = "AIKA Brain Prod V2"
+PRODUCTION_BRAIN_SLUG = "aika-brain-burst-v1"
+PRODUCTION_BRAIN_TITLE = "AIKA Brain Burst V1"
 
 
 def configure() -> ProductionAIKAAgentBroker:
