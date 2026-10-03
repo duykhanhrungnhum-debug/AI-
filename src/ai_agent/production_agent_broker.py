@@ -1,13 +1,12 @@
 """Production-specific AIKA brain broker.
 
 The generic AIKA broker owns job/tool semantics and durable worker lifecycle.
-This adapter owns only the production accelerator contract: AIKA's text brain
-runs on an explicitly requested Kaggle accelerator rather than whatever Kaggle
-happens to choose by default.
+This adapter owns only the production brain runtime contract: a verified light
+control-plane model on an explicit Kaggle accelerator. Heavy image/video models
+remain separate AIKA tools.
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 
@@ -17,25 +16,31 @@ from .core.kaggle_worker import KaggleGpuWorker
 
 
 DEFAULT_BRAIN_MACHINE_SHAPE = "NvidiaTeslaT4"
+DEFAULT_BRAIN_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 MIN_BRAIN_CUDA_MAJOR = 7
 
 
 class ProductionAIKAAgentBroker(AIKAAgentBroker):
-    """AIKA broker with an explicit, verified production GPU contract."""
+    """AIKA broker with explicit, verified production brain contracts."""
 
     def __init__(self) -> None:
         super().__init__()
         self.machine_shape = os.environ.get(
             "AIKA_BRAIN_MACHINE_SHAPE", DEFAULT_BRAIN_MACHINE_SHAPE
         ).strip()
+        self.brain_model = os.environ.get(
+            "AIKA_BRAIN_MODEL_NAME", DEFAULT_BRAIN_MODEL
+        ).strip()
         if not self.machine_shape:
             raise ValueError("AIKA_BRAIN_MACHINE_SHAPE must not be empty")
+        if not self.brain_model:
+            raise ValueError("AIKA_BRAIN_MODEL_NAME must not be empty")
 
     def _launch_worker(self) -> None:
         try:
             token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
             username = os.environ.get("KAGGLE_USERNAME", "").strip()
-            model = os.environ.get("AI_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct").strip()
+            model = self.brain_model
             public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
             worker_token = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
             if not token:
@@ -147,6 +152,7 @@ class ProductionAIKAAgentBroker(AIKAAgentBroker):
 
 __all__ = [
     "DEFAULT_BRAIN_MACHINE_SHAPE",
+    "DEFAULT_BRAIN_MODEL",
     "MIN_BRAIN_CUDA_MAJOR",
     "ProductionAIKAAgentBroker",
 ]
