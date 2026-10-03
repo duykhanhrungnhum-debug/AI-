@@ -1,16 +1,20 @@
 """Production-specific AIKA brain broker.
 
-The generic AIKA broker owns job/tool semantics and durable worker lifecycle.
-This adapter owns only the production brain runtime contract: a verified light
-control-plane model on an explicit Kaggle accelerator. Heavy image/video models
-remain separate AIKA tools.
+AIKA's production text brain runs as a short Kaggle *burst* job. Kaggle is a
+batch compute platform, so production deliberately does not keep a notebook
+alive as an RPC server. One burst loads the verified control-plane model,
+processes every currently queued AIKA job, reports results, and exits so GPU is
+released immediately when there is no work.
 """
 from __future__ import annotations
 
+import json
 import os
+import textwrap
+import threading
 import time
 
-from .agent_broker import AIKAAgentBroker
+from .agent_broker import AIKAAgentBroker, AIKA_SYSTEM_PROMPT
 from .brain_lifecycle import probe_kernel
 from .core.kaggle_worker import KaggleGpuWorker
 
@@ -21,7 +25,7 @@ MIN_BRAIN_CUDA_MAJOR = 7
 
 
 class ProductionAIKAAgentBroker(AIKAAgentBroker):
-    """AIKA broker with explicit, verified production brain contracts."""
+    """AIKA broker using finite, on-demand Kaggle GPU bursts."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,11 +40,32 @@ class ProductionAIKAAgentBroker(AIKAAgentBroker):
         if not self.brain_model:
             raise ValueError("AIKA_BRAIN_MODEL_NAME must not be empty")
 
+    def heartbeat(self, state: str = "ready") -> None:
+        """Track a burst and safely relaunch only if work arrived during exit."""
+        normalized = state.strip().casefold()
+        super().heartbeat(state)
+        if normalized not in {"stopped", "stopping", "idle_exit", "offline"}:
+            return
+        with self._lock:
+            has_pending = any(job.status == "pending" for job in self._jobs.values())
+        if has_pending:
+            threading.Thread(
+                target=self._ensure_after_burst_exit,
+                name="aika-brain-burst-relaunch",
+                daemon=True,
+            ).start()
+
+    def _ensure_after_burst_exit(self) -> None:
+        # The stopped callback is emitted immediately before the Kaggle process
+        # exits. Give Kaggle a short window to publish terminal state so the
+        # next burst never mistakes the old process for a reusable live worker.
+        time.sleep(12.0)
+        self.ensure_worker()
+
     def _launch_worker(self) -> None:
         try:
             token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
             username = os.environ.get("KAGGLE_USERNAME", "").strip()
-            model = self.brain_model
             public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
             worker_token = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
             if not token:
@@ -60,8 +85,9 @@ class ProductionAIKAAgentBroker(AIKAAgentBroker):
                 submission_retry_delay_seconds=10,
             )
 
-            # Kaggle is the source of truth across Railway process restarts.
-            # Reuse an existing active worker instead of pushing over it.
+            # External Kaggle state is authoritative across Railway restarts.
+            # If a burst is already booting/running, reuse it rather than push
+            # a competing notebook version that would cancel the first one.
             probe = probe_kernel(worker, self.kernel_slug)
             if probe.active:
                 with self._lock:
@@ -78,7 +104,7 @@ class ProductionAIKAAgentBroker(AIKAAgentBroker):
             source = self._production_worker_source(
                 base_url="https://" + public_domain,
                 worker_token=worker_token,
-                model=model,
+                model=self.brain_model,
             )
             try:
                 worker.submit_script(
@@ -91,8 +117,8 @@ class ProductionAIKAAgentBroker(AIKAAgentBroker):
                     is_private=True,
                 )
             except RuntimeError as exc:
-                # A concurrent API request can race the first submission. A 409
-                # is safe only when the exact production kernel is now active.
+                # Only treat a 409 as a harmless race if the exact production
+                # burst is now genuinely active.
                 message = str(exc).casefold()
                 if "kaggle http 409" in message or "already in use" in message:
                     race_probe = probe_kernel(worker, self.kernel_slug)
@@ -118,36 +144,144 @@ class ProductionAIKAAgentBroker(AIKAAgentBroker):
 
     @staticmethod
     def _production_worker_source(*, base_url: str, worker_token: str, model: str) -> str:
-        """Add a hardware preflight before the generic worker loads model weights."""
-        source = AIKAAgentBroker._worker_source(
-            base_url=base_url,
-            worker_token=worker_token,
-            model=model,
+        """Return a finite Kaggle worker: load, drain queue, exit."""
+        cfg = json.dumps(
+            {
+                "base_url": base_url.rstrip("/"),
+                "worker_token": worker_token,
+                "model": model,
+                "max_new_tokens": 512,
+                "system_prompt": AIKA_SYSTEM_PROMPT,
+            },
+            ensure_ascii=False,
         )
-        marker = (
-            'if not torch.cuda.is_available():\n'
-            '    raise RuntimeError("CUDA GPU is not available")\n'
-        )
-        if marker not in source:
-            raise RuntimeError("AIKA brain worker preflight insertion point changed")
-        replacement = marker + (
-            'gpu_name = torch.cuda.get_device_name(0)\n'
-            'gpu_capability = tuple(int(x) for x in torch.cuda.get_device_capability(0))\n'
-            'gpu_arch_list = list(torch.cuda.get_arch_list())\n'
-            'print("AIKA_BRAIN_GPU_PRECHECK " + json.dumps({\n'
-            '    "gpu_name": gpu_name,\n'
-            '    "compute_capability": list(gpu_capability),\n'
-            '    "torch_cuda": str(torch.version.cuda or ""),\n'
-            '    "torch_arch_list": gpu_arch_list,\n'
-            '}), flush=True)\n'
-            f'if gpu_capability[0] < {MIN_BRAIN_CUDA_MAJOR}:\n'
-            '    raise RuntimeError(\n'
-            '        "Unsupported AIKA brain GPU compute capability "\n'
-            '        + str(gpu_capability)\n'
-            '        + "; require CUDA compute capability >= 7.0"\n'
-            '    )\n'
-        )
-        return source.replace(marker, replacement, 1)
+        return textwrap.dedent(
+            f"""
+            from __future__ import annotations
+            import json
+            import subprocess
+            import sys
+            import time
+            import urllib.error
+            import urllib.request
+
+            CONFIG = json.loads({cfg!r})
+
+            try:
+                import torch
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+            except ImportError:
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", "--quiet",
+                    "transformers<5", "accelerate<2", "safetensors", "sentencepiece",
+                ])
+                import torch
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            def request(method, path, payload=None):
+                body = json.dumps(payload).encode("utf-8") if payload is not None else None
+                req = urllib.request.Request(
+                    CONFIG["base_url"] + path,
+                    data=body,
+                    method=method,
+                    headers={{
+                        "Authorization": "Bearer " + CONFIG["worker_token"],
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "User-Agent": "AIKA-Brain/2.0",
+                    }},
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=60) as response:
+                        raw = response.read()
+                        return json.loads(raw.decode("utf-8")) if raw else None
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 204:
+                        return None
+                    detail = exc.read().decode("utf-8", errors="replace")
+                    raise RuntimeError(f"HTTP {{exc.code}} {{path}}: {{detail[:500]}}") from exc
+
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA GPU is not available")
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_capability = tuple(int(x) for x in torch.cuda.get_device_capability(0))
+            gpu_arch_list = list(torch.cuda.get_arch_list())
+            print("AIKA_BRAIN_GPU_PRECHECK " + json.dumps({{
+                "gpu_name": gpu_name,
+                "compute_capability": list(gpu_capability),
+                "torch_cuda": str(torch.version.cuda or ""),
+                "torch_arch_list": gpu_arch_list,
+                "model": CONFIG["model"],
+            }}), flush=True)
+            if gpu_capability[0] < {MIN_BRAIN_CUDA_MAJOR}:
+                raise RuntimeError(
+                    "Unsupported AIKA brain GPU compute capability "
+                    + str(gpu_capability)
+                    + "; require CUDA compute capability >= 7.0"
+                )
+
+            started = time.perf_counter()
+            tokenizer = AutoTokenizer.from_pretrained(CONFIG["model"])
+            model = AutoModelForCausalLM.from_pretrained(
+                CONFIG["model"],
+                dtype=torch.float16,
+                device_map="auto",
+            )
+            model.eval()
+            print(
+                "AIKA_BRAIN_MODEL_READY "
+                + json.dumps({{"model": CONFIG["model"], "seconds": round(time.perf_counter() - started, 3)}}),
+                flush=True,
+            )
+            request("POST", "/internal/chat/heartbeat", {{"state": "ready"}})
+
+            processed = 0
+            try:
+                while True:
+                    job = request("GET", "/internal/chat/pull")
+                    if not job:
+                        break
+                    job_id = str(job["job_id"])
+                    prompt = str(job["prompt"])
+                    try:
+                        messages = [
+                            {{"role": "system", "content": CONFIG["system_prompt"]}},
+                            {{"role": "user", "content": prompt}},
+                        ]
+                        rendered = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True
+                        )
+                        inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
+                        generated = model.generate(
+                            **inputs,
+                            max_new_tokens=int(CONFIG["max_new_tokens"]),
+                            do_sample=False,
+                            repetition_penalty=1.05,
+                        )
+                        new_tokens = generated[:, inputs.input_ids.shape[1]:]
+                        text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+                        if not text:
+                            raise RuntimeError("model returned empty text")
+                        request("POST", "/internal/chat/result", {{
+                            "job_id": job_id,
+                            "text": text,
+                            "provider": "kaggle-aika-brain",
+                            "model": CONFIG["model"],
+                        }})
+                    except Exception as exc:
+                        request("POST", "/internal/chat/result", {{
+                            "job_id": job_id,
+                            "error": type(exc).__name__ + ": " + str(exc),
+                        }})
+                    processed += 1
+            finally:
+                try:
+                    request("POST", "/internal/chat/heartbeat", {{"state": "stopped"}})
+                except Exception:
+                    pass
+            print("AIKA_BRAIN_BURST_EXIT processed=" + str(processed), flush=True)
+            """
+        ).strip() + "\n"
 
 
 __all__ = [
