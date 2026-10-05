@@ -1,0 +1,36 @@
+name: Trading Intraday 1H Runtime Evidence
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/ai_agent/core/trading_intraday.py'
+      - 'src/ai_agent/core/trading_intraday_feed.py'
+      - 'scripts/trading_intraday_runtime.py'
+      - 'tests/test_trading_intraday.py'
+      - '.github/workflows/trading-intraday-1h-runtime.yml'
+permissions:
+  contents: read
+jobs:
+  verify-intraday-1h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and test dependency
+        run: python -m pip install -e . pytest
+      - name: Regression tests
+        run: python -m pytest -q tests/test_trading_intraday.py
+      - name: Generate real delayed/reference WTI/Brent runtime evidence
+        run: python scripts/trading_intraday_runtime.py
+      - name: Upload 1H runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-intraday-1h-runtime
+          path: artifacts/trading_intraday_1h_runtime.json
+          if-no-files-found: error
+          retention-days: 14
