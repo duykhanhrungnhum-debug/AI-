@@ -1,7 +1,9 @@
 """AIKA web API.
 
 Every user request goes to AIKA first. AIKA may answer directly or call one of
-its media tools. The HTTP layer never classifies media intent itself.
+its media tools. Explicit sibling-bot media calls may use the direct media
+endpoints to avoid spending a brain/GPU pass re-classifying a request whose
+operation is already known by the caller.
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ from ai_agent.media_broker import MEDIA_BROKER
 
 
 class ChatRequestHandler(AIRequestHandler):
-    server_version = "AIKA-Chat-API/0.7"
+    server_version = "AIKA-Chat-API/0.8"
 
     def _worker_authorized(self) -> bool:
         expected = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
@@ -140,6 +142,24 @@ class ChatRequestHandler(AIRequestHandler):
                     return
                 AGENT_BROKER.finish_job(self._read_body())
                 self._json(200, {"status": "ok"})
+                return
+
+            if path in {"/v1/media/image", "/v1/media/video"}:
+                if not self._authorized():
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                body = self._read_body()
+                command = str(body.get("prompt") or body.get("message") or "").strip()
+                if not command:
+                    raise ValueError("prompt or message is required")
+                kind = "image" if path.endswith("/image") else "video"
+                job = MEDIA_BROKER.create_job(kind, command)
+                state = MEDIA_BROKER.get_job(job.job_id)
+                self._json(202, {
+                    "job_id": job.job_id,
+                    "kind": kind,
+                    "status": state["status"],
+                })
                 return
 
             if path == "/v1/chat":
