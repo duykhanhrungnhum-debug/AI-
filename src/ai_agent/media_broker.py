@@ -30,6 +30,7 @@ class MediaJob:
     prompts: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
     per_artifact_seconds: list[float] = field(default_factory=list)
+    reference_image: bytes | None = None
 
 
 class MediaToolBroker:
@@ -41,13 +42,22 @@ class MediaToolBroker:
         self._image = ImageExecutor()
         self._video = VideoExecutor()
 
-    def create_job(self, kind: str, command: str, *, job_id: str | None = None) -> MediaJob:
+    def create_job(
+        self,
+        kind: str,
+        command: str,
+        *,
+        job_id: str | None = None,
+        reference_image: bytes | None = None,
+    ) -> MediaJob:
         kind = kind.strip().casefold()
         command = command.strip()
         if kind not in {"image", "video"}:
             raise ValueError("media kind must be image or video")
         if not command:
             raise ValueError("media command is required")
+        if reference_image is not None and kind != "video":
+            raise ValueError("reference_image is only supported for video jobs")
         resolved_id = (job_id or uuid4().hex).strip()
         if not resolved_id:
             raise ValueError("job_id must not be empty")
@@ -57,6 +67,7 @@ class MediaToolBroker:
             command=command,
             status="processing",
             created_at=time.time(),
+            reference_image=reference_image,
         )
         with self._lock:
             if resolved_id in self._jobs:
@@ -75,12 +86,12 @@ class MediaToolBroker:
         ).start()
         return job
 
-    def _command(self, job_id: str) -> str:
+    def _job_inputs(self, job_id: str) -> tuple[str, bytes | None]:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            return job.command
+            return job.command, job.reference_image
 
     def _fail(self, job_id: str, exc: Exception) -> None:
         with self._lock:
@@ -92,7 +103,7 @@ class MediaToolBroker:
     def _run_image(self, job_id: str) -> None:
         started = time.perf_counter()
         try:
-            command = self._command(job_id)
+            command, _ = self._job_inputs(job_id)
             results = self._image.generate(
                 command,
                 width=1024,
@@ -123,8 +134,8 @@ class MediaToolBroker:
     def _run_video(self, job_id: str) -> None:
         started = time.perf_counter()
         try:
-            command = self._command(job_id)
-            artifact = self._video.generate(command)
+            command, reference_image = self._job_inputs(job_id)
+            artifact = self._video.generate(command, reference_image=reference_image)
             with self._lock:
                 job = self._jobs[job_id]
                 job.status = "done"
@@ -137,6 +148,7 @@ class MediaToolBroker:
                 job.elapsed_seconds = time.perf_counter() - started
                 job.per_artifact_seconds = [job.elapsed_seconds]
                 job.error = ""
+                job.reference_image = None
         except Exception as exc:
             self._fail(job_id, exc)
 
