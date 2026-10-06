@@ -39,11 +39,17 @@ class AIRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
-        expected = os.environ.get("AI_AGENT_API_TOKEN", "").strip()
-        if not expected:
-            return False
         supplied = self.headers.get("authorization", "").strip()
-        return hmac.compare_digest(supplied, f"Bearer {expected}")
+        if not supplied:
+            return False
+        expected_tokens = (
+            os.environ.get("AI_AGENT_API_TOKEN", "").strip(),
+            os.environ.get("MONEY_AGENT_API_TOKEN", "").strip(),
+        )
+        return any(
+            token and hmac.compare_digest(supplied, f"Bearer {token}")
+            for token in expected_tokens
+        )
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
