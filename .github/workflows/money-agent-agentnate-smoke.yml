@@ -33,17 +33,12 @@ jobs:
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}"
 
-      - name: Read authenticated Kaggle public kernel view model
+      - name: Download Kaggle output ZIP directly
         id: smoke
         shell: bash
         run: |
           mkdir -p smoke-results
-          set +e
-          python tmp/get_kaggle_view_model.py > smoke-results/runner.log 2>&1
-          rc=$?
-          cat smoke-results/runner.log
-          echo "view_model_exit=$rc" > smoke-results/view-model-exit.txt
-          exit 0
+          python tmp/download_kaggle_output_zip.py | tee smoke-results/runner.log
 
       - name: Commit smoke outputs or failure log
         if: always()
@@ -91,3 +86,5 @@ jobs:
 # refresh rendered output
 
 # auth + xsrf view model
+
+# direct output zip by version
