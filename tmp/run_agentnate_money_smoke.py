@@ -46,7 +46,7 @@ def req(method: str, path: str, payload=None):
 
 payload = {
     "slug": f"{USERNAME}/{SLUG}",
-    "newTitle": "AgentNate Money Agent Real Smoke",
+    "newTitle": f"AgentNate Money Agent Real Smoke {int(time.time())}",
     "text": SOURCE,
     "language": "python",
     "kernelType": "script",
