@@ -34,14 +34,27 @@ jobs:
           test -n "${KAGGLE_API_TOKEN:-}"
 
       - name: Run real AgentNate creative smoke
-        run: python tmp/run_agentnate_money_smoke.py
+        id: smoke
+        shell: bash
+        run: |
+          mkdir -p smoke-results
+          set +e
+          python tmp/run_agentnate_money_smoke.py > >(tee smoke-results/runner.log) 2>&1
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
 
-      - name: Commit real outputs
+      - name: Commit smoke outputs or failure log
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smoke-results/agentnate_image.png smoke-results/agentnate_video.mp4 smoke-results/agentnate_smoke_report.json
-          git commit -m "Store AgentNate real smoke outputs"
+          git add smoke-results/ || true
+          if git diff --cached --quiet; then
+            echo "No smoke files to commit"
+            exit 0
+          fi
+          git commit -m "Store AgentNate smoke result"
           git push origin HEAD:money-agent-agentnate-smoke
