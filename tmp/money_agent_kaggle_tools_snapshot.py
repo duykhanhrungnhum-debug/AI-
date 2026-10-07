@@ -226,12 +226,31 @@ try:
         raise RuntimeError("CUDA GPU is not available")
 
     setup_started = time.perf_counter()
+    # Keep the Wan environment minimal. Do not upgrade Kaggle's NumPy/OpenCV stack here:
+    # changing those binary packages can break pandas/sklearn/torch ABI before Wan starts.
     run([
-        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-        "diffusers>=0.36,<1", "transformers>=4.57,<5", "accelerate>=1,<2",
-        "safetensors", "sentencepiece", "ftfy", "imageio", "imageio-ffmpeg",
-        "opencv-python-headless>=4.9", "ffmpeg-python"
+        sys.executable, "-m", "pip", "install", "--quiet",
+        "diffusers>=0.36,<0.37",
+        "transformers>=4.57,<4.58",
+        "accelerate>=1,<2",
+        "safetensors", "sentencepiece", "ftfy", "imageio", "imageio-ffmpeg"
     ])
+
+    # Preflight before model download/inference. If this fails, stop immediately and do
+    # not spend GPU time trying to generate a video.
+    preflight = run([
+        sys.executable, "-c",
+        (
+            "import json, numpy, torch, transformers, diffusers; "
+            "from diffusers import AutoencoderKLWan, WanPipeline; "
+            "from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler; "
+            "print(json.dumps({"
+            "'numpy': numpy.__version__, 'torch': torch.__version__, "
+            "'transformers': transformers.__version__, 'diffusers': diffusers.__version__"
+            "}))"
+        )
+    ])
+    env_versions = json.loads(preflight.stdout.strip().splitlines()[-1])
 
     from diffusers import AutoencoderKLWan, WanPipeline
     from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
@@ -261,6 +280,7 @@ try:
         "gpu_name": torch.cuda.get_device_name(0),
         "vram_gb": round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2),
         "setup_seconds": round(setup_seconds, 3),
+        "environment": env_versions,
     })
 
     generator = torch.Generator(device="cpu").manual_seed(int(CONFIG["seed"]))
@@ -303,8 +323,20 @@ try:
         shutil.rmtree(ESR_DIR)
     run(["git", "clone", "--quiet", "--filter=blob:none", "https://github.com/xinntao/Real-ESRGAN.git", str(ESR_DIR)])
     run(["git", "-C", str(ESR_DIR), "checkout", "--quiet", CONFIG["realesrgan_commit"]])
-    run([sys.executable, "-m", "pip", "install", "--quiet", "basicsr>=1.4.2", "facexlib>=0.3.0", "gfpgan>=1.3.8"])
-    run([sys.executable, "-m", "pip", "install", "--quiet", "-e", str(ESR_DIR)])
+    # Real-ESRGAN dependencies are installed only after Wan has completed and its GPU
+    # memory has been released. Pin the official dependency versions; do not upgrade
+    # NumPy/OpenCV globally.
+    run([
+        sys.executable, "-m", "pip", "install", "--quiet",
+        "basicsr==1.4.2", "facexlib==0.3.0", "gfpgan==1.3.8", "ffmpeg-python"
+    ])
+    run([sys.executable, "-m", "pip", "install", "--quiet", "--no-deps", "-e", str(ESR_DIR)])
+
+    # Real-ESRGAN preflight before touching the generated video.
+    run([
+        sys.executable, "-c",
+        "import cv2, basicsr, realesrgan; print('realesrgan-preflight-ok')"
+    ])
 
     ESR_OUT.mkdir(parents=True, exist_ok=True)
     upscale_started = time.perf_counter()
