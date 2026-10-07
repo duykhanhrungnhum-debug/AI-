@@ -32,3 +32,5 @@ jobs:
           name: flux-ltx-diagnostic
           path: diag-results/
           if-no-files-found: warn
+
+# rerun with stripped token
