@@ -38,7 +38,12 @@ jobs:
         shell: bash
         run: |
           mkdir -p smoke-results
-          python tmp/get_kaggle_view_model.py | tee smoke-results/runner.log
+          set +e
+          python tmp/get_kaggle_view_model.py > smoke-results/runner.log 2>&1
+          rc=$?
+          cat smoke-results/runner.log
+          echo "view_model_exit=$rc" > smoke-results/view-model-exit.txt
+          exit 0
 
       - name: Commit smoke outputs or failure log
         if: always()
@@ -78,3 +83,5 @@ jobs:
 # public kernel view model
 
 # trigger view-model fetch
+
+# capture view-model errors without aborting
