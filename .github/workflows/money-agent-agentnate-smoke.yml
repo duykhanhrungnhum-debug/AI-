@@ -33,17 +33,12 @@ jobs:
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}"
 
-      - name: Read Kaggle public kernel view model
+      - name: Refresh Kaggle page for rendered output
         id: smoke
         shell: bash
         run: |
           mkdir -p smoke-results
-          set +e
-          python tmp/get_kaggle_view_model.py > smoke-results/runner.log 2>&1
-          rc=$?
-          cat smoke-results/runner.log
-          echo "view_model_exit=$rc" > smoke-results/view-model-exit.txt
-          exit 0
+          python tmp/inspect_public_kaggle_page.py | tee smoke-results/runner.log
 
       - name: Commit smoke outputs or failure log
         if: always()
@@ -87,3 +82,5 @@ jobs:
 # capture view-model errors without aborting
 
 # raw response capture
+
+# refresh rendered output
