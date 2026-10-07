@@ -15,7 +15,7 @@ TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
 if not TOKEN:
     raise SystemExit("KAGGLE_API_TOKEN missing")
 
-money_file = Path("money-agent/services/manager/kaggle_tools.py")
+money_file = Path("tmp/money_agent_kaggle_tools_snapshot.py")
 spec = importlib.util.spec_from_file_location("money_agent_kaggle_tools", money_file)
 if spec is None or spec.loader is None:
     raise RuntimeError("cannot import Money Agent kaggle_tools.py")
