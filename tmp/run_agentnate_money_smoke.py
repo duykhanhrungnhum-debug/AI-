@@ -60,7 +60,7 @@ print("Submitting", payload["slug"], flush=True)
 res = None
 for attempt in range(1, 16):
     try:
-        payload["newTitle"] = f"AgentNate Money Agent Real Smoke {SLUG} attempt {attempt}"
+        payload["newTitle"] = f"AN Smoke {SLUG[-10:]} a{attempt}"
         res = req("POST", "/kernels/push", payload)
         if res.get("error"):
             message = str(res["error"])
