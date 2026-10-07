@@ -1,6 +1,7 @@
 from __future__ import annotations
 import http.cookiejar
 import json
+import os
 from pathlib import Path
 from urllib.request import Request, build_opener, HTTPCookieProcessor
 from urllib.error import HTTPError
@@ -14,7 +15,10 @@ slug=actual_url.rstrip("/").split("/")[-1]
 
 jar=http.cookiejar.CookieJar()
 opener=build_opener(HTTPCookieProcessor(jar))
+token=os.environ.get("KAGGLE_API_TOKEN","").strip()
 headers={"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"}
+if token:
+    headers["Authorization"]="Bearer "+token
 try:
     opener.open(Request(actual_url,headers=headers),timeout=60).read(1000)
 except Exception:
@@ -29,6 +33,8 @@ for c in jar:
 
 def post(method, body):
     h={"User-Agent":headers["User-Agent"],"Content-Type":"application/json","Accept":"application/json"}
+    if token:
+        h["Authorization"]="Bearer "+token
     if xsrf:
         h["X-XSRF-TOKEN"]=xsrf
     req=Request("https://www.kaggle.com/api/i/"+method,data=json.dumps(body).encode(),headers=h,method="POST")
