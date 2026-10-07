@@ -33,12 +33,12 @@ jobs:
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}"
 
-      - name: Inspect public Kaggle notebook page
+      - name: Fetch Kaggle notebook embed metadata
         id: smoke
         shell: bash
         run: |
           mkdir -p smoke-results
-          python tmp/inspect_public_kaggle_page.py | tee smoke-results/runner.log
+          python tmp/fetch_oembed.py | tee smoke-results/runner.log
 
       - name: Commit smoke outputs or failure log
         if: always()
@@ -70,3 +70,5 @@ jobs:
 # fetch existing public smoke only
 
 # inspect public notebook page
+
+# fetch oembed metadata
