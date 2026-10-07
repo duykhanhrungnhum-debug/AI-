@@ -58,3 +58,5 @@ jobs:
           fi
           git commit -m "Store AgentNate smoke result"
           git push origin HEAD:money-agent-agentnate-smoke
+
+# rerun conflict detail
