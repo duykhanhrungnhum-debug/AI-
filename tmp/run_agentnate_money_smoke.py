@@ -46,7 +46,7 @@ def req(method: str, path: str, payload=None):
 
 payload = {
     "slug": f"{USERNAME}/{SLUG}",
-    "newTitle": f"AgentNate Money Agent Real Smoke {int(time.time())}",
+    "newTitle": "AgentNate Money Agent Real Smoke",
     "text": SOURCE,
     "language": "python",
     "kernelType": "script",
@@ -60,6 +60,7 @@ print("Submitting", payload["slug"], flush=True)
 res = None
 for attempt in range(1, 16):
     try:
+        payload["newTitle"] = f"AgentNate Money Agent Real Smoke {SLUG} attempt {attempt}"
         res = req("POST", "/kernels/push", payload)
         if res.get("error"):
             message = str(res["error"])
