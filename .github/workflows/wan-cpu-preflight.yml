@@ -1,0 +1,66 @@
+name: Wan RealESRGAN CPU Preflight
+
+on:
+  push:
+    branches:
+      - money-agent-flux-ltx-smoke
+    paths:
+      - .github/workflows/wan-cpu-preflight.yml
+      - tmp/money_agent_kaggle_tools_snapshot.py
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: money-agent-flux-ltx-smoke
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install only Wan import dependencies
+        run: |
+          python -m pip install --quiet             "diffusers>=0.36,<0.37"             "transformers>=4.57,<4.58"             "accelerate>=1,<2"             safetensors sentencepiece ftfy imageio imageio-ffmpeg
+
+      - name: Compile hardened runtime and verify imports
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          p = Path("tmp/money_agent_kaggle_tools_snapshot.py")
+          spec = importlib.util.spec_from_file_location("kg", p)
+          kg = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(kg)
+
+          src = kg._video_source({
+              "run_token":"cpu-preflight",
+              "video_model":kg.VIDEO_MODEL,
+              "realesrgan_commit":kg.REALESRGAN_REPO_COMMIT,
+              "prompt":"test",
+              "num_frames":33,
+              "fps":16,
+              "sample_steps":30,
+              "upscale_factor":1920/832,
+              "seed":1,
+          })
+          compile(src, "<kaggle-video-source>", "exec")
+
+          from diffusers import AutoencoderKLWan, WanPipeline
+          from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
+
+          assert "basicsr==" not in src
+          assert "facexlib==" not in src
+          assert "gfpgan==" not in src
+          assert "RealESRGAN_x2plus.pth" in src
+          assert "RRDBNet" in src
+          assert "pixel_unshuffle" in src
+          assert '"--upgrade"' not in src
+          print("WAN + DIRECT REALESRGAN CPU PREFLIGHT: PASS")
+          PY
