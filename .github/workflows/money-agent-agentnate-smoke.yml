@@ -33,13 +33,13 @@ jobs:
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}"
 
-      - name: Run real AgentNate creative smoke
+      - name: Fetch public AgentNate creative smoke
         id: smoke
         shell: bash
         run: |
           mkdir -p smoke-results
           set +e
-          python tmp/run_agentnate_money_smoke.py > >(tee smoke-results/runner.log) 2>&1
+          python tmp/fetch_public_agentnate_smoke.py > >(tee smoke-results/runner.log) 2>&1
           rc=$?
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           exit $rc
@@ -70,3 +70,5 @@ jobs:
 # unique title per slot attempt
 
 # short title
+
+# fetch existing public smoke only
