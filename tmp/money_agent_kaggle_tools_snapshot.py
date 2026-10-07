@@ -14,8 +14,7 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[2]
 
 IMAGE_MODEL = "black-forest-labs/FLUX.2-klein-4B"
-VIDEO_MODEL = "Wan-AI/Wan2.1-T2V-1.3B"
-WAN_REPO_COMMIT = "9737cba9c1c3c4d04b33fcad41c111989865d315"
+VIDEO_MODEL = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 REALESRGAN_REPO_COMMIT = "a4abfb2979a7bbff3f69f58f58ae324608821e27"
 
 
@@ -201,8 +200,6 @@ WORK = Path("/kaggle/working")
 REPORT = WORK / "manager_video_report.json"
 WAN_RAW = WORK / "manager_video_wan.mp4"
 OUTPUT = WORK / "manager_video.mp4"
-WAN_DIR = WORK / "Wan2.1"
-WAN_MODEL_DIR = WORK / "Wan2.1-T2V-1.3B"
 ESR_DIR = WORK / "Real-ESRGAN"
 ESR_OUT = WORK / "realesrgan-output"
 
@@ -212,7 +209,13 @@ def save(data):
     REPORT.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 def run(cmd, cwd=None):
-    subprocess.check_call(cmd, cwd=cwd)
+    proc = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "command failed rc=%s\nSTDOUT:\n%s\nSTDERR:\n%s"
+            % (proc.returncode, proc.stdout[-12000:], proc.stderr[-12000:])
+        )
+    return proc
 
 try:
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -222,75 +225,79 @@ try:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA GPU is not available")
 
-    report = {
-        "status": "running",
-        "stage": "setup",
-        "video_model": CONFIG["video_model"],
-        "upscaler": "RealESRGAN_x2plus",
-        "gpu_name": torch.cuda.get_device_name(0),
-        "vram_gb": round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2),
-    }
-    save(report)
-
     setup_started = time.perf_counter()
     run([
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-        "huggingface_hub>=0.28,<1",
-        "transformers>=4.49,<5",
-        "accelerate>=1.1,<2",
-        "diffusers>=0.31,<1",
-        "tokenizers>=0.20.3,<1",
-        "opencv-python-headless>=4.9",
-        "imageio", "imageio-ffmpeg", "easydict", "ftfy", "dashscope",
-        "ffmpeg-python", "numpy<2", "safetensors"
+        "diffusers>=0.36,<1", "transformers>=4.57,<5", "accelerate>=1,<2",
+        "safetensors", "sentencepiece", "ftfy", "imageio", "imageio-ffmpeg",
+        "opencv-python-headless>=4.9", "ffmpeg-python", "numpy<2"
     ])
 
-    if WAN_DIR.exists():
-        shutil.rmtree(WAN_DIR)
-    run(["git", "clone", "--quiet", "--filter=blob:none", "https://github.com/Wan-Video/Wan2.1.git", str(WAN_DIR)])
-    run(["git", "-C", str(WAN_DIR), "checkout", "--quiet", CONFIG["wan_commit"]])
+    from diffusers import AutoencoderKLWan, WanPipeline
+    from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
+    from diffusers.utils import export_to_video
 
-    from huggingface_hub import snapshot_download
-    snapshot_download(
-        repo_id=CONFIG["video_model"],
-        local_dir=str(WAN_MODEL_DIR),
-        local_dir_use_symlinks=False,
+    model_id = CONFIG["video_model"]
+    vae = AutoencoderKLWan.from_pretrained(
+        model_id, subfolder="vae", torch_dtype=torch.float32, low_cpu_mem_usage=True
     )
-
+    pipe = WanPipeline.from_pretrained(
+        model_id,
+        vae=vae,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+    )
+    pipe.scheduler = UniPCMultistepScheduler.from_config(
+        pipe.scheduler.config, flow_shift=3.0
+    )
+    pipe.enable_model_cpu_offload()
     setup_seconds = time.perf_counter() - setup_started
-    report.update({"stage": "wan_generate", "setup_seconds": round(setup_seconds, 3)})
-    save(report)
 
+    save({
+        "status": "running",
+        "stage": "wan_generate",
+        "video_model": model_id,
+        "upscaler": "RealESRGAN_x2plus",
+        "gpu_name": torch.cuda.get_device_name(0),
+        "vram_gb": round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2),
+        "setup_seconds": round(setup_seconds, 3),
+    })
+
+    generator = torch.Generator(device="cpu").manual_seed(int(CONFIG["seed"]))
     wan_started = time.perf_counter()
-    run([
-        sys.executable, str(WAN_DIR / "generate.py"),
-        "--task", "t2v-1.3B",
-        "--size", CONFIG["wan_size"],
-        "--frame_num", str(CONFIG["num_frames"]),
-        "--ckpt_dir", str(WAN_MODEL_DIR),
-        "--offload_model", "True",
-        "--t5_cpu",
-        "--sample_steps", str(CONFIG["sample_steps"]),
-        "--sample_shift", "8",
-        "--sample_guide_scale", "6",
-        "--base_seed", str(CONFIG["seed"]),
-        "--save_file", str(WAN_RAW),
-        "--prompt", CONFIG["prompt"],
-    ], cwd=str(WAN_DIR))
+    frames = pipe(
+        prompt=CONFIG["prompt"],
+        negative_prompt=(
+            "blurry, jittery, distorted face, deformed anatomy, bad hands, "
+            "low quality, text, subtitles, watermark"
+        ),
+        height=832,
+        width=480,
+        num_frames=int(CONFIG["num_frames"]),
+        num_inference_steps=int(CONFIG["sample_steps"]),
+        guidance_scale=5.0,
+        generator=generator,
+    ).frames[0]
+    export_to_video(frames, str(WAN_RAW), fps=int(CONFIG["fps"]))
     wan_seconds = time.perf_counter() - wan_started
 
     if not WAN_RAW.exists() or WAN_RAW.stat().st_size < 20000:
         raise RuntimeError("Wan2.1 produced no valid MP4")
 
+    del pipe, vae, frames
     gc.collect()
     torch.cuda.empty_cache()
 
-    report.update({
+    save({
+        "status": "running",
         "stage": "realesrgan_x2",
+        "video_model": model_id,
+        "upscaler": "RealESRGAN_x2plus",
+        "gpu_name": torch.cuda.get_device_name(0),
+        "setup_seconds": round(setup_seconds, 3),
         "wan_seconds": round(wan_seconds, 3),
         "wan_bytes": WAN_RAW.stat().st_size,
     })
-    save(report)
 
     if ESR_DIR.exists():
         shutil.rmtree(ESR_DIR)
@@ -342,18 +349,17 @@ try:
     if int(meta["width"]) != 1080 or int(meta["height"]) != 1920:
         raise RuntimeError(f"final video is not 1080x1920: {meta}")
 
-    total_seconds = setup_seconds + wan_seconds + upscale_seconds + finalize_seconds
     save({
         "status": "success",
         "stage": "wan_1_3b_plus_realesrgan_x2",
-        "video_model": CONFIG["video_model"],
+        "video_model": model_id,
         "upscaler": "RealESRGAN_x2plus",
         "gpu_name": torch.cuda.get_device_name(0),
         "setup_seconds": round(setup_seconds, 3),
         "wan_seconds": round(wan_seconds, 3),
         "upscale_seconds": round(upscale_seconds, 3),
         "finalize_seconds": round(finalize_seconds, 3),
-        "total_seconds": round(total_seconds, 3),
+        "total_seconds": round(setup_seconds + wan_seconds + upscale_seconds + finalize_seconds, 3),
         "frames": int(CONFIG["num_frames"]),
         "fps": int(CONFIG["fps"]),
         "width": int(meta["width"]),
@@ -366,7 +372,7 @@ except Exception as exc:
         "status": "failed",
         "stage": "wan_1_3b_plus_realesrgan_x2",
         "error": f"{type(exc).__name__}: {exc}",
-        "traceback": traceback.format_exc()[-16000:],
+        "traceback": traceback.format_exc()[-20000:],
     })
     raise
 """
@@ -456,7 +462,6 @@ class KaggleTools:
         config = {
             "run_token": token,
             "video_model": VIDEO_MODEL,
-            "wan_commit": WAN_REPO_COMMIT,
             "realesrgan_commit": REALESRGAN_REPO_COMMIT,
             "prompt": prompt,
             "wan_size": "480*832",
