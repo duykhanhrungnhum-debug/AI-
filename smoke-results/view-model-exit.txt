@@ -1,1 +1,1 @@
-view_model_exit=1
+view_model_exit=0
