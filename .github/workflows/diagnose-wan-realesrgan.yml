@@ -1,0 +1,35 @@
+name: Diagnose Wan RealESRGAN Failure
+
+on:
+  push:
+    branches:
+      - money-agent-flux-ltx-smoke
+    paths:
+      - .github/workflows/diagnose-wan-realesrgan.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      KAGGLE_USERNAME: duykhanhta
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: money-agent-flux-ltx-smoke
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose Wan RealESRGAN Kaggle run
+        run: python tmp/diagnose_wan_realesrgan.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wan-realesrgan-diagnostic
+          path: wan-diag-results/
+          if-no-files-found: warn
+          retention-days: 7
