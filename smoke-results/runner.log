@@ -1,2 +1,33 @@
-Submitting duykhanhta/agentnate-money-smoke-1791355689
-SUBMITTED {"status": "submitted", "slug": "agentnate-money-smoke-1791355689", "owner": "duykhanhta", "url": "https://www.kaggle.com/code/duykhanhta/agentnate-money-smoke-1791355689", "response": {"versionNumberNullable": 1, "ref": "/code/duykhanhta/an-smoke-1791355689-a1", "url": "https://www.kaggle.com/code/duykhanhta/an-smoke-1791355689-a1", "versionNumber": 1, "hasVersionNumber": true, "error": "", "hasError": false, "invalidTags": [], "invalidDatasetSources": [], "invalidCompetitionSources": [], "invalidKernelSources": [], "invalidModelSources": [], "kernelId": 137444801}}
+PUBLIC_KERNEL duykhanhta an-smoke-1791355689-a1 https://www.kaggle.com/code/duykhanhta/an-smoke-1791355689-a1
+Traceback (most recent call last):
+  File "/home/runner/work/AI-/AI-/tmp/fetch_public_agentnate_smoke.py", line 23, in get_json
+    with urlopen(req, timeout=120) as r:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 401: Unauthorized
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/runner/work/AI-/AI-/tmp/fetch_public_agentnate_smoke.py", line 35, in <module>
+    st = get_json(f"/kernels/status?{q}")
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/AI-/AI-/tmp/fetch_public_agentnate_smoke.py", line 27, in get_json
+    raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+RuntimeError: HTTP 401: {"code":401,"message":"Unauthenticated"}
