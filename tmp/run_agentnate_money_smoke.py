@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import time
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 BASE = "https://www.kaggle.com/api/v1"
@@ -34,8 +35,12 @@ def req(method: str, path: str, payload=None):
             "User-Agent": "AgentNate-Smoke/1.0",
         },
     )
-    with urlopen(request, timeout=180) as r:
-        raw = r.read().decode("utf-8")
+    try:
+        with urlopen(request, timeout=180) as r:
+            raw = r.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Kaggle HTTP {exc.code}: {detail}") from exc
     return json.loads(raw)
 
 
