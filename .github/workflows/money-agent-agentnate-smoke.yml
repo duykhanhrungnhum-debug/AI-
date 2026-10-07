@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}"
 
-      - name: Download Kaggle output ZIP directly
+      - name: Download AgentNate smoke files
         id: smoke
         shell: bash
         run: |
@@ -88,3 +88,5 @@ jobs:
 # auth + xsrf view model
 
 # direct output zip by version
+
+# individual AgentNate outputs only
