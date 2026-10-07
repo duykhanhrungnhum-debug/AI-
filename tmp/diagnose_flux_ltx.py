@@ -8,9 +8,10 @@ from urllib.error import HTTPError
 OUT=Path("diag-results")
 OUT.mkdir(exist_ok=True)
 user=os.environ.get("KAGGLE_USERNAME","duykhanhta")
-token=os.environ.get("KAGGLE_API_TOKEN","")
+token=os.environ.get("KAGGLE_API_TOKEN","").strip()
 if not token:
     raise SystemExit("missing token")
+os.environ["KAGGLE_API_TOKEN"] = token
 
 subprocess.check_call([sys.executable,"-m","pip","install","--quiet","kaggle"])
 cmd=["kaggle","kernels","list","--user",user,"--sort-by","dateRun","--page","1","--csv"]
