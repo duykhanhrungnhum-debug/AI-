@@ -24,7 +24,7 @@ print(proc.stderr)
 
 candidates=[]
 for line in proc.stdout.splitlines():
-    if "money-flux-ltx-" in line:
+    if "money-flux-ltx-" in line or "ma-flux-ltx-" in line:
         ref=line.split(",")[0].strip().strip('"')
         candidates.append(ref)
 
