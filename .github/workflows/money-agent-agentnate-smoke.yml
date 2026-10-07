@@ -40,6 +40,17 @@ jobs:
           mkdir -p smoke-results
           python tmp/download_kaggle_output_zip.py | tee smoke-results/runner.log
 
+      - name: Upload AgentNate result files
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentnate-result
+          path: |
+            smoke-results/agentnate_image.png
+            smoke-results/agentnate_video.webp
+            smoke-results/agentnate_smoke_report.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Commit smoke outputs or failure log
         if: always()
         shell: bash
@@ -92,3 +103,5 @@ jobs:
 # individual AgentNate outputs only
 
 # fetch native SVD webp
+
+# upload result artifact
