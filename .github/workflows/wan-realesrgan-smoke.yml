@@ -39,3 +39,5 @@ jobs:
           retention-days: 7
 
 # rerun after NumPy ABI fix
+
+# final hardened runtime smoke
