@@ -37,3 +37,5 @@ jobs:
           path: wan-realesrgan-results/
           if-no-files-found: warn
           retention-days: 7
+
+# rerun after NumPy ABI fix
