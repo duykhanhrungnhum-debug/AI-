@@ -22,12 +22,6 @@ jobs:
         with:
           ref: money-agent-flux-ltx-smoke
 
-      - uses: actions/checkout@v4
-        with:
-          repository: duykhanhrungnhum-debug/money-agent-ai
-          ref: flux2-ltx2b
-          path: money-agent
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
