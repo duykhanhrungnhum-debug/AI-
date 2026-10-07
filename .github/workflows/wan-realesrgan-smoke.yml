@@ -2,6 +2,11 @@ name: Wan Diffusers RealESRGAN 1080p Smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - money-agent-flux-ltx-smoke
+    paths:
+      - .github/wan-gpu-test.trigger
 
 permissions:
   contents: read
