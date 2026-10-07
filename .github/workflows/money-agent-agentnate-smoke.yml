@@ -85,3 +85,5 @@ jobs:
 # trigger view-model fetch
 
 # capture view-model errors without aborting
+
+# raw response capture
