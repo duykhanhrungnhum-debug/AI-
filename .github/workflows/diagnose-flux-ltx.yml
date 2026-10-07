@@ -34,3 +34,5 @@ jobs:
           if-no-files-found: warn
 
 # rerun with stripped token
+
+# match Kaggle slug
