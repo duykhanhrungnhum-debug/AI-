@@ -57,9 +57,27 @@ payload = {
     "machineShape": "NvidiaTeslaT4",
 }
 print("Submitting", payload["slug"], flush=True)
-res = req("POST", "/kernels/push", payload)
-if res.get("error"):
-    raise RuntimeError(res["error"])
+res = None
+for attempt in range(1, 16):
+    try:
+        res = req("POST", "/kernels/push", payload)
+        if res.get("error"):
+            message = str(res["error"])
+            if "Maximum batch GPU session count" in message and attempt < 15:
+                print(f"GPU slots full; waiting before submit attempt {attempt + 1}/15", flush=True)
+                time.sleep(60)
+                continue
+            raise RuntimeError(message)
+        break
+    except RuntimeError as exc:
+        message = str(exc)
+        if "Maximum batch GPU session count" in message and attempt < 15:
+            print(f"GPU slots full; waiting before submit attempt {attempt + 1}/15", flush=True)
+            time.sleep(60)
+            continue
+        raise
+if res is None:
+    raise RuntimeError("Kaggle submit did not return a response")
 
 record = {
     "status": "submitted",
