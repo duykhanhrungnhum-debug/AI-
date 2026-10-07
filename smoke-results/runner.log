@@ -1,33 +1,5 @@
-Submitting duykhanhta/agentnate-money-smoke-1791355357
+Submitting duykhanhta/agentnate-money-smoke-1791355441
 Traceback (most recent call last):
-  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 39, in req
-    with urlopen(request, timeout=180) as r:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 215, in urlopen
-    return opener.open(url, data, timeout)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 521, in open
-    response = meth(req, response)
-               ^^^^^^^^^^^^^^^^^^^
-  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 630, in http_response
-    response = self.parent.error(
-               ^^^^^^^^^^^^^^^^^^
-  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 559, in error
-    return self._call_chain(*args)
-           ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 492, in _call_chain
-    result = func(*args)
-             ^^^^^^^^^^^
-  File "/opt/hostedtoolcache/Python/3.12.14/x64/lib/python3.12/urllib/request.py", line 639, in http_error_default
-    raise HTTPError(req.full_url, code, msg, hdrs, fp)
-urllib.error.HTTPError: HTTP Error 403: Forbidden
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 68, in <module>
-    st = req("GET", f"/kernels/status?{q}")
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 43, in req
-    raise RuntimeError(f"Kaggle HTTP {exc.code}: {detail}") from exc
-RuntimeError: Kaggle HTTP 403: {"code":403,"message":"Permission \u0027kernels.get\u0027 was denied"}
+  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 62, in <module>
+    raise RuntimeError(res["error"])
+RuntimeError: Maximum batch GPU session count of 2 reached.
