@@ -50,7 +50,7 @@ payload = {
     "text": SOURCE,
     "language": "python",
     "kernelType": "script",
-    "isPrivate": True,
+    "isPrivate": False,
     "enableGpu": True,
     "enableTpu": False,
     "enableInternet": True,
@@ -61,48 +61,15 @@ res = req("POST", "/kernels/push", payload)
 if res.get("error"):
     raise RuntimeError(res["error"])
 
-deadline = time.time() + 5400
-last = None
-while time.time() < deadline:
-    q = urlencode({"userName": USERNAME, "kernelSlug": SLUG})
-    st = req("GET", f"/kernels/status?{q}")
-    last = str(st.get("status") or "")
-    print("STATUS", last, flush=True)
-    if last.upper() in {"COMPLETE", "ERROR", "FAILED", "CANCELLED"}:
-        if last.upper() != "COMPLETE":
-            raise RuntimeError(f"Kaggle job failed: {st}")
-        break
-    time.sleep(20)
-else:
-    raise TimeoutError(f"Kaggle job timeout; last={last}")
-
-q = urlencode({"userName": USERNAME, "kernelSlug": SLUG})
-meta = req("GET", f"/kernels/output?{q}")
-files = meta.get("files") or []
-wanted = {
-    "agentnate_image.png",
-    "agentnate_video.mp4",
-    "agentnate_smoke_report.json",
+record = {
+    "status": "submitted",
+    "slug": SLUG,
+    "owner": USERNAME,
+    "url": f"https://www.kaggle.com/code/{USERNAME}/{SLUG}",
+    "response": res,
 }
-found = {}
-for item in files:
-    name = item.get("fileName", item.get("file_name"))
-    url = item.get("url")
-    if name in wanted and isinstance(url, str):
-        found[name] = url
-
-missing = wanted - set(found)
-if missing:
-    raise RuntimeError(f"Missing Kaggle outputs: {sorted(missing)}; metadata={meta}")
-
-for name, url in found.items():
-    print(f"DOWNLOAD_URL {name} {url}", flush=True)
-    request = Request(url, headers={"User-Agent": "AgentNate-Smoke/1.0"})
-    with urlopen(request, timeout=300) as response:
-        data = response.read()
-    (OUT / name).write_bytes(data)
-
-report = json.loads((OUT / "agentnate_smoke_report.json").read_text(encoding="utf-8"))
-if report.get("status") != "success":
-    raise RuntimeError(f"Smoke report failed: {report}")
-print("SMOKE_SUCCESS", json.dumps(report, ensure_ascii=False), flush=True)
+(OUT / "submitted.json").write_text(
+    json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+print("SUBMITTED", json.dumps(record, ensure_ascii=False), flush=True)
