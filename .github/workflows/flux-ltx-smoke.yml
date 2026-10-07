@@ -1,0 +1,40 @@
+name: FLUX2 LTX2B Real Smoke
+
+on:
+  push:
+    branches:
+      - money-agent-flux-ltx-smoke
+    paths:
+      - .github/workflows/flux-ltx-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      KAGGLE_USERNAME: duykhanhta
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: money-agent-flux-ltx-smoke
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run real FLUX2 + LTX2B test
+        run: python tmp/run_flux_ltx_smoke.py
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flux-ltx-real-smoke
+          path: smoke-results/
+          if-no-files-found: warn
+          retention-days: 7
