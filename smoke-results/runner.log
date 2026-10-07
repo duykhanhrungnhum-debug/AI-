@@ -1,9 +1,6 @@
-Submitting duykhanhta/agentnate-money-smoke-1791355264
+Submitting duykhanhta/agentnate-money-smoke-1791355314
 Traceback (most recent call last):
-  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 55, in <module>
-    res = req("POST", "/kernels/push", payload)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 37, in req
+  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 39, in req
     with urlopen(request, timeout=180) as r:
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/urllib/request.py", line 215, in urlopen
@@ -24,3 +21,13 @@ Traceback (most recent call last):
   File "/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/urllib/request.py", line 639, in http_error_default
     raise HTTPError(req.full_url, code, msg, hdrs, fp)
 urllib.error.HTTPError: HTTP Error 409: Conflict
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 60, in <module>
+    res = req("POST", "/kernels/push", payload)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/AI-/AI-/tmp/run_agentnate_money_smoke.py", line 43, in req
+    raise RuntimeError(f"Kaggle HTTP {exc.code}: {detail}") from exc
+RuntimeError: Kaggle HTTP 409: {"code":409,"message":"The requested title \u0022AgentNate Money Agent Real Smoke\u0022 is already in use by a notebook. Please choose another title."}
