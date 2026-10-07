@@ -1,4 +1,4 @@
-name: Wan RealESRGAN 1080p Real Smoke
+name: Wan Diffusers RealESRGAN 1080p Smoke
 
 on:
   push:
