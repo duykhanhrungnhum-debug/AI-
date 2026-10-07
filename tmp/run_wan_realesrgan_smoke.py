@@ -30,7 +30,6 @@ run_token = f"wan-esr-smoke-{stamp}"
 config = {
     "run_token": run_token,
     "video_model": mod.VIDEO_MODEL,
-    "wan_commit": mod.WAN_REPO_COMMIT,
     "realesrgan_commit": mod.REALESRGAN_REPO_COMMIT,
     "prompt": (
         "Photorealistic vertical social media video of a beautiful young Vietnamese woman "
