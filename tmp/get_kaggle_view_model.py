@@ -34,7 +34,14 @@ def post(method, body):
     req=Request("https://www.kaggle.com/api/i/"+method,data=json.dumps(body).encode(),headers=h,method="POST")
     try:
         with opener.open(req,timeout=120) as r:
-            return {"status":r.status,"body":json.loads(r.read().decode("utf-8"))}
+            raw = r.read()
+            text = raw.decode("utf-8", errors="replace")
+            ctype = r.headers.get("Content-Type", "")
+            try:
+                body = json.loads(text)
+            except Exception:
+                body = {"raw_text": text[:20000], "content_type": ctype, "bytes": len(raw)}
+            return {"status":r.status,"body":body}
     except HTTPError as exc:
         text=exc.read().decode("utf-8",errors="replace")
         try: b=json.loads(text)
