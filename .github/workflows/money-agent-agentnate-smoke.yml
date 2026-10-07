@@ -33,16 +33,12 @@ jobs:
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}"
 
-      - name: Fetch public AgentNate creative smoke
+      - name: Inspect public Kaggle notebook page
         id: smoke
         shell: bash
         run: |
           mkdir -p smoke-results
-          set +e
-          python tmp/fetch_public_agentnate_smoke.py > >(tee smoke-results/runner.log) 2>&1
-          rc=$?
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          exit $rc
+          python tmp/inspect_public_kaggle_page.py | tee smoke-results/runner.log
 
       - name: Commit smoke outputs or failure log
         if: always()
@@ -72,3 +68,5 @@ jobs:
 # short title
 
 # fetch existing public smoke only
+
+# inspect public notebook page
