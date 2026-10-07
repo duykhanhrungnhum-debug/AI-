@@ -1,0 +1,34 @@
+name: Extract Wan Root Error
+
+on:
+  push:
+    branches:
+      - money-agent-flux-ltx-smoke
+    paths:
+      - .github/workflows/extract-wan-root-error.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: money-agent-flux-ltx-smoke
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Extract Wan root error
+        run: python tmp/extract_wan_root_error.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wan-root-error
+          path: wan-log-results/
+          if-no-files-found: warn
+          retention-days: 7
