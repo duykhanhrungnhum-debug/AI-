@@ -230,7 +230,7 @@ try:
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
         "diffusers>=0.36,<1", "transformers>=4.57,<5", "accelerate>=1,<2",
         "safetensors", "sentencepiece", "ftfy", "imageio", "imageio-ffmpeg",
-        "opencv-python-headless>=4.9", "ffmpeg-python", "numpy<2"
+        "opencv-python-headless>=4.9", "ffmpeg-python"
     ])
 
     from diffusers import AutoencoderKLWan, WanPipeline
